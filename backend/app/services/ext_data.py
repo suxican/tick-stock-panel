@@ -667,6 +667,7 @@ def write_ext_parquet(
     snapshot_date: date | None = None,
     *,
     keep_strategy_cache: bool = False,
+    replace: bool = False,
 ) -> int:
     """将 DataFrame 写入扩展数据 Parquet。
 
@@ -692,7 +693,7 @@ def write_ext_parquet(
         out_path = cfg_dir / "part.parquet"
 
         # 如果已有文件，合并去重后覆盖
-        if out_path.exists():
+        if out_path.exists() and not replace:
             try:
                 existing = pl.read_parquet(out_path)
                 key = "symbol" if "symbol" in df.columns else df.columns[0]
@@ -708,7 +709,7 @@ def write_ext_parquet(
         out_path = out_dir / "part.parquet"
 
         # 如果已有文件，合并去重
-        if out_path.exists():
+        if out_path.exists() and not replace:
             try:
                 existing = pl.read_parquet(out_path)
                 key: str | list[str] = "symbol" if "symbol" in df.columns else df.columns[0]
@@ -828,17 +829,23 @@ def rows_to_parquet(
     snapshot_date: date | None = None,
     *,
     keep_strategy_cache: bool = False,
+    replace: bool = False,
 ) -> int:
     """将 JSON 行列表转为 DataFrame 写入 Parquet，复用 write_ext_parquet 的存储逻辑。
 
     Returns:
         写入行数。
     """
-    df = pl.DataFrame(rows)
+    # Complete vendor snapshots can legitimately become empty. Publish a typed
+    # empty frame so an old limit-up/leader list is not kept as current data.
+    df = pl.DataFrame(rows) if rows else pl.DataFrame(schema={
+        field.name: _POLARS_DTYPE_MAP.get(field.dtype, pl.Utf8) for field in config.fields
+    })
     df = apply_config_mapping(df, config, data_dir)
     if "symbol" in df.columns:
         df = df.with_columns(pl.col("symbol").cast(pl.Utf8))
     return write_ext_parquet(
         df, config, data_dir, snapshot_date=snapshot_date,
         keep_strategy_cache=keep_strategy_cache,
+        replace=replace,
     )

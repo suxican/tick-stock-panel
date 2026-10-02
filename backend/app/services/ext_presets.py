@@ -100,7 +100,9 @@ def _industry_preset() -> ExtConfig:
 
 
 def _presets() -> list[ExtConfig]:
-    return [_concept_preset(), _industry_preset()]
+    from app.services.kaipanla_catalog import presets as kaipanla_presets
+
+    return [_concept_preset(), _industry_preset(), *kaipanla_presets()]
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +277,14 @@ async def fetch_preset(config_id: str, data_dir: Path) -> int:
     store = ExtConfigStore(data_dir)
     if store.get(config_id) is None:
         store.upsert(config)
+
+    from app.services.kaipanla_catalog import get_dataset
+
+    if get_dataset(config_id) is not None:
+        from app.services.ext_pull import fetch_and_ingest
+
+        n, _ = await fetch_and_ingest(config, data_dir, force=True)
+        return n
 
     n = await _seed_one(config, flatten, data_dir)
     logger.info("内置扩展表 %s 手动拉取成功: %d 行", config_id, n)

@@ -20,6 +20,7 @@ import polars as pl
 
 from app.services.ext_data import ExtConfig, ExtConfigStore
 from app.services.index_const import CORE_INDEX_NAMES, CORE_INDEX_SYMBOLS
+from app.services.kaipanla_context import read_kaipanla_context
 from app.services.screener import ScreenerService
 
 # ================================================================
@@ -156,6 +157,8 @@ def _index_quotes(repo, quote_service, as_of: date | None = None) -> list[dict]:
 # ================================================================
 
 def _dimension_field(config: ExtConfig, kind: str) -> str | None:
+    if config.market_level:
+        return None
     candidates = ["概念", "concept", "theme"] if kind == "concept" else ["行业", "industry", "sector"]
     for candidate in candidates:
         needle = candidate.lower()
@@ -263,6 +266,8 @@ def _dimension_rank(rows: list[dict], repo, kind: str, limit: int = 5, level: in
     groups: dict[str, dict[str, dict]] = {}
     group_source: dict[str, str] = {}  # 组名 → 首个命中的扩展字段 "configId.field" (看板成分股弹窗用)
     for config in store.load_all():
+        if config.market_level:
+            continue
         field = _dimension_field(config, kind)
         if not field:
             continue
@@ -384,12 +389,14 @@ def build_market_overview(
     as_of = as_of or svc.latest_date()
     status = _quote_status(quote_service)
     indices = _index_quotes(repo, quote_service, None if not explicit_as_of else as_of)
+    supplemental = read_kaipanla_context(repo.store.data_dir, as_of)
 
     if not as_of:
         return {
             "as_of": None,
             "quote_status": status,
             "indices": indices,
+            "supplemental": supplemental,
             "breadth": {"total": 0, "up": 0, "down": 0, "flat": 0, "up_pct": 0, "down_pct": 0},
             "amount": {"total": 0, "avg": 0},
             "boards": [],
@@ -562,6 +569,7 @@ def build_market_overview(
         "as_of": str(as_of),
         "quote_status": status,
         "indices": indices,
+        "supplemental": supplemental,
         "breadth": {
             "total": total,
             "up": up,

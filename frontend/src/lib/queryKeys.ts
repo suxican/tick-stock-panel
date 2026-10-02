@@ -89,8 +89,9 @@ export const QK = {
                              ['kline-minute-range', symbol, days] as const,
   indexDaily:           (symbol: string, start: string, end: string) =>
                              ['index-daily', symbol, start, end] as const,
-  indexMinute:          (symbol: string, date: string) =>
-                             ['index-minute', symbol, date] as const,
+  indexMinute:          (symbol: string, date: string, provider?: string) =>
+                             provider == null ? ['index-minute', symbol, date] as const
+                               : ['index-minute', symbol, date, provider] as const,
 
   // Schema
   extDataSchemaAll:     ['ext-data-schema-all'] as const,
@@ -121,6 +122,9 @@ export const QK = {
 
   // AI 大盘复盘
   reviewReports:        ['review-reports'] as const,
+  kaipanlaContext:      (date?: string) => ['kaipanla-context', date ?? 'latest'] as const,
+  kaipanlaMarketEmotion: (date?: string) => ['kaipanla-market-emotion', date ?? 'latest'] as const,
+  kaipanlaStocks:       (kind: 'limit_up' | 'broken_limits', date: string) => ['kaipanla-stocks', kind, date] as const,
 
   // 概念涨幅轮动矩阵
   rpsRotation:          (days: number) => ['rps-rotation', days] as const,

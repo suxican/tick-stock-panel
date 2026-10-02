@@ -264,7 +264,9 @@ def _parse_rows_payload(config: ExtConfig, pull: PullConfig, data: Any) -> list[
     return _apply_field_map(rows, pull.field_map)
 
 
-async def fetch_rows_for_date(config: ExtConfig, target_date: date) -> list[dict]:
+async def fetch_rows_for_date(
+    config: ExtConfig, target_date: date, *, force: bool = False,
+) -> list[dict]:
     """按日期请求外部 API 并解析为行 (不写盘)。空数据返回 []。
 
     与 fetch_and_ingest 共用同一解析链 (response_path/预设转换/字段映射/
@@ -274,6 +276,13 @@ async def fetch_rows_for_date(config: ExtConfig, target_date: date) -> list[dict
     pull = config.pull
     if not pull or not pull.url:
         raise ValueError("拉取未配置或 URL 为空")
+
+    from app.services.kaipanla_catalog import get_dataset
+
+    if get_dataset(config.id) is not None:
+        from app.services.kaipanla import fetch_config_rows
+
+        return await fetch_config_rows(config, target_date, force=force)
 
     if pull.page_param and pull.method.upper() == "GET":
         collected: list[dict] = []
@@ -325,6 +334,7 @@ async def fetch_and_ingest(
     target_date: date | None = None,
     *,
     keep_strategy_cache: bool = False,
+    force: bool = False,
 ) -> tuple[int, str]:
     """执行一次拉取: 请求外部 API → 解析响应 → 写入 Parquet。
 
@@ -335,12 +345,16 @@ async def fetch_and_ingest(
     """
     # 同上: 落盘分区按北京日期, 否则 UTC 容器在北京时间 08:00 之前写的是前一天。
     day = target_date or cn_today()
-    rows = await fetch_rows_for_date(config, day)
-    if not rows:
+    rows = await fetch_rows_for_date(config, day, force=True) if force else await fetch_rows_for_date(config, day)
+    from app.services.kaipanla_catalog import get_dataset
+
+    complete_snapshot = get_dataset(getattr(config, "id", "")) is not None
+    if not rows and not complete_snapshot:
         raise ValueError("提取到的行数为 0")
     n = rows_to_parquet(
         rows, config, data_dir, snapshot_date=day,
         keep_strategy_cache=keep_strategy_cache,
+        replace=complete_snapshot,
     )
     return n, day.isoformat()
 

@@ -156,6 +156,8 @@ class SectorMonitorService:
         catalog["index"].sort(key=lambda item: (not item["available"], item["symbol"]))
 
         for config in ExtConfigStore(self._data_dir).load_all():
+            if config.market_level:
+                continue
             df = self._read_ext_dataframe(config)
             if df.is_empty():
                 continue
@@ -205,6 +207,8 @@ class SectorMonitorService:
         base = self._data_dir / "ext_data"
         paths: list[Path] = []
         for config in ExtConfigStore(self._data_dir).load_all():
+            if config.market_level:
+                continue
             if not any(_dimension_kind(field.name, field.label) for field in config.fields):
                 continue
             config_dir = base / config.id

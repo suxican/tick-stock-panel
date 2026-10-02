@@ -119,6 +119,59 @@ def test_all_factors_lazy_sync(data_dir):
     assert COL in {s.id for s in all_factors()}  # all_factors 内部惰性同步
 
 
+@pytest.mark.parametrize("strong_dtype", ["string", "float"])
+def test_market_level_kaipanla_skips_stock_fields_and_history(data_dir, monkeypatch, strong_dtype):
+    """已保存的市场补充表不扫描历史, 普通个股表仍按交易日接入。"""
+    from app.services.kaipanla_catalog import presets
+
+    market = next(config for config in presets() if config.id == "ext_kpl_emotion")
+    # 用户调整字段类型后, market_level 仍是个股因子/信号边界。
+    next(field for field in market.fields if field.name == "strong").dtype = strong_dtype
+    ExtConfigStore(data_dir).upsert(market)
+    for day in (date(2026, 1, 5), date(2026, 1, 6)):
+        write_ext_parquet(
+            pl.DataFrame({"record_id": [market.id], "strong": [42.0]}),
+            market, data_dir, snapshot_date=day,
+        )
+    stock = _mk_config(data_dir)
+    write_ext_parquet(
+        pl.DataFrame({"symbol": ["600000.SH"], "hot": [0.9], "name": ["AI"]}),
+        stock, data_dir, snapshot_date=date(2026, 1, 6),
+    )
+    calls = []
+    original = ext_factors._timeseries_frame
+
+    def record_scan(root, config, fields):
+        calls.append(config.id)
+        return original(root, config, fields)
+
+    monkeypatch.setattr(ext_factors, "_timeseries_frame", record_scan)
+    frame = _frame([("600000.SH", "2026-01-06", 10.0)])
+    for _ in range(2):
+        out = ext_factors.attach_ext_columns(frame, include_snapshot=True, data_dir=data_dir)
+        assert out[COL].to_list() == [0.9]
+        assert out["ext_tags_name"].to_list() == ["AI"]
+    assert calls == [stock.id, stock.id]
+    assert len(list((data_dir / "ext_data" / market.id).rglob("part.parquet"))) == 2
+    assert {entry["key"] for entry in ext_factors.ext_string_field_entries(data_dir)} == {"ext_tags_name"}
+    assert {spec.id for spec in ext_factor_specs(data_dir)} == {COL, "ext_tags_cnt"}
+    ext_factors.ensure_synced(data_dir)
+    allowed = custom_signals.allowed_fields()
+    assert COL in allowed and "ext_tags_name" in allowed
+    assert not any(key.startswith("ext_ext_kpl_") for key in allowed)
+
+
+def test_market_level_toggle_unregisters_previous_stock_factor(data_dir):
+    config = _mk_config(data_dir)
+    ext_factors.ensure_synced(data_dir)
+    assert get_factor(COL) is not None
+    config.market_level = True
+    ExtConfigStore(data_dir).upsert(config)
+    ext_factors.ensure_synced(data_dir)
+    assert get_factor(COL) is None
+    assert not ext_factors.ext_string_field_entries(data_dir)
+
+
 # ── 时序按日对齐 (PIT) ────────────────────────────────────
 
 def test_timeseries_exact_date_alignment(data_dir):

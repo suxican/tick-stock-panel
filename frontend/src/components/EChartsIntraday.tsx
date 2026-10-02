@@ -1,11 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as echarts from 'echarts'
-import type { ECharts, EChartsOption } from 'echarts'
+import type { ECharts, EChartsOption, LabelLayoutOptionCallbackParams } from 'echarts'
 import type { MinuteKlineRow, PriceLimitInfo } from '@/lib/api'
 import { computeIntradayAverage, formatMinuteTime, FULL_DAY_TIMES, summarizeMinutes, type DailySummary } from '@/lib/intraday-chart'
-import { useChartTheme, type ChartTheme } from '@/lib/theme'
+import { getTheme, useChartTheme, type ChartTheme } from '@/lib/theme'
 
 type YMode = 'adaptive' | 'limit'
+
+export interface IntradayAnnotation {
+  id: string
+  time: string
+  /** 完整提示文案；caption 仅用于图上的短标签。 */
+  label: string
+  caption?: string
+  direction?: 'up' | 'down' | 'neutral'
+}
 
 // 序列颜色 (双主题通用); 画布轴/网格/十字线等主题相关色走 ChartTheme
 const THEME = {
@@ -29,11 +38,49 @@ interface Props {
   priceLines?: { value: number; label?: string; color?: string }[]
   showLimitLines?: boolean
   showAvgLine?: boolean
+  /** 默认沿用既有连线；要求真实显示分钟缺口的页面应设为 false。 */
+  connectNulls?: boolean
+  /** 事件时间为当前交易日的北京时间 HH:mm，仅标注实际已有价格的分钟。 */
+  annotations?: IntradayAnnotation[]
+  onAnnotationClick?: (id: string) => void
+}
+
+type AnnotationPoint = {
+  annotationId: string
+  name: string
+  value: [string, number]
+  symbolOffset: [number, number]
+  caption?: string
+  direction?: IntradayAnnotation['direction']
+}
+
+const ANNOTATION_SERIES_ID = 'intraday-annotations'
+
+function buildAnnotationPoints(data: MinuteKlineRow[], annotations: NonNullable<Props['annotations']>): AnnotationPoint[] {
+  const prices = new Map(data.map(row => [formatMinuteTime(row.datetime), row.close]))
+  const tradingMinutes = new Set(FULL_DAY_TIMES)
+  const matched = annotations.filter(item => tradingMinutes.has(item.time) && isValidPrice(prices.get(item.time)))
+  const counts = new Map<string, number>()
+  const positions = new Map<string, number>()
+  for (const item of matched) counts.set(item.time, (counts.get(item.time) ?? 0) + 1)
+  return matched.map(item => {
+    const position = positions.get(item.time) ?? 0
+    positions.set(item.time, position + 1)
+    return {
+      annotationId: item.id,
+      name: item.label,
+      caption: item.caption,
+      direction: item.direction,
+      value: [item.time, prices.get(item.time)!],
+      // 同分钟消息保留相同时间与价格，只错开符号供分别点击。
+      symbolOffset: [(position - ((counts.get(item.time) ?? 1) - 1) / 2) * 10, 0],
+    }
+  })
 }
 
 function fmtAmt(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return '—'
-  if (v >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(2)}亿`
+  if (v >= 100_000_000) return `${(v / 100_000_000).toFixed(2)}亿`
   if (v >= 10_000) return `${(v / 10_000).toFixed(0)}万`
   return v.toFixed(0)
 }
@@ -64,7 +111,8 @@ function getLimitPrices(prevClose: number, priceLimit?: PriceLimitInfo): {
   return { limitUp, limitDown, upPct, downPct }
 }
 
-function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgPrices: (number | null)[], lineColor: string, areaColor: string, yMode: YMode, ct: ChartTheme, priceLimit?: PriceLimitInfo, showLimitLines = true, showAvgLine = true, priceLines: Props['priceLines'] = []): EChartsOption {
+function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgPrices: (number | null)[], lineColor: string, areaColor: string, yMode: YMode, ct: ChartTheme, priceLimit?: PriceLimitInfo, showLimitLines = true, showAvgLine = true, priceLines: Props['priceLines'] = [], annotationPoints: AnnotationPoint[] = [], connectNulls = true, chart?: ECharts): EChartsOption {
+  const lightTheme = getTheme() === 'light'
   // 无涨跌幅标的 (注册制新股上市初期窗口, 后端 no_limit 标记): 不存在可信
   // 涨跌停带, 自适应/涨跌停两类模式都退化为纯数据对称范围, 也不画涨跌停虚线
   const limitLinesActive = showLimitLines && !priceLimit?.no_limit
@@ -222,6 +270,7 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
     backgroundColor: 'transparent',
     tooltip: {
       trigger: 'axis',
+      renderMode: annotationPoints.length > 0 ? 'html' : undefined,
       backgroundColor: 'transparent',
       borderWidth: 0,
       textStyle: { fontSize: 0 },
@@ -277,7 +326,8 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
           fontSize: 10,
           fontFamily: 'JetBrains Mono, monospace',
           formatter: xAxisLabelFormatter,
-          interval: 0,
+          interval: (index: number) => index in xAxisLabelMap,
+          hideOverlap: true,
         },
         axisTick: { show: false },
         splitLine: {
@@ -379,7 +429,7 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
         cursor: 'crosshair',
         lineStyle: { width: 1.2, color: lineColor },
         areaStyle,
-        connectNulls: true,
+        connectNulls,
         markLine: markLineData.length > 0 ? { symbol: 'none', data: markLineData, animation: false, silent: true } : undefined,
       },
       ...(showAvgLine ? [{
@@ -390,7 +440,7 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
         symbol: 'none',
         cursor: 'crosshair',
         lineStyle: { width: 1, color: THEME.avgLine },
-        connectNulls: true,
+        connectNulls,
       }] : []),
       {
         name: '成交量',
@@ -400,6 +450,69 @@ function buildOption(data: MinuteKlineRow[], prevClose: number | undefined, avgP
         yAxisIndex: 1,
         cursor: 'crosshair',
       },
+      ...(annotationPoints.length > 0 ? [{
+        id: ANNOTATION_SERIES_ID,
+        name: '直播消息',
+        type: 'scatter' as const,
+        data: annotationPoints.map(point => {
+          const color = point.direction === 'neutral' ? ct.text
+            : point.direction === 'down' ? lightTheme ? '#15803D' : '#4ADE80'
+              : point.direction === 'up' || point.caption ? lightTheme ? '#B91C1C' : '#F87171'
+                : '#EF4444'
+          const showCaption = !!point.caption?.trim()
+          return {
+            ...point,
+            itemStyle: { color },
+            label: {
+              show: showCaption,
+              position: point.direction === 'down' ? 'bottom' as const : 'top' as const,
+              distance: 14,
+              // 回调返回普通文本，不使用模板字符串或 rich 样式解析源文案。
+              formatter: () => point.caption ?? '',
+              color,
+              backgroundColor: ct.tooltipBg,
+              borderColor: color,
+              borderWidth: 1,
+              borderRadius: 2,
+              padding: [3, 5],
+              fontSize: 11,
+              lineHeight: 16,
+              width: Math.min(190, (point.caption?.length ?? 0) * 12 + 16),
+              overflow: 'truncate' as const,
+            },
+            labelLine: { show: showCaption, lineStyle: { color, width: 1 } },
+          }
+        }),
+        symbol: 'circle',
+        symbolSize: 8,
+        itemStyle: { color: '#EF4444', borderColor: ct.tooltipBg, borderWidth: 1, opacity: 1 },
+        labelLayout: ({ labelRect }: LabelLayoutOptionCallbackParams) => ({
+          // 只将贴边标签收回主图（top 24 / bottom 34%），冲突时隐藏，避免挤入量柱区。
+          x: Math.max(10, Math.min(labelRect.x + 5, (chart?.getWidth() ?? Infinity) - labelRect.width - 3)),
+          y: Math.max(28, Math.min(labelRect.y + 3, (chart?.getHeight() ?? Infinity) * 0.66 - labelRect.height - 4)),
+          align: 'left' as const,
+          verticalAlign: 'top' as const,
+          hideOverlap: true,
+        }),
+        z: 6,
+        tooltip: {
+          trigger: 'item' as const,
+          confine: true,
+          backgroundColor: ct.tooltipBg,
+          borderColor: ct.tooltipBorder,
+          borderWidth: 1,
+          textStyle: { color: ct.tooltipText, fontSize: 12, lineHeight: 18 },
+          formatter: (params: any) => {
+            const element = document.createElement('div')
+            element.style.maxWidth = '280px'
+            element.style.whiteSpace = 'pre-wrap'
+            element.style.overflowWrap = 'anywhere'
+            const point = params.data as AnnotationPoint
+            element.textContent = `${point.value[0]}\n${point.name}`
+            return element
+          },
+        },
+      }] : []),
     ],
   }
 }
@@ -417,6 +530,9 @@ export function EChartsIntraday({
   priceLines,
   showLimitLines = true,
   showAvgLine = true,
+  connectNulls = true,
+  annotations,
+  onAnnotationClick,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<ECharts | null>(null)
@@ -431,6 +547,11 @@ export function EChartsIntraday({
   onPriceHoverRef.current = onPriceHover
   const onPriceDoubleClickRef = useRef(onPriceDoubleClick)
   onPriceDoubleClickRef.current = onPriceDoubleClick
+  const onAnnotationClickRef = useRef(onAnnotationClick)
+  onAnnotationClickRef.current = onAnnotationClick
+  const annotationPoints = useMemo(() => buildAnnotationPoints(data, annotations ?? []), [data, annotations])
+  const annotationIdsRef = useRef(new Set<string>())
+  annotationIdsRef.current = new Set(annotationPoints.map(point => point.annotationId))
   // 全日索引 → 数据数组索引 的映射 (ref 避免重建 chart)
   const fullDayToDataIdx = useRef<Map<number, number>>(new Map())
 
@@ -502,6 +623,12 @@ export function EChartsIntraday({
         onPriceHoverRef.current?.(null)
       })
 
+      chart.on('click', (event: any) => {
+        if (event.componentType !== 'series' || event.seriesId !== ANNOTATION_SERIES_ID) return
+        const id = event.data?.annotationId
+        if (typeof id === 'string' && annotationIdsRef.current.has(id)) onAnnotationClickRef.current?.(id)
+      })
+
       const handlePriceDoubleClick = (event: { offsetX: number; offsetY: number }) => {
         const pixel: [number, number] = [event.offsetX, event.offsetY]
         if (!chart!.containPixel({ gridIndex: 0 }, pixel)) return
@@ -529,17 +656,18 @@ export function EChartsIntraday({
       }
       fullDayToDataIdx.current = mapping
 
-      chart.setOption(buildOption(data, prevClose, avgPrices, lineColor, areaFill, yMode, ct, priceLimit, showLimitLines, showAvgLine, priceLines), true)
+      chart.setOption(buildOption(data, prevClose, avgPrices, lineColor, areaFill, yMode, ct, priceLimit, showLimitLines, showAvgLine, priceLines, annotationPoints, connectNulls, chart), true)
     } else {
       fullDayToDataIdx.current = new Map()
       chart.clear()
     }
-  }, [data, prevClose, height, lineColor, areaFill, yMode, ct, priceLimit, showLimitLines, showAvgLine, priceLines])
+  }, [data, prevClose, height, lineColor, areaFill, yMode, ct, priceLimit, showLimitLines, showAvgLine, priceLines, annotationPoints, connectNulls])
 
   useEffect(() => {
     return () => {
       chartRef.current?.off('updateAxisPointer')
       chartRef.current?.off('globalout')
+      chartRef.current?.off('click')
       if (priceDoubleClickHandlerRef.current) {
         chartRef.current?.getZr().off('dblclick', priceDoubleClickHandlerRef.current)
       }

@@ -22,11 +22,12 @@ import { Link } from 'react-router-dom'
 import { api } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { usePreferences } from '@/lib/useSharedQueries'
+import { getFrontendExtensionNavigation } from '@/extensions/registry'
 
 interface NavEntry {
   id: string
   label: string
-  type: 'builtin' | 'analysis'
+  type: 'builtin' | 'analysis' | 'extension'
   visible: boolean
 }
 
@@ -79,9 +80,9 @@ const ARCH_CLASS: Record<string, { kind: ArchKind; reason: string }> = {
   '/signals':        { kind: 'ext', reason: '信号库视图 — 消费核心数据, 可由扩展页面替换' },
   '/review':         { kind: 'ext', reason: '大盘复盘视图 — 消费核心数据, 可由扩展页面替换' },
 }
-/** 自定义分析页天然属于扩展域 */
+/** 注册的前端页面和自定义分析页均属于扩展域 */
 const archOf = (entry: NavEntry): { kind: ArchKind; reason: string } =>
-  ARCH_CLASS[entry.id] ?? { kind: 'ext', reason: '自定义分析页 — 扩展域' }
+  ARCH_CLASS[entry.id] ?? { kind: 'ext', reason: entry.type === 'extension' ? '前端扩展页面 — 扩展域' : '自定义分析页 — 扩展域' }
 
 // ── Sortable row ──
 
@@ -149,7 +150,7 @@ function SortableItem({ entry, hidden, onToggleHidden, badgeEnabled, onToggleBad
       </div>
       <div>
         <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] ${
-          entry.type === 'analysis' ? 'bg-accent/10 text-accent' : 'bg-elevated text-muted'
+          entry.type !== 'builtin' ? 'bg-accent/10 text-accent' : 'bg-elevated text-muted'
         }`}>
           {entry.type === 'builtin' ? '内置' : '扩展'}
         </span>
@@ -168,7 +169,7 @@ function SortableItem({ entry, hidden, onToggleHidden, badgeEnabled, onToggleBad
         </button>
       </div>
       <div className="flex justify-center">
-        {entry.type === 'builtin' ? (
+        {entry.type !== 'analysis' ? (
           <Link
             to={entry.id}
             className="rounded p-1 text-muted hover:text-accent hover:bg-accent/10 transition-colors"
@@ -212,6 +213,12 @@ export function SettingsMenuSettingsPanel() {
   const qc = useQueryClient()
   const { data: prefs } = usePreferences()
   const menus = useQuery({ queryKey: QK.analysisMenus, queryFn: api.analysisMenus })
+  const extensionEntries = useMemo<NavEntry[]>(() => getFrontendExtensionNavigation().map(item => ({
+    id: item.route.path,
+    label: item.label,
+    type: 'extension',
+    visible: true,
+  })), [])
 
   const analysisEntries: NavEntry[] = (menus.data?.items ?? []).map(m => ({
     id: m.id,
@@ -225,8 +232,9 @@ export function SettingsMenuSettingsPanel() {
     const entryMap = new Map<string, NavEntry>()
     for (const e of BUILTIN_PAGES) entryMap.set(e.id, e)
     for (const e of analysisEntries) entryMap.set(e.id, e)
+    for (const e of extensionEntries) entryMap.set(e.id, e)
 
-    if (saved.length === 0) return [...BUILTIN_PAGES, ...analysisEntries]
+    if (saved.length === 0) return [...BUILTIN_PAGES, ...analysisEntries, ...extensionEntries]
 
     const ordered: NavEntry[] = []
     const seen = new Set<string>()
@@ -237,9 +245,9 @@ export function SettingsMenuSettingsPanel() {
         seen.add(id)
       }
     }
-    for (const e of [...BUILTIN_PAGES, ...analysisEntries]) {
+    for (const e of [...BUILTIN_PAGES, ...analysisEntries, ...extensionEntries]) {
       if (seen.has(e.id)) continue
-      // 未保存过排序的新条目: 内置页插回默认位置, 分析菜单追加到末尾
+      // 未保存过排序的新条目: 内置页插回默认位置, 扩展菜单追加到末尾
       const defaultIndex = BUILTIN_PAGES.findIndex(p => p.id === e.id)
       let anchor = -1
       if (defaultIndex > 0) {
@@ -252,7 +260,7 @@ export function SettingsMenuSettingsPanel() {
       else ordered.push(e)
     }
     return ordered
-  }, [prefs?.nav_order, analysisEntries])
+  }, [prefs?.nav_order, analysisEntries, extensionEntries])
 
   const hiddenSet = useMemo(() => new Set(prefs?.nav_hidden ?? []), [prefs?.nav_hidden])
 

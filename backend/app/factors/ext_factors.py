@@ -15,6 +15,7 @@
 - 数值字段 (int/float, 统一 Float64): 因子 + 信号双通道 (注册表 base 条目);
 - string 字段: 仅信号条件通道 (contains/==/!= 字符串运算符, 概念/行业归属
   筛选), 不注册为因子 —— 因子 IC/排序是数值口径; bool 不参与。
+- market_level 表属于市场补充数据, 不进入个股因子、信号或帧加载链。
 
 缓存与失效 (CONTRIBUTING §6.1):
 - 配置清单复用 ExtConfigStore.load_all 的目录签名缓存;
@@ -92,6 +93,7 @@ def ext_string_field_entries(data_dir: Path | None = None) -> list[dict[str, str
     return [
         {"key": ext_column_name(cfg.id, f.name), "label": f"{cfg.label}·{f.label or f.name}"[:40]}
         for cfg in _load_configs(root)
+        if not cfg.market_level
         for f in cfg.fields
         if f.dtype == "string"
     ]
@@ -107,6 +109,8 @@ def ext_factor_specs(data_dir: Path | None = None) -> list[FactorSpec]:
     root = _resolve_dir(data_dir)
     specs: list[FactorSpec] = []
     for cfg in _load_configs(root):
+        if cfg.market_level:
+            continue
         for f in _numeric_fields(cfg):
             fid = ext_column_name(cfg.id, f.name)
             if not fid.isascii():
@@ -289,6 +293,8 @@ def attach_ext_columns(
     tmp_date = False
     try:
         for cfg in configs:
+            if cfg.market_level:
+                continue
             fields = _signal_fields(cfg)
             if not fields:
                 continue

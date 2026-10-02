@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app.api.kaipanla import router as kaipanla_router
 from app.services import auction_benchmark, dragon_tiger, market_recap_reports, preferences
 from app.services.market_recap import recap_market_stream
 from app.services.ndjson_heartbeat import with_heartbeat
@@ -26,6 +27,7 @@ from app.services.ndjson_heartbeat import with_heartbeat
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/market-recap", tags=["market-recap"])
+router.include_router(kaipanla_router)
 
 
 class AnalyzeRequest(BaseModel):

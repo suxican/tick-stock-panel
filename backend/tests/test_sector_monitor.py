@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from datetime import date
 from types import SimpleNamespace
 
 import polars as pl
 import pytest
 
 from app.services import sector_monitor
-from app.services.ext_data import ExtConfig, ExtConfigStore, ExtField
+from app.services.ext_data import ExtConfig, ExtConfigStore, ExtField, rows_to_parquet
 from app.services.sector_monitor import SectorMonitorService
 from app.strategy import monitor_rules
 from app.strategy.monitor import MonitorRuleEngine
@@ -181,6 +182,54 @@ def test_concept_snapshot_uses_member_average_and_full_window(tmp_path):
 
     complete = service.build_snapshots(second, pl.DataFrame(), [target], {5}, now=1300.0)
     assert complete[target["key"]]["window_changes"][5] == pytest.approx(0.01)
+
+
+def test_kaipanla_refresh_does_not_scan_or_reset_stock_sector_catalog(tmp_path, monkeypatch):
+    from app.services.kaipanla_catalog import presets
+
+    market = next(config for config in presets() if config.id == "ext_kpl_limit_ladder")
+    stock = ExtConfig(
+        id="stock_concept", label="个股概念", mode="snapshot",
+        fields=[ExtField("concept", "string", "所属概念")],
+    )
+    store = ExtConfigStore(tmp_path)
+    store.upsert(market)
+    store.upsert(stock)
+    rows_to_parquet(
+        [{"StockID": "600000", "sector_turnover": "100", "date": "2026-09-30"}],
+        market, tmp_path, date(2026, 9, 30), replace=True,
+    )
+    symbols = [f"60000{index}.SH" for index in range(5)]
+    pl.DataFrame({"symbol": symbols, "concept": ["银行"] * 5}).write_parquet(
+        tmp_path / "ext_data" / stock.id / "part.parquet",
+    )
+    service = SectorMonitorService(_Repo(tmp_path))
+    calls = []
+    original = service._read_ext_dataframe
+
+    def record_read(config):
+        calls.append(config.id)
+        return original(config)
+
+    monkeypatch.setattr(service, "_read_ext_dataframe", record_read)
+    targets = service.list_targets()
+    assert calls == [stock.id]
+    assert targets["industry"] == []
+    assert [target["name"] for target in targets["concept"]] == ["银行"]
+    initial_signature = service._data_signature()
+    assert not any(market.id in path for path, _, _ in initial_signature)
+    target = targets["concept"][0]
+    quotes = pl.DataFrame({"symbol": symbols, "change_pct": [0.01] * 5})
+    service.build_snapshots(quotes, pl.DataFrame(), [target], {5}, now=1000.0)
+    rows_to_parquet(
+        [{"StockID": "600000", "sector_turnover": "200", "date": "2026-09-30"}],
+        market, tmp_path, date(2026, 9, 30), replace=True,
+    )
+    assert service._data_signature() == initial_signature
+    updated = quotes.with_columns(pl.lit(0.02).alias("change_pct"))
+    result = service.build_snapshots(updated, pl.DataFrame(), [target], {5}, now=1300.0)
+    assert result[target["key"]]["window_changes"][5] == pytest.approx(0.01)
+    assert calls == [stock.id]
 
 
 def test_momentum_rule_triggers_after_complete_window(tmp_path):

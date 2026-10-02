@@ -17,18 +17,22 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
+import polars as pl
+
+from app.config import settings
 from app.services import kline_sync
-from app.services.pipeline_jobs import job_store
 from app.tickflow.capabilities import Cap, CapabilitySet
 from app.tickflow.repository import KlineRepository
 
 logger = logging.getLogger(__name__)
 
 
-def _noop(stage: str, pct: int, msg: str, **kwargs) -> None:  # noqa: ARG001
+def _noop(stage: str, pct: int, msg: str, **kwargs) -> None:
     pass
 
 
@@ -38,31 +42,59 @@ def _invalidate(table: str | None = None) -> None:
 
 
 def _resolve_universe(capset: CapabilitySet) -> list[str]:
-    """解析标的池 — 与 daily_pipeline 独立的副本。"""
+    """合并远端全 A 池和本地股票,避免非空但不完整的池漏掉新股。"""
+    from app.tickflow.pools import DEMO_SYMBOLS, get_pool
+
+    def symbols(values) -> set[str]:
+        # 这里只校验完整代码; 资产类型由维表识别,不能靠代码前缀猜测。
+        return {
+            value.strip().upper()
+            for value in values
+            if isinstance(value, str)
+            and re.fullmatch(r"[0-9]{6}\.(SH|SZ|BJ)", value.strip().upper())
+        }
+
+    base: set[str] = set()
     if capset.has(Cap.KLINE_DAILY_BATCH):
         try:
-            from app.tickflow.pools import get_pool
-            all_a = get_pool("CN_Equity_A", refresh=True)
-            if all_a:
-                return sorted(all_a)
+            base.update(symbols(get_pool("CN_Equity_A", refresh=True)))
         except Exception as e:
             logger.warning("CN_Equity_A pool unavailable: %s", e)
 
-    from app.tickflow.pools import DEMO_SYMBOLS, get_pool as _get_pool
-    from app.config import settings
-    from pathlib import Path
-    import polars as pl
-    base: set[str] = set(DEMO_SYMBOLS)
-    base.update(_get_pool("watchlist"))
+    if not base:
+        base.update(symbols(DEMO_SYMBOLS))
+    try:
+        base.update(symbols(get_pool("watchlist")))
+    except Exception as e:
+        logger.warning("watchlist supplement failed: %s", e)
+
     d = Path(settings.data_dir)
-    inst_path = d / "instruments" / "instruments.parquet"
-    if inst_path.exists():
+    non_stocks: set[str] = set()
+    for directory in ("instruments", "instruments_etf", "instruments_index"):
+        inst_path = d / directory / f"{directory}.parquet"
+        if not inst_path.exists():
+            continue
         try:
-            inst = pl.read_parquet(inst_path, columns=["symbol"])
-            base.update(inst["symbol"].to_list())
+            schema = pl.read_parquet_schema(inst_path)
+            columns = [name for name in ("symbol", "asset_type", "type") if name in schema]
+            if "symbol" not in columns:
+                logger.warning("%s supplement skipped: missing symbol column", directory)
+                continue
+            inst = pl.read_parquet(inst_path, columns=columns)
+            if directory != "instruments":
+                non_stocks.update(symbols(inst["symbol"].to_list()))
+                continue
+            # 股票目录的旧 schema 没有类型列; 有类型时尊重显式的非股票标记。
+            stock = pl.lit(True)
+            for name in ("asset_type", "type"):
+                if name in columns:
+                    kind = pl.col(name).cast(pl.Utf8).str.strip_chars().str.to_lowercase()
+                    stock &= kind.is_null() | (kind == "stock")
+            base.update(symbols(inst.filter(stock)["symbol"].to_list()))
+            non_stocks.update(symbols(inst.filter(~stock)["symbol"].to_list()))
         except Exception as e:
-            logger.warning("instruments supplement failed: %s", e)
-    return sorted(base)
+            logger.warning("%s supplement failed: %s", directory, e)
+    return sorted(base - non_stocks)
 
 
 def _refresh_single_view(repo: KlineRepository, name: str) -> None:
@@ -194,7 +226,7 @@ def run_extend_history(
     logger.info("extend_history: full enriched rebuild start")
 
     from app.indicators.pipeline import run_pipeline
-    written_enriched = run_pipeline()
+    run_pipeline()
 
     enriched_dir = repo.store.data_dir / "kline_daily_enriched"
     enriched_days = len(list(enriched_dir.glob("date=*"))) if enriched_dir.exists() else 0

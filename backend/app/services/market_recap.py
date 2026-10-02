@@ -19,6 +19,7 @@ import logging
 from datetime import date
 from typing import AsyncIterator
 
+from app.services.kaipanla_context import build_kaipanla_prompt_block
 from app.services.market_overview_builder import build_market_overview
 
 logger = logging.getLogger(__name__)
@@ -202,6 +203,10 @@ def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context
         "## 行业板块排名",
         _build_sector_block(overview.get("industry_rank"), "行业"),
     ]
+
+    kaipanla_block = build_kaipanla_prompt_block(overview.get("supplemental") or {})
+    if kaipanla_block:
+        parts.extend(["", "## 开盘啦补充数据", kaipanla_block])
 
     # 龙虎榜资金动向 (fuyao 数据源, 摘要自带数据日期; 无数据源/失败时为空不占段)
     if lhb_context:

@@ -200,11 +200,12 @@ def _release_of(url: str) -> str:
     return m.group(1) if m else "unknown"
 
 
-def _cache_dir() -> Path:
+def _cache_dir(*, create: bool = True) -> Path:
     from app.config import settings
 
     d = settings.data_dir / "cache" / "fuyao"
-    d.mkdir(parents=True, exist_ok=True)
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
     return d
 
 
@@ -308,8 +309,10 @@ class FuyaoProvider:
     name = "fuyao"
     builtin = True
 
-    def __init__(self) -> None:
+    def __init__(self, *, cache_only: bool = False) -> None:
+        """cache_only 用于可复现的离线修复, 不读取密钥、不下载或清理缓存。"""
         self.config = _FuyaoConfig()
+        self._cache_only = cache_only
         self._client: FuyaoClient | None = None
         self._dump_memo: dict[str, pl.DataFrame] = {}
         self._dump_path_memo: dict[str, Path] = {}
@@ -323,6 +326,8 @@ class FuyaoProvider:
         self._dump_path_memo.clear()
 
     def _get_client(self) -> FuyaoClient:
+        if self._cache_only:
+            raise FuyaoError("扶摇离线模式禁止访问网络, 所需数据必须已缓存")
         if self._client is None:
             self._client = fuyao_client.FuyaoClient(api_key=get_api_key())
         return self._client
@@ -336,6 +341,18 @@ class FuyaoProvider:
         memo = self._dump_path_memo.get(dump_kind)
         if memo is not None and memo.exists():
             return memo
+        if self._cache_only:
+            pattern = re.compile(rf"{re.escape(cache_prefix)}__(\d+)\.parquet")
+            candidates = []
+            for path in _cache_dir(create=False).glob(f"{cache_prefix}__*.parquet"):
+                match = pattern.fullmatch(path.name)
+                if match and path.is_file():
+                    candidates.append((int(match.group(1)), path))
+            if not candidates:
+                raise FuyaoError(f"扶摇离线模式缺少本地缓存: {dump_kind}")
+            dest = max(candidates, key=lambda item: item[0])[1]
+            self._dump_path_memo[dump_kind] = dest
+            return dest
         client = self._get_client()
         info = client.dump_download_url(dump_kind)
         release = _release_of(str(info.get("presigned_url") or ""))
@@ -364,6 +381,10 @@ class FuyaoProvider:
         已有缓存覆盖起点就直接复用, 不追新 release(避免深窗口高频触发时日日重下
         172MB — 旧 release 的中段历史不会变, 尾部新鲜度交给 1MB 的 10d dump)。
         """
+        if self._cache_only:
+            path = self._ensure_dump_path(_DAILY_DUMP_KIND, "daily_k")
+            dmin, _ = _dump_date_range(path)
+            return path if dmin is not None and start_d >= dmin else None
         for f in sorted(_cache_dir().glob("daily_k__*.parquet"), reverse=True):
             try:
                 dmin, _ = _dump_date_range(f)
@@ -577,6 +598,10 @@ class FuyaoProvider:
 
     def _daily_dump_info(self) -> tuple[Path, date, date] | None:
         """返回多年 dump 的路径和覆盖范围,不把大文件读入进程内存。"""
+        if self._cache_only:
+            path = self._ensure_dump_path(_DAILY_DUMP_KIND, "daily_k")
+            dmin, dmax = _dump_date_range(path)
+            return (path, dmin, dmax) if dmin is not None and dmax is not None else None
         path = None
         for candidate in sorted(_cache_dir().glob("daily_k__*.parquet"), reverse=True):
             try:
@@ -661,6 +686,9 @@ class FuyaoProvider:
 
     def _historical_bars(self, symbol: str, start_d: date, end_d: date) -> list[dict]:
         """按 ≤10 年窗口分片拉取单标的原始日K。中途失败软返回已得行, 不抛出。"""
+        if self._cache_only:
+            # 正常在线路径容许软失败, 离线修复不能把缺缓存伪装成成功的空结果。
+            raise FuyaoError(f"扶摇离线缓存未覆盖 {symbol} [{start_d} ~ {end_d}]")
         out: list[dict] = []
         s = _ms_of_date(start_d)
         e = _ms_of_date(end_d)
@@ -698,6 +726,8 @@ class FuyaoProvider:
         try:
             events = self._load_adj_events(set(symbols), start_time, end_time)
         except FuyaoError as e:
+            if self._cache_only:
+                raise
             logger.warning("扶摇除权因子 dump 加载失败: %s", e)
             return pl.DataFrame(schema=schema)
         if events.is_empty():
@@ -770,6 +800,15 @@ class FuyaoProvider:
                 len(syms),
                 fallbacks,
             )
+        if self._cache_only:
+            expected = set(events.select("symbol", "ex_date").iter_rows())
+            produced = {(row["symbol"], row["trade_date"]) for row in out_rows}
+            missing = sorted(expected - produced)
+            if missing:
+                sample = ", ".join(f"{symbol} {day}" for symbol, day in missing[:3])
+                raise FuyaoError(
+                    f"扶摇离线除权因子未完整计算: {len(missing)} 个已知事件缺失 ({sample})"
+                )
         if not out_rows:
             return pl.DataFrame(schema=schema)
         return (
@@ -1098,6 +1137,8 @@ class FuyaoProvider:
                 for f in df.partition_by("symbol")
             }
         except Exception as e:  # 缓存损坏等不致命: 回退逐标的接口
+            if self._cache_only:
+                raise
             logger.warning("扶摇除权因子本地配价失败, 回退单标的接口: %s", e)
             return None
 

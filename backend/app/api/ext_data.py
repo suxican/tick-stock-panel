@@ -1099,8 +1099,15 @@ async def test_pull(request: Request, config_id: str):
 
     pull = config.pull
     try:
-        data = await _request_json(pull, config.id)
-        rows = _extract_rows(data, pull.response_path)
+        from app.services.kaipanla_catalog import get_dataset
+
+        if get_dataset(config.id) is not None:
+            from app.services.ext_pull import fetch_rows_for_date
+
+            rows = await fetch_rows_for_date(config, cn_today())
+        else:
+            data = await _request_json(pull, config.id)
+            rows = _extract_rows(data, pull.response_path)
         preview = _apply_field_map(rows[:5], pull.field_map)
         return {
             "status": "ok",
@@ -1359,10 +1366,12 @@ def discover_schema(request: Request, config_id: str):
 
 @router.get("/schema-all")
 def discover_all_schemas(request: Request):
-    """发现所有扩展表的 schema（用于前端动态列选择）。"""
+    """发现个股扩展表的 schema, 用于前端动态列选择。"""
     configs = _store(request).load_all()
     result = []
     for config in configs:
+        if config.market_level:
+            continue
         data_dir = _data_dir(request)
         glob = _parquet_glob(config, data_dir)
 

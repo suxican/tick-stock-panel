@@ -512,6 +512,83 @@ export interface OverviewMarket {
   active_leaders: MarketSnapshotRow[]
   concept_rank: { leading: OverviewDimensionRankItem[]; lagging: OverviewDimensionRankItem[] }
   industry_rank: { leading: OverviewDimensionRankItem[]; lagging: OverviewDimensionRankItem[] }
+  supplemental?: KaipanlaContext
+}
+
+/** 开盘啦只读快照：date 为行情归属日，fetched_at 为真实获取时间（带时区）。 */
+export interface KaipanlaContextTable {
+  id: string
+  label: string
+  state: 'ok' | 'no_data' | 'empty' | 'error' | 'date_mismatch'
+  date: string
+  fetched_at: string | null
+  rows: Record<string, unknown>[]
+  total: number
+  columns?: { name: string; label: string; type?: string }[]
+  retrieved_after_date?: boolean
+}
+
+export interface KaipanlaContext {
+  source: '开盘啦'
+  date: string
+  fetched_at: string | null
+  state: 'ok' | 'partial' | 'no_data' | 'error'
+  tables: KaipanlaContextTable[]
+}
+
+export interface KaipanlaRefreshResult {
+  source: '开盘啦'
+  date: string
+  results: { id: string; state: 'ok' | 'empty' | 'error'; rows: number; message?: string }[]
+  context: KaipanlaContext
+}
+
+export interface KaipanlaMarketColumn {
+  name: string
+  label: string
+  unit: 'percent' | 'yuan' | 'wan' | 'count' | 'number' | 'text'
+}
+
+export interface KaipanlaLiveStock {
+  symbol: string
+  name: string
+  change_pct: number | null
+  kind: 'focus' | 'discussion'
+}
+
+export interface KaipanlaMarketDataset {
+  id: string
+  label: string
+  state: 'ok' | 'empty' | 'error'
+  date: string | null
+  fetched_at: string | null
+  date_origin: string | null
+  rows: Record<string, unknown>[]
+  columns: KaipanlaMarketColumn[]
+  message?: string
+}
+
+export interface KaipanlaMarketEmotion {
+  source: '开盘啦'
+  requested_date: string | null
+  date: string | null
+  previous_date: string | null
+  fetched_at: string | null
+  state: 'ok' | 'partial' | 'empty' | 'error'
+  datasets: Record<string, KaipanlaMarketDataset>
+  history: KaipanlaMarketDataset
+  missing: { id: string; label: string; reason: string }[]
+}
+
+export interface KaipanlaQueryResult {
+  id: string
+  source: '开盘啦'
+  requested_date: string
+  data_date: string | null
+  date_origin: string
+  fetched_at: string
+  state: 'ok' | 'empty'
+  rows: Record<string, unknown>[]
 }
 
 // ===== 概念涨幅轮动矩阵 =====
@@ -3563,6 +3640,35 @@ export const api = {
   // ===== 大盘复盘 =====
   reviewReportsList: () =>
     request<{ reports: AiReviewReport[] }>('/api/market-recap/reports'),
+
+  /** 只读取保存的补充数据，不触发数据源请求。 */
+  kaipanlaContext: (date?: string) =>
+    request<KaipanlaContext>(
+      `/api/market-recap/kaipanla/context${date ? `?date=${encodeURIComponent(date)}` : ''}`,
+      { quiet: true },
+    ),
+
+  /** 用户主动获取核心复盘补充数据；各数据集失败独立隔离。 */
+  kaipanlaRefresh: (date?: string) =>
+    request<KaipanlaRefreshResult>('/api/market-recap/kaipanla/refresh', {
+      method: 'POST', body: JSON.stringify({ date }), quiet: true,
+      timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
+    }),
+
+  kaipanlaMarketEmotion: (date?: string, force = false) => {
+    const params = new URLSearchParams()
+    if (date) params.set('date', date)
+    if (force) params.set('force', 'true')
+    return request<KaipanlaMarketEmotion>(`/api/market-recap/kaipanla/market-emotion${params.size ? `?${params}` : ''}`, {
+      quiet: true, timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
+    })
+  },
+
+  kaipanlaQuery: (id: string, date?: string, parameters: Record<string, string | number> = {}, force = false) =>
+    request<KaipanlaQueryResult>(`/api/market-recap/kaipanla/query/${encodeURIComponent(id)}`, {
+      method: 'POST', body: JSON.stringify({ date, parameters, force }), quiet: true,
+      timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
+    }),
 
   /** 龙虎榜三榜 (fuyao 专有; 历史日按服务端缓存, 当日未发布自动回退上一期) */
   dragonTiger: (date?: string) =>

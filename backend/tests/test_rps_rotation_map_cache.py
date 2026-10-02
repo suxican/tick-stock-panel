@@ -7,10 +7,13 @@
 from __future__ import annotations
 
 import types
+from datetime import date
 
+import polars as pl
 import pytest
 
 from app.services import rps_rotation
+from app.services.ext_data import ExtConfig, ExtConfigStore, ExtField, rows_to_parquet
 
 
 @pytest.fixture(autouse=True)
@@ -68,3 +71,39 @@ def test_map_cache_isolated_by_kind(tmp_path, monkeypatch):
     assert concept[1] == 1
     assert industry[1] == 0
     assert industry[0].is_empty()
+
+
+@pytest.mark.parametrize("dataset,kind,field", [
+    ("limit_ladder", "industry", "sector_turnover"),
+    ("limit_up", "concept", "concepts"),
+])
+def test_market_level_kaipanla_is_not_scanned_for_stock_dimensions(tmp_path, monkeypatch, dataset, kind, field):
+    from app.services.kaipanla_catalog import presets
+
+    market = next(config for config in presets() if config.id == f"ext_kpl_{dataset}")
+    stock = ExtConfig(
+        id="stock_dimensions", label="个股归属", mode="snapshot",
+        fields=[ExtField(kind, "string", "所属行业" if kind == "industry" else "所属概念")],
+    )
+    store = ExtConfigStore(tmp_path)
+    store.upsert(market)
+    store.upsert(stock)
+    rows_to_parquet(
+        [{"StockID": "600000", field: "100" if field == "sector_turnover" else "银行", "date": "2026-09-30"}],
+        market, tmp_path, date(2026, 9, 30), replace=True,
+    )
+    pl.DataFrame({"symbol": ["600000.SH"], kind: ["银行"]}).write_parquet(
+        tmp_path / "ext_data" / stock.id / "part.parquet",
+    )
+    calls = []
+    original = rps_rotation._read_ext_rows
+
+    def record_read(data_dir, config, dimension):
+        calls.append(config.id)
+        return original(data_dir, config, dimension)
+
+    monkeypatch.setattr(rps_rotation, "_read_ext_rows", record_read)
+    frame, count = rps_rotation._load_concept_map_df(_fake_repo(tmp_path), kind)
+    assert calls == [stock.id]
+    assert count == 1
+    assert set(frame.iter_rows()) == {("600000.SH", "银行"), ("600000", "银行")}
