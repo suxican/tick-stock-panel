@@ -15,7 +15,7 @@ const calls = vi.hoisted(() => ({
   marketSnapshotForSymbols: vi.fn(),
 }))
 vi.mock('@/lib/api', () => ({ api: calls }))
-vi.mock('@/components/StockPreviewDialog', () => ({ StockPreviewDialog: ({ symbol, onClose }: { symbol: string | null; onClose: () => void }) => symbol ? <div role="dialog" data-symbol={symbol}><button onClick={onClose}>关闭股票</button></div> : null }))
+vi.mock('@/components/StockPreviewDialog', () => ({ StockPreviewDialog: ({ symbol, onClose, navList }: { symbol: string | null; onClose: () => void; navList?: { symbol: string }[] }) => symbol ? <div role="dialog" data-symbol={symbol} data-nav-symbols={navList?.map(row => row.symbol).join(',')}><button onClick={onClose}>关闭股票</button></div> : null }))
 
 function config(): HuichunConfig {
   return { schema_version: 1, revision: 1, updated_at: '2026-09-30T17:00:00+08:00',
@@ -72,6 +72,14 @@ async function render(tab = 'candidates') {
 }
 function button(label: string) { return [...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent?.trim() === label)! }
 async function click(label: string) { expect(button(label)).toBeDefined(); await act(async () => button(label).click()); await settle() }
+function candidateRows() { return [...host.querySelectorAll<HTMLTableRowElement>('table[aria-label="回春候选股票"] tbody tr')] }
+function displayedSymbols() { return candidateRows().map(row => row.textContent!.match(/[0-9]{6}\.(?:SH|SZ|BJ)/)![0]) }
+async function sortBy(label: string) {
+  const header = host.querySelector<HTMLButtonElement>(`button[aria-label="按${label}排序"]`)
+  expect(header, `缺少${label}排序按钮`).not.toBeNull()
+  await act(async () => header!.click())
+  await settle()
+}
 async function input(label: string, value: string) {
   const element = [...host.querySelectorAll('label')].find(item => item.textContent?.includes(label))!.querySelector('input')!
   await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(element, value); element.dispatchEvent(new Event('input', { bubbles: true })) })
@@ -188,6 +196,12 @@ it('shows shared board tags and latest quotes separately from signal prices', as
   expect(rows[0].textContent).toContain('-9.92%')
   expect(rows[0].textContent).toContain('10.00')
   expect(rows[0].querySelectorAll('.text-bear')).toHaveLength(2)
+  const stockCell = rows[0].querySelectorAll('td')[1]
+  expect(stockCell.textContent!.indexOf('凌玮科技')).toBeLessThan(stockCell.textContent!.indexOf('301373.SZ'))
+  const nameLine = stockCell.querySelector('button')!.parentElement!
+  expect(nameLine.textContent).toContain('创')
+  expect(nameLine.textContent).not.toContain('301373.SZ')
+  expect(nameLine.nextElementSibling?.textContent).toBe('301373.SZ')
   expect(rows[1].textContent).toContain('科')
   expect(rows[1].textContent).toContain('31.58')
   expect(rows[1].textContent).toContain('+2.66%')
@@ -230,4 +244,100 @@ it('only requests the current page symbols and does not reuse the previous page 
   expect(calls.marketSnapshotForSymbols).toHaveBeenLastCalledWith(['600050.SH'])
   expect(host.textContent).not.toContain('999.00')
   expect(host.querySelectorAll('tbody tr')).toHaveLength(1)
+})
+
+it('sorts names, codes, dates and numeric signal fields in three states without changing source rows', async () => {
+  const state = snapshot()
+  const symbols = ['600003.SH', '600001.SH', '600002.SH']
+  state.scan!.candidates = [10, 2, 4].map((value, i) => ({
+    ...state.scan!.candidates[0], id: `candidate${i}`, symbol: symbols[i],
+    name: ['Z股票', 'A股票', 'M股票'][i], signal_date: ['2026-09-30', '2026-09-28', '2026-09-29'][i],
+    rally_return: value / 100, zero_distance: value / 100, close_above_ma_pct: value / 100,
+    ma_slope_pct: value / 100, raw_close: value,
+  }))
+  calls.huichunSnapshot.mockResolvedValue(state)
+  await render()
+  for (const field of ['名称', '代码', '信号日期', '前段涨幅', '零轴距离', '高于均线', '均线涨幅', '信号收盘（元）']) {
+    await sortBy(field)
+    expect(displayedSymbols()).toEqual([symbols[1], symbols[2], symbols[0]])
+    await sortBy(field)
+    expect(displayedSymbols()).toEqual([symbols[0], symbols[2], symbols[1]])
+    await sortBy(field)
+    expect(displayedSymbols()).toEqual(symbols)
+  }
+  expect(state.scan!.candidates.map(row => row.symbol)).toEqual(symbols)
+  expect(calls.huichunScan).not.toHaveBeenCalled()
+})
+
+it('sorts all candidates before pagination and returns to page one when changing the sort', async () => {
+  const state = snapshot()
+  state.scan!.candidates = Array.from({ length: 51 }, (_, i) => ({
+    ...state.scan!.candidates[0], id: `candidate${i}`, symbol: `${600000 + i}.SH`,
+    raw_close: i === 50 ? 2 : 20 + i,
+  }))
+  calls.huichunSnapshot.mockResolvedValue(state)
+  await render()
+  await click('下一页')
+  expect(displayedSymbols()).toEqual(['600050.SH'])
+  await sortBy('信号收盘（元）')
+  expect(displayedSymbols()).toHaveLength(50)
+  expect(displayedSymbols().slice(0, 3)).toEqual(['600050.SH', '600000.SH', '600001.SH'])
+  expect(button('上一页').disabled).toBe(true)
+})
+
+it('uses displayed raw prices and decimal changes for sorting and keeps missing quotes last', async () => {
+  const state = snapshot()
+  const symbols = ['600000.SH', '600001.SH', '600002.SH', '600003.SH']
+  state.scan!.candidates = symbols.map((symbol, i) => ({ ...state.scan!.candidates[0], id: `candidate${i}`, symbol, name: `股票${i}` }))
+  calls.huichunSnapshot.mockResolvedValue(state)
+  calls.marketSnapshotForSymbols.mockResolvedValue({ as_of: '2026-10-09', rows: [
+    { symbol: symbols[1], raw_close: 10, close: 1, change_pct: .025 },
+    { symbol: symbols[2], raw_close: 2, close: 99, change_pct: -.0992 },
+    { symbol: symbols[3], raw_close: 4, change_pct: 0 },
+  ] })
+  await render()
+  await sortBy('现价')
+  expect(displayedSymbols()).toEqual([symbols[2], symbols[3], symbols[1], symbols[0]])
+  await sortBy('现价')
+  expect(displayedSymbols()).toEqual([symbols[1], symbols[3], symbols[2], symbols[0]])
+  await sortBy('涨跌幅')
+  expect(displayedSymbols()).toEqual([symbols[2], symbols[3], symbols[1], symbols[0]])
+  await sortBy('涨跌幅')
+  expect(displayedSymbols()).toEqual([symbols[1], symbols[3], symbols[2], symbols[0]])
+  await click('股票1')
+  expect(host.querySelector('[role="dialog"]')?.getAttribute('data-nav-symbols')).toBe([symbols[1], symbols[3], symbols[2], symbols[0]].join(','))
+})
+
+it('loads every candidate quote in bounded batches and keeps the query stable during sorting and pagination', async () => {
+  const state = snapshot()
+  const symbols = Array.from({ length: 101 }, (_, i) => `${600000 + i}.SH`)
+  state.scan!.candidates = symbols.map((symbol, i) => ({ ...state.scan!.candidates[0], id: `candidate${i}`, symbol }))
+  calls.huichunSnapshot.mockResolvedValue(state)
+  let refreshed = false
+  calls.marketSnapshotForSymbols.mockImplementation(async (requested: string[]) => ({ as_of: '2026-10-09', rows: requested.map(symbol => ({
+    symbol, raw_close: refreshed && symbol === '600050.SH' ? 0.5 : 101 - symbols.indexOf(symbol), change_pct: 0,
+  })) }))
+  await render()
+  expect(calls.marketSnapshotForSymbols.mock.calls[0][0]).toHaveLength(50)
+  calls.marketSnapshotForSymbols.mockClear()
+  await sortBy('现价')
+  expect(calls.marketSnapshotForSymbols.mock.calls.map(call => call[0].length)).toEqual([100, 1])
+  expect(displayedSymbols()[0]).toBe('600100.SH')
+  await click('下一页')
+  expect(calls.marketSnapshotForSymbols).toHaveBeenCalledTimes(2)
+  await click('上一页')
+  await sortBy('现价')
+  expect(displayedSymbols()[0]).toBe('600000.SH')
+  expect(calls.marketSnapshotForSymbols).toHaveBeenCalledTimes(2)
+  refreshed = true
+  const snapshotCalls = calls.huichunSnapshot.mock.calls.length
+  await act(async () => { await client.invalidateQueries({ queryKey: QK.marketSnapshot }) })
+  await settle()
+  expect(calls.marketSnapshotForSymbols.mock.calls.map(call => call[0].length)).toEqual([100, 1, 100, 1])
+  expect(calls.huichunSnapshot).toHaveBeenCalledTimes(snapshotCalls)
+  expect(calls.huichunScan).not.toHaveBeenCalled()
+  await click('下一页')
+  await click('下一页')
+  expect(displayedSymbols()).toEqual(['600050.SH'])
+  expect(calls.marketSnapshotForSymbols).toHaveBeenCalledTimes(4)
 })

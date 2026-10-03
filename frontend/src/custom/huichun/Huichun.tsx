@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
-import { Check, RefreshCw, Search } from 'lucide-react'
+import { ArrowDown, ArrowUp, ArrowUpDown, Check, RefreshCw, Search } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { boardTag } from '@/components/stock-table/primitives'
-import { api, type HuichunReturn, type HuichunSnapshot } from '@/lib/api'
+import { useTableSort, type SortState } from '@/components/stock-table/useTableSort'
+import { api, type HuichunCandidate, type HuichunReturn, type HuichunSnapshot, type MarketSnapshotRow } from '@/lib/api'
+import type { ColumnConfig } from '@/lib/list-columns'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
 import { fmtPrice, fmtPct, priceColorClass } from '@/lib/format'
@@ -15,6 +17,30 @@ import { buttonClass, ErrorNotice, inputClass, LoadingRows, Notice, Pagination, 
 const tabs = [{ id: 'candidates', label: '候选筛选' }, { id: 'tracking', label: '收益跟踪' }, { id: 'rules', label: '规则设置' }] as const
 type Tab = typeof tabs[number]['id']
 const PAGE_SIZE = 50
+type CandidateRow = HuichunCandidate & { latest_price?: number | null; change_pct?: number | null }
+const candidateColumns: ColumnConfig[] = [
+  ['name', '名称'], ['symbol', '代码'], ['latest_price', '现价'], ['change_pct', '涨跌幅'],
+  ['signal_date', '信号日期'], ['rally_return', '前段涨幅'], ['zero_distance', '零轴距离'],
+  ['close_above_ma_pct', '高于均线'], ['ma_slope_pct', '均线涨幅'], ['raw_close', '信号收盘（元）'],
+].map(([id, label]) => ({ id, label, source: { type: 'builtin', key: id }, visible: true }))
+
+function candidateSortValue(row: CandidateRow, column: ColumnConfig) {
+  const value = row[column.id as keyof CandidateRow]
+  return typeof value === 'number' ? Number.isFinite(value) ? value : null : value ?? null
+}
+function latestPrice(quote: MarketSnapshotRow | undefined) {
+  const value = quote?.raw_close ?? quote?.close
+  return value != null && Number.isFinite(value) && value > 0 ? value : null
+}
+function latestChange(quote: MarketSnapshotRow | undefined) {
+  const value = quote?.change_pct
+  return value != null && Number.isFinite(value) ? value : null
+}
+function SortButton({ column, sort, onSort }: { column: ColumnConfig; sort: SortState | null; onSort: (key: string) => void }) {
+  const active = sort?.key === column.id
+  const Icon = active ? sort.dir === 'asc' ? ArrowUp : ArrowDown : ArrowUpDown
+  return <button type="button" aria-label={`按${column.label}排序`} title={active ? sort.dir === 'asc' ? '当前升序，点击降序' : '当前降序，点击恢复默认顺序' : '点击升序排列'} className={cn('inline-flex min-h-9 items-center gap-1 whitespace-nowrap rounded hover:text-foreground focus-visible:outline focus-visible:outline-accent', active && 'text-accent')} onClick={() => onSort(column.id)}>{column.label}<Icon className="h-3 w-3" aria-hidden="true" /></button>
+}
 const returnLabels: Record<HuichunReturn['status'], string> = { ok: '已计算', pending: '未到期', unknown_gap: '数据缺失', invalid_factor: '复权异常', baseline_changed: '基准已变化' }
 const returnDescriptions: Record<HuichunReturn['status'], string> = {
   ok: '目标交易日复权收盘价相对信号日的涨跌幅', pending: '尚未取得目标交易日的完整收盘数据',
@@ -49,6 +75,7 @@ export function Huichun() {
   const [selected, setSelected] = useState<string[]>([])
   const [page, setPage] = useState(0)
   const [trackingPage, setTrackingPage] = useState(0)
+  const { sort, toggle: toggleSort, sortRows } = useTableSort<CandidateRow>(candidateSortValue)
   const [stock, setStock] = useState<{ symbol: string; name: string } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const finishedTrackingJob = useRef<string | null>(null)
@@ -64,16 +91,33 @@ export function Huichun() {
   const tracked = useMemo(() => new Set(records.map(row => `${row.symbol}|${row.signal_date}|${row.rule_revision}`)), [records])
   const candidatePage = Math.min(page, Math.max(0, Math.ceil(candidates.length / PAGE_SIZE) - 1))
   const trackPage = Math.min(trackingPage, Math.max(0, Math.ceil(records.length / PAGE_SIZE) - 1))
-  const visibleCandidates = candidates.slice(candidatePage * PAGE_SIZE, (candidatePage + 1) * PAGE_SIZE)
-  const quoteSymbolsKey = [...new Set(visibleCandidates.map(row => row.symbol))].sort().join(',')
+  const quoteSort = sort?.key === 'latest_price' || sort?.key === 'change_pct'
+  const orderedCandidates = useMemo(() => quoteSort ? candidates : sortRows(candidates, candidateColumns), [candidates, quoteSort, sortRows])
+  // 报价排序的请求集合固定为全体候选，避免排名和翻页改变请求集合形成循环。
+  const quoteCandidates = quoteSort ? candidates : orderedCandidates.slice(candidatePage * PAGE_SIZE, (candidatePage + 1) * PAGE_SIZE)
+  const quoteSymbolsKey = [...new Set(quoteCandidates.map(row => row.symbol))].sort().join(',')
   const quotes = useQuery({
     queryKey: QK.marketSnapshotForSymbols(quoteSymbolsKey),
-    queryFn: () => api.marketSnapshotForSymbols(quoteSymbolsKey.split(',')),
+    queryFn: async ({ signal }) => {
+      const symbols = quoteSymbolsKey.split(',')
+      const batches: Awaited<ReturnType<typeof api.marketSnapshotForSymbols>>[] = []
+      // 全部分批请求成功后才发布，避免只按部分报价重排候选。
+      for (let offset = 0; offset < symbols.length; offset += 100) {
+        signal.throwIfAborted()
+        batches.push(await api.marketSnapshotForSymbols(symbols.slice(offset, offset + 100)))
+      }
+      return { as_of: batches.every(batch => batch.as_of === batches[0].as_of) ? batches[0].as_of : null, rows: batches.flatMap(batch => batch.rows) }
+    },
     enabled: tab === 'candidates' && !!quoteSymbolsKey,
+    placeholderData: quoteSort ? previous => previous : undefined,
   })
   const quotesBySymbol = useMemo(() => new Map(quotes.data?.rows.map(row => [row.symbol, row]) ?? []), [quotes.data])
+  const sortedCandidates = useMemo(() => quoteSort && quotes.data && !quotes.isPlaceholderData
+    ? sortRows(candidates.map(row => ({ ...row, latest_price: latestPrice(quotesBySymbol.get(row.symbol)), change_pct: latestChange(quotesBySymbol.get(row.symbol)) })), candidateColumns)
+    : orderedCandidates, [candidates, orderedCandidates, quoteSort, quotes.data, quotes.isPlaceholderData, quotesBySymbol, sortRows])
+  const visibleCandidates = sortedCandidates.slice(candidatePage * PAGE_SIZE, (candidatePage + 1) * PAGE_SIZE)
   const availableIds = visibleCandidates.filter(row => !tracked.has(`${row.symbol}|${row.signal_date}|${row.rule_revision}`)).map(row => row.id)
-  const navList = useMemo(() => [...new Map((tab === 'tracking' ? records : candidates).map(row => [row.symbol, { symbol: row.symbol, name: row.name }])).values()], [tab, records, candidates])
+  const navList = useMemo(() => [...new Map((tab === 'tracking' ? records : sortedCandidates).map(row => [row.symbol, { symbol: row.symbol, name: row.name }])).values()], [tab, records, sortedCandidates])
   const actionsUnavailable = busy || snapshot.isError || !snapshot.data
   const canAdd = !actionsUnavailable && !tracking.isError && !!tracking.data && !addTracking.isPending
 
@@ -101,6 +145,8 @@ export function Huichun() {
     setDateError(null)
     scan.mutate(dateMode === 'latest' ? {} : { start_date: startDate, end_date: endDate })
   }
+  function sortCandidates(key: string) { toggleSort(key); setPage(0) }
+  function sortDirection(keys: string[]) { return sort && keys.includes(sort.key) ? sort.dir === 'asc' ? 'ascending' : 'descending' : 'none' }
   const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date())
   return <div className="flex h-full min-h-0 flex-col">
     <PageHeader title="回春模式" className="flex-wrap pl-14 lg:pl-5" titleExtra={<span className="rounded bg-elevated px-2 py-1 text-xs text-secondary">A0 日线</span>} right={<span className="text-xs text-secondary">{config.data ? `已保存规则 · 版本 ${config.data.revision}` : '读取规则中'}</span>} />
@@ -129,13 +175,13 @@ export function Huichun() {
               {candidates.length > 0 && <div className="mt-3 space-y-2"><p className="text-xs text-secondary">行情日期：{quotes.data?.as_of ?? (quotes.isFetching ? '读取中' : '暂无行情')} · 现价与涨跌幅为最新行情，信号收盘为历史基准。</p><ErrorNotice error={quotes.error} retry={() => void quotes.refetch()} /></div>}
               {scanResult.coverage.universe !== 'sh_sz_a_shares' && <p className="mt-3 text-xs text-secondary">本次结果为主板范围；重新筛选后纳入创业板和科创板。</p>}
               <p className="mt-3 text-xs text-secondary">{scanResult.coverage.st_filter === 'current_instrument_name' ? `已按当前名称排除 ST、*ST：${scanResult.coverage.st_excluded_count ?? '—'} 只` : '本次结果尚未排除 ST、*ST，请重新筛选。'}</p>
-              {candidates.length === 0 ? <p className="py-8 text-sm text-secondary">该日期范围内暂无符合当前规则的候选。可调整日期或规则后重新筛选。</p> : <div className="mt-3 overflow-x-auto"><table className="w-full min-w-[1280px] text-left text-xs" aria-label="回春候选股票"><thead className="text-secondary"><tr><th className="px-2 py-3"><input type="checkbox" aria-label="选择本页可跟踪候选" checked={availableIds.length > 0 && availableIds.every(id => selected.includes(id))} disabled={!canAdd || availableIds.length === 0} onChange={event => setSelected(previous => event.target.checked ? [...new Set([...previous, ...availableIds])] : previous.filter(id => !availableIds.includes(id)))} /></th>{['代码/名称', '现价', '涨跌幅', '信号日期', '前段涨幅', '零轴距离', '高于均线', '均线涨幅', '信号收盘（元）', '操作'].map(label => <th key={label} className={cn('whitespace-nowrap px-3 py-3 font-normal', ['现价', '涨跌幅'].includes(label) && 'text-right')}>{label}</th>)}</tr></thead><tbody>{visibleCandidates.map(row => {
+              {quoteSort && (quotes.isPending || quotes.isPlaceholderData) && <p role="status" className="mt-2 text-xs text-secondary">正在读取全部候选行情，完成后排序。</p>}
+              {candidates.length === 0 ? <p className="py-8 text-sm text-secondary">该日期范围内暂无符合当前规则的候选。可调整日期或规则后重新筛选。</p> : <div className="mt-3 overflow-x-auto"><table className="w-full min-w-[1280px] text-left text-xs" aria-label="回春候选股票"><thead className="text-secondary"><tr><th className="px-2 py-3"><input type="checkbox" aria-label="选择本页可跟踪候选" checked={availableIds.length > 0 && availableIds.every(id => selected.includes(id))} disabled={!canAdd || availableIds.length === 0} onChange={event => setSelected(previous => event.target.checked ? [...new Set([...previous, ...availableIds])] : previous.filter(id => !availableIds.includes(id)))} /></th><th className="whitespace-nowrap px-3 py-1.5 font-normal" aria-sort={sortDirection(['name', 'symbol'])}><SortButton column={candidateColumns[0]} sort={sort} onSort={sortCandidates} /><span className="mx-1">/</span><SortButton column={candidateColumns[1]} sort={sort} onSort={sortCandidates} /></th>{candidateColumns.slice(2).map(column => <th key={column.id} aria-sort={sortDirection([column.id])} className={cn('whitespace-nowrap px-3 py-1.5 font-normal', ['latest_price', 'change_pct'].includes(column.id) && 'text-right')}><SortButton column={column} sort={sort} onSort={sortCandidates} /></th>)}<th className="px-3 py-3 font-normal">操作</th></tr></thead><tbody>{visibleCandidates.map(row => {
                 const added = tracked.has(`${row.symbol}|${row.signal_date}|${row.rule_revision}`)
                 const board = boardTag(row.symbol)
                 const quote = quotesBySymbol.get(row.symbol)
-                const latest = quote?.raw_close ?? quote?.close
-                const currentPrice = latest != null && Number.isFinite(latest) && latest > 0 ? latest : null
-                const currentChange = quote?.change_pct != null && Number.isFinite(quote.change_pct) ? quote.change_pct : null
+                const currentPrice = latestPrice(quote)
+                const currentChange = latestChange(quote)
                 return <tr key={row.id} className="border-t border-border">
                   <td className="px-2 py-3"><input type="checkbox" aria-label={`选择 ${row.name} ${row.signal_date}`} checked={selected.includes(row.id)} disabled={!canAdd || added} onChange={event => setSelected(previous => event.target.checked ? [...previous, row.id] : previous.filter(id => id !== row.id))} /></td>
                   <td className="px-3 py-3"><div className="flex items-center gap-2 whitespace-nowrap"><button className="font-medium hover:underline focus-visible:outline focus-visible:outline-accent" onClick={() => setStock({ symbol: row.symbol, name: row.name })}>{row.name}</button>{board && <span className={cn('rounded border px-1 py-px text-[10px] font-medium', board.color)} title={board.label === '创' ? '创业板' : '科创板'}>{board.label}</span>}</div><span className="mt-1 block whitespace-nowrap font-mono tabular-nums text-secondary">{row.symbol}</span></td>
