@@ -775,6 +775,77 @@ export interface AiReviewReport {
   created_at: string
 }
 
+// ===== 超短线博弈：比例一律小数制，报告按生成时点冻结 =====
+export interface MarketGameRisk {
+  total_cap: number
+  single_cap: number
+  sector_cap: number
+  risk_per_trade: number
+  min_amount: number
+  max_candidates: number
+}
+
+export interface MarketGameSummary {
+  id: string
+  as_of: string
+  created_at: string
+  summary: string
+  quality: 'ready' | 'limited' | 'unavailable'
+  research_only: boolean
+}
+
+export interface MarketGameCandidate {
+  symbol: string
+  name: string
+  sector: string
+  mode: string
+  role: string
+  reference_price: number | null
+  trigger_low: number | null
+  trigger_high: number | null
+  invalidation_price: number | null
+  max_position: number
+  stress_loss_pct: number | null
+  holding_days: number
+  evidence: string[]
+  trigger: string[]
+  invalidation: string[]
+  exit_rules: string[]
+}
+
+export interface MarketGameReport extends MarketGameSummary {
+  cutoff: string
+  input_version: string
+  rule_version: string
+  market_state: { trend: string; phase: string; emotion: string; crowding: string; change: string }
+  allocation: {
+    min: number; max: number; total_cap: number; single_cap: number; sector_cap: number
+    risk_per_trade: number; reason: string
+  }
+  hypotheses: {
+    id: string; title: string; status: 'matched' | 'watch' | 'inactive'; facts: string[]
+    interpretation: string; alternative: string; confirm: string[]; invalidation: string[]
+  }[]
+  scenarios: { horizon: number; label: string; scenario: string; condition: string; action: string; max_position: number }[]
+  sectors: { name: string; avg_return: number | null; breadth: number | null; status: string; reason: string }[]
+  candidates: MarketGameCandidate[]
+  evidence: { id: string; label: string; value: number | null; unit: string; source: string; observed_at: string; available_at: string | null }[]
+  limitations: string[]
+}
+
+export interface MarketGameEvaluation {
+  report_id: string
+  as_of: string
+  evaluated_at: string
+  status: 'pending' | 'partial' | 'complete' | 'unavailable'
+  kind: 'observation_only'
+  rows: {
+    symbol: string; name: string; horizon: number; label: string; trade_date: string | null
+    close_return: number | null; state: 'pending' | 'available' | 'missing' | 'unavailable'
+  }[]
+  limitations: string[]
+}
+
 // ===== 龙虎榜 (fuyao 专有, 复盘页) =====
 export interface DragonTigerStockItem {
   thscode: string
@@ -3673,6 +3744,18 @@ export const api = {
       try { yield JSON.parse(buf.trim()) } catch { /* ignore */ }
     }
   },
+
+  // ===== 超短线博弈 =====
+  marketGameAnalyze: (body: { as_of?: string; risk?: MarketGameRisk }) =>
+    request<MarketGameReport>('/api/market-game/analyze', {
+      method: 'POST', body: JSON.stringify(body), quiet: true, timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
+    }),
+  marketGameReports: () => request<{ reports: MarketGameSummary[] }>('/api/market-game/reports', { quiet: true }),
+  marketGameReport: (id: string) => request<MarketGameReport>(`/api/market-game/reports/${encodeURIComponent(id)}`, { quiet: true }),
+  marketGameExplain: (id: string) => request<{ content: string }>(`/api/market-game/reports/${encodeURIComponent(id)}/explain`, {
+    method: 'POST', quiet: true, timeoutMs: 660_000,
+  }),
+  marketGameEvaluation: (id: string) => request<MarketGameEvaluation>(`/api/market-game/reports/${encodeURIComponent(id)}/evaluation`, { quiet: true }),
 
   // ===== 大盘复盘 =====
   reviewReportsList: () =>

@@ -32,6 +32,7 @@ frontend/dist/
 frontend/.vite/
 backend/static/
 backend/app/static/
+backend/tests/
 
 # ===== IDE =====
 .idea/
@@ -84,6 +85,7 @@ CLAUDE.md
 
 # ===== 私人脚本(不开源) =====
 docs/zhihu/
+docs/策略/
 
 # ===== 用户自定义策略(私有,不开源) =====
 data/strategies/custom/

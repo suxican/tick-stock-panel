@@ -135,6 +135,11 @@ export const QK = {
 
   // AI 大盘复盘
   reviewReports:        ['review-reports'] as const,
+  // 冻结报告按唯一 ID 隔离，行情 SSE 不改写历史决策。
+  marketGameReports:    ['market-game-reports'] as const,
+  marketGameReport:     (id: string) => ['market-game-report', id] as const,
+  marketGameExplanation: (id: string) => ['market-game-explanation', id] as const,
+  marketGameEvaluation: (id: string) => ['market-game-evaluation', id] as const,
   kaipanlaContext:      (date?: string) => ['kaipanla-context', date ?? 'latest'] as const,
   kaipanlaMarketEmotion: (date?: string) => ['kaipanla-market-emotion', date ?? 'latest'] as const,
   kaipanlaStocks:       (kind: 'limit_up' | 'broken_limits', date: string) => ['kaipanla-stocks', kind, date] as const,
