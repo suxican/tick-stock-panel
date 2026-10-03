@@ -2235,6 +2235,24 @@ export interface SectorRotationUniverseItem {
 
 // ===== API surface =====
 export const api = {
+  firstBoardConfig: () => request<FirstBoardConfig>('/api/first-board/config'),
+  firstBoardSaveConfig: (body: FirstBoardConfig) => request<FirstBoardConfig>('/api/first-board/config', {
+    method: 'PUT', body: JSON.stringify(body), quiet: true,
+  }),
+  firstBoardSnapshot: () => request<FirstBoardSnapshot>('/api/first-board/snapshot', { quiet: true }),
+  firstBoardRefresh: () => request<FirstBoardSnapshot>('/api/first-board/refresh', { method: 'POST', quiet: true }),
+  firstBoardEvents: (day?: string) => request<{ events: FirstBoardEvent[]; day: string; total: number }>(
+    `/api/first-board/events${day ? `?day=${encodeURIComponent(day)}` : ''}`, { quiet: true }),
+  firstBoardVersions: () => request<{ versions: FirstBoardConfig[] }>('/api/first-board/versions'),
+  firstBoardResearch: (body: FirstBoardResearchRequest) => request<FirstBoardResearch>('/api/first-board/research', {
+    method: 'POST', body: JSON.stringify(body), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, quiet: true,
+  }),
+  firstBoardCompare: (body: FirstBoardResearchRequest) => request<FirstBoardComparison>('/api/first-board/compare', {
+    method: 'POST', body: JSON.stringify(body), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, quiet: true,
+  }),
+  firstBoardResearchRuns: () => request<{ runs: FirstBoardResearchRun[] }>('/api/first-board/research-runs'),
+  firstBoardPaperOrder: (body: { event_id: string; side: 'buy' | 'sell'; amount?: number; qty?: number }) =>
+    request<{ order: PaperOrder }>('/api/first-board/paper-order', { method: 'POST', body: JSON.stringify(body), quiet: true }),
   health: () => request<{ status: string; version: string; mode: string }>('/health'),
 
   // ===== Auth (访问认证) =====
@@ -4393,4 +4411,179 @@ export interface AnalysisMenu {
   created_at?: string | null
   updated_at?: string | null
   builtin?: boolean
+}
+
+// ===== 首板实验工作台 =====
+export type FirstBoardPattern = 'platform' | 'trend' | 'oversold'
+export type FirstBoardState = 'watch' | 'approaching' | 'sealed' | 'broken' | 'invalid'
+export interface FirstBoardRules {
+  universe: 'main_board_non_st'
+  lookback_days: number
+  enabled_patterns: FirstBoardPattern[]
+  min_history_days: number
+  platform_window: number
+  platform_max_range: number
+  platform_near_high: number
+  trend_window: number
+  trend_min_return: number
+  trend_max_return: number
+  oversold_window: number
+  oversold_min_drawdown: number
+  approaching_distance: number
+  min_change_pct: number
+  /** enriched 百分数值: 2 表示 2%, 与 change_pct 的小数制不同。 */
+  min_turnover_rate: number
+  max_turnover_rate: number
+  min_amount: number
+}
+export interface FirstBoardConfig {
+  schema_version: 1
+  revision: number
+  updated_at: string | null
+  enabled: boolean
+  notify: boolean
+  require_sector_confirmation: boolean
+  rules: FirstBoardRules
+  allowed_market_states: string[]
+  max_quote_age_seconds: number
+  paper_account_id: string | null
+  max_positions: number
+  max_stock_weight: number
+  max_sector_weight: number
+  total_exposure: number
+  exit_time: string
+  exit_loss_pct: number
+}
+export interface FirstBoardCandidate {
+  symbol: string
+  name: string
+  pattern: FirstBoardPattern
+  pattern_label: string
+  reference_price: number | null
+  breakout_price: number | null
+  state: FirstBoardState
+  price: number | null
+  change_pct: number | null
+  distance_to_limit_pct: number | null
+  turnover_rate: number | null
+  reasons: string[]
+  evidence: Record<string, unknown>
+  can_buy: boolean
+  blocked_reasons: string[]
+  quote_time: string | null
+  sector: string | null
+  sector_confirmation?: { reason?: string; confirmed?: boolean }
+  suggested_amount: number | null
+  event_id?: string | null
+}
+export interface FirstBoardSnapshot {
+  status: 'disabled' | 'waiting' | 'ready' | 'stale' | 'closed' | 'error'
+  message: string
+  as_of: string | null
+  observed_at: string | null
+  revision: number
+  rows: FirstBoardCandidate[]
+  environment: { date?: string | null; state?: string | null; label?: string; allowed: boolean; reason?: string }
+  coverage: { candidate_count: number; symbol_count: number; quote_count: number; fresh_count: number }
+  limitations: string[]
+  paper: { initialized: boolean; account_id?: string; holdings?: PaperHolding[]; stats?: { rounds: number; win_rate: number | null; realized_pnl?: number | null; profit_loss_ratio?: number | null; avg_holding_days?: number | null }; note?: string }
+}
+export interface FirstBoardEvent {
+  id: string
+  ts: string | number
+  date: string
+  symbol: string
+  name: string
+  pattern: FirstBoardPattern | 'exit'
+  pattern_label: string
+  state: FirstBoardState | 'exit_candidate'
+  event_type: string
+  message: string
+  price: number | null
+  revision: number
+  evidence: Record<string, unknown>
+  blocked_reasons: string[]
+  quote_time: string | null
+}
+export interface FirstBoardResearchRequest { start: string; end: string; rules?: FirstBoardRules }
+export interface FirstBoardSummary {
+  candidates: number
+  unique_stock_days: number
+  touched: number
+  touch_observed: number
+  touch_rate: number | null
+  sealed: number
+  seal_observed: number
+  seal_rate: number | null
+  next_open_count: number
+  next_open_mean: number | null
+  next_close_count: number
+  next_close_mean: number | null
+  next_positive_rate: number | null
+}
+export interface FirstBoardCoverage {
+  sessions: string[]
+  session_count: number
+  candidate_sessions: number
+  missing_days: string[]
+  missing_outcomes: number
+  missing_observations: number
+  history_gap_samples: number
+  history_sessions_before_start: number
+  history_sufficient: boolean
+}
+export interface FirstBoardSample {
+  date: string
+  symbol: string
+  name: string
+  pattern: FirstBoardPattern
+  pattern_label: string
+  state: FirstBoardState
+  reference_date: string
+  observed_close: number | null
+  limit_up: number | null
+  touched: boolean | null
+  sealed: boolean | null
+  next_session: string | null
+  next_open_return: number | null
+  next_close_return: number | null
+  gap_reasons: string[]
+  reasons: string[]
+  evidence: Record<string, unknown>
+}
+export interface FirstBoardResearch {
+  schema_version: number
+  mode: 'daily_observation'
+  methodology: string
+  rules: FirstBoardRules
+  data_window: Record<string, unknown>
+  coverage: FirstBoardCoverage
+  summary: FirstBoardSummary
+  by_pattern: Record<string, FirstBoardSummary>
+  samples: FirstBoardSample[]
+  total_samples: number
+  samples_truncated: boolean
+  limitations: string[]
+}
+export interface FirstBoardComparison {
+  schema_version: number
+  mode: 'daily_observation'
+  methodology: string
+  experiment_id: string
+  data_window: Record<string, unknown>
+  train: { sessions: string[]; session_count: number }
+  validation: { sessions: string[]; session_count: number }
+  variants: { id: string; label: string; rules: FirstBoardRules; train: FirstBoardSummary; validation: FirstBoardSummary; train_coverage: Partial<FirstBoardCoverage>; validation_coverage: Partial<FirstBoardCoverage> }[]
+  training_selected_id: string | null
+  recommendation: { variant_id: string; rules: FirstBoardRules; action: 'review_only'; scope: 'daily_observation'; reason: string } | null
+  recommendation_reason: string
+  auto_applied: false
+  minimum_samples: { train: number; validation: number }
+  limitations: string[]
+}
+export interface FirstBoardResearchRun {
+  id: string
+  created_at: string
+  kind: 'research' | 'compare'
+  result: FirstBoardResearch | FirstBoardComparison
 }

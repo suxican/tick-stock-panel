@@ -351,6 +351,26 @@ async def _application_lifespan(app: FastAPI):
     app.state.monitor_engine = monitor_engine
     app.state.sector_monitor_service = sector_monitor_service
 
+    # 首板领域工作线程复用现有历史加载器和通知出口, 不在行情回调中扫描历史。
+    first_board_service = None
+    app.state.first_board_service = None
+    try:
+        from app.services.first_board import FirstBoardService
+
+        first_board_service = FirstBoardService(
+            repo, history_loader=_screener_svc._load_enriched_history,
+            publish=qs.publish_first_board_alerts, quote_service=qs,
+        )
+        first_board_service.start()
+        app.state.first_board_service = first_board_service
+    except Exception:
+        logger.exception("首板服务未能启动, 其他功能继续运行")
+        if first_board_service is not None:
+            try:
+                first_board_service.stop()
+            except Exception:
+                logger.exception("首板启动失败后的清理未完成")
+
     # 源码内二次开发启动钩子: 仅暴露稳定只读上下文, 单个扩展失败不影响核心启动。
     extension_registry = app.state.extension_registry
     start_backend_extensions(
@@ -362,6 +382,12 @@ async def _application_lifespan(app: FastAPI):
         yield
     finally:
         repo._on_refresh_done = None  # noqa: SLF001
+        first_board_service = getattr(app.state, "first_board_service", None)
+        if first_board_service:
+            try:
+                first_board_service.stop()
+            except Exception:
+                logger.exception("首板停止异常, 继续清理其他服务")
         wd = getattr(app.state, "watchdog", None)
         if wd:
             await wd.stop()

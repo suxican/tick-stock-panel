@@ -8,6 +8,13 @@
 // ===== Query Key 工厂 =====
 
 export const QK = {
+  // 首板工作台: 独立轮询快照, 不重复触发行情全市场计算。
+  firstBoard: ['first-board'] as const,
+  firstBoardConfig: ['first-board', 'config'] as const,
+  firstBoardSnapshot: ['first-board', 'snapshot'] as const,
+  firstBoardEvents: (day: string) => ['first-board', 'events', day] as const,
+  firstBoardVersions: ['first-board', 'versions'] as const,
+  firstBoardResearchRuns: ['first-board', 'research-runs'] as const,
   // 全局 / 共享 (Layout 预取)
   capabilities:   ['capabilities'] as const,
   settings:       ['settings'] as const,

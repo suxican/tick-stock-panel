@@ -26,6 +26,7 @@ import { usePreferences, useQuoteStatus } from '@/lib/useSharedQueries'
 const TYPE_LABEL: Record<string, string> = {
   signal: '信号', price: '价格/涨跌', market: '市场异动', strategy: '策略监控', sector: '板块监控',
   abnormal: '异动监控', volume_delta: '轮询放量', date: '日期提醒',
+  first_board: '首板模式',
 }
 
 /** 严重级别 → 左侧色条 + 图标 */
@@ -43,6 +44,7 @@ const SOURCE_BADGE_STYLE: Record<string, string> = {
   abnormal: 'bg-orange-500/10 text-orange-500 border-orange-500/20 dark:text-orange-400',
   volume_delta: 'bg-rose-500/10 text-rose-400 border-rose-500/20 dark:text-rose-300',
   date:     'bg-violet-500/10 text-violet-500 border-violet-500/20 dark:text-violet-300',
+  first_board: 'bg-accent/10 text-accent border-accent/20',
 }
 
 /**

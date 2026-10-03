@@ -45,7 +45,7 @@ SOURCE_LABELS = {
     "strategy": "策略", "signal": "信号", "price": "价格",
     "market": "异动", "ladder": "连板梯队", "sector": "板块",
     "volume_delta": "放量", "abnormal": "异动", "date": "日期提醒",
-    "paper": "模拟盘",
+    "paper": "模拟盘", "first_board": "首板模式",
 }
 
 # final 定版确认容差: 快照时间戳允许早于边界 5s 内 (供应商时间戳精度不一)
@@ -916,9 +916,40 @@ class QuoteService:
         # ---- 策略监控 + 告警评估 ----
         self._evaluate_monitors(daily_df, quote_extra)
 
+        self._offer_first_board_snapshot(daily_df)
+
     # ================================================================
     # 工具
     # ================================================================
+
+    def _offer_first_board_snapshot(self, daily_df: pl.DataFrame) -> None:
+        """仅向启用的首板工作线程提交快照, 不在行情线程扫描历史。"""
+        first_board = getattr(self._app_state, "first_board_service", None) if self._app_state else None
+        if first_board is None or daily_df.is_empty():
+            return
+        try:
+            if not first_board.enabled:
+                return
+            current, day = self.get_enriched_today()
+            if current.is_empty() or day is None:
+                return
+            # 不能把旧 enriched 与本轮行情时间戳拼接为新鲜信号。
+            if "quote_ts" not in current.columns:
+                return
+            first_board.offer_snapshot(current, day)
+        except Exception:
+            logger.exception("首板快照提交失败, 不影响行情和其他监控")
+
+    def publish_first_board_alerts(self, events: list[dict]) -> None:
+        """首板工作线程复用统一告警留痕、SSE 与系统通知, 不自动跟单。"""
+        if not events or self._repo is None:
+            return
+        from app.services import alert_store
+
+        alerts = self._format_extension_notifications(events)
+        alert_store.append_many(self._repo.store.data_dir, alerts)
+        self._broadcast_alerts(alerts)
+        self._maybe_send_system_notifications(alerts)
 
     def _collect_monitor_index_symbols(self) -> set[str]:
         """启用中的指数监控规则标的 (asset_type=index & scope=symbols)。"""
