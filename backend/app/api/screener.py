@@ -505,11 +505,32 @@ def get_cached_result(
 
 
 @router.get("/market-snapshot")
-def market_snapshot(request: Request):
-    """最新全市场轻量行情快照，供板块/概念聚合分析使用。"""
+def market_snapshot(
+    request: Request,
+    symbols: str | None = Query(None, description="可选的逗号分隔股票代码 (最多 100 只), 空值返回空列表"),
+):
+    """最新股票行情: 指定代码时仅批量读取当前缓存, 未指定时保留全市场聚合契约。"""
     import polars as pl
 
     repo = request.app.state.repo
+    if symbols is not None:
+        selected = list(dict.fromkeys(s.strip() for s in symbols.split(",") if s.strip()))
+        if len(selected) > 100:
+            raise HTTPException(status_code=422, detail="一次最多查询 100 只股票")
+        if any(re.fullmatch(r"[0-9]{6}\.(?:SH|SZ|BJ)", symbol) is None for symbol in selected):
+            raise HTTPException(status_code=422, detail="股票代码需为六位数字及 .SH、.SZ 或 .BJ 后缀")
+        if not selected:
+            return {"as_of": None, "rows": []}
+
+        # 与自选行情共用股票缓存, 不能进入 ScreenerService 的历史指标重算慢路径。
+        df, cache_date = repo.get_enriched_latest()
+        as_of = str(cache_date) if cache_date else None
+        if df.is_empty():
+            return {"as_of": as_of, "rows": []}
+        cols = ["symbol", "name", "close", "raw_close", "change_pct", "date"]
+        df = df.filter(pl.col("symbol").is_in(selected)).select([c for c in cols if c in df.columns])
+        return _safe({"as_of": as_of, "rows": df.to_dicts()})
+
     svc = ScreenerService(repo)
     as_of = svc.latest_date()
     if not as_of:

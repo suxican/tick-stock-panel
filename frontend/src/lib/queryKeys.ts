@@ -8,6 +8,11 @@
 // ===== Query Key 工厂 =====
 
 export const QK = {
+  // 回春日线筛选只轮询进行中的任务，不进入实时行情失效链。
+  huichun: ['huichun'] as const,
+  huichunConfig: ['huichun', 'config'] as const,
+  huichunSnapshot: ['huichun', 'snapshot'] as const,
+  huichunTracking: ['huichun', 'tracking'] as const,
   // 首板工作台: 独立轮询快照, 不重复触发行情全市场计算。
   firstBoard: ['first-board'] as const,
   firstBoardConfig: ['first-board', 'config'] as const,
@@ -55,6 +60,7 @@ export const QK = {
   screenerCached:       (asOf?: string, ext?: string) => ['screener-cached', 'all', asOf ?? '', ext ?? ''] as const,
   screenerKlineBatch:   (symbols: string) => ['screener-kline-batch', symbols] as const,
   marketSnapshot:       ['market-snapshot'] as const,
+  marketSnapshotForSymbols: (symbols: string) => ['market-snapshot', 'symbols', symbols] as const,
   limitLadder:          (asOf?: string) => ['limit-ladder', asOf] as const,
 
   // Backtest

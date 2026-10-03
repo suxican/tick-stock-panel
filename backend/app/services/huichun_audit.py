@@ -1,7 +1,7 @@
 """Read-only daily coverage and Huichun A0 research audit.
 
-The current repository lacks historical eligibility and a full market calendar.
-Observed market dates provide a lower bound for gaps; shape matches remain
+Historical eligibility remains incomplete. Without an independent calendar,
+observed market dates provide a lower bound for gaps. Shape matches remain
 unverified candidates, never executable orders or validated strategy returns.
 """
 
@@ -36,7 +36,10 @@ FRAME_SCHEMA = {
 }
 RAW_COLUMNS = ["symbol", "date", "open", "high", "low", "close", "volume", "amount"]
 FACTOR_SCHEMA = {"symbol": pl.String, "trade_date": pl.Date, "ex_factor": pl.Float64}
-SUSPENSION_KNOWLEDGE_RULE = "known_at < missing_date; date-only announcements usable next day"
+SUSPENSION_KNOWLEDGE_RULE = (
+    "known_at supports the complete bounded interval and must be < missing_date; "
+    "date-only announcements usable next day"
+)
 
 
 @dataclass(frozen=True)
@@ -113,10 +116,12 @@ def prepare_batch(
     raw_close * cumprod(events effective through D) removes corporate-action
     jumps without using events after D. All A0 conditions are scale invariant.
     Absence of factor events is reported; it does not certify completeness.
+    Confirmed full-day suspensions preserve the sequence of actual price bars;
+    they create no bars and do not establish historical trading eligibility.
     """
     calendar = sorted({d for d in market_dates if d <= end})
     if not calendar:
-        raise ValueError("No observed market dates in audit range")
+        raise ValueError("No market dates in audit range")
     day_index = {d: i for i, d in enumerate(calendar)}
     raw = raw.filter(pl.col("date") <= end).sort(["symbol", "date"])
     factors = factors.filter(pl.col("trade_date").is_null() | (pl.col("trade_date") <= end))
@@ -202,7 +207,7 @@ def prepare_batch(
         segment = 0
         for i, day in enumerate(dates):
             if day not in day_index:
-                raise ValueError("Raw date absent from observed calendar")
+                raise ValueError("Raw date absent from selected market calendar")
             if i:
                 gap_index = bisect_right(missing, dates[i - 1])
                 if gap_index < len(missing) and missing[gap_index] < day:
@@ -295,6 +300,7 @@ def snapshot_files(
     *,
     suspensions_path: Path | None = None,
     calendar_path: Path | None = None,
+    factors_path: Path | None = None,
 ) -> dict:
     """Content hashes allow a run to detect concurrent changes and identify inputs."""
     paths = []
@@ -305,6 +311,8 @@ def snapshot_files(
         paths.append((suspensions_path, f"suspensions:{suspensions_path.resolve().as_posix()}"))
     if calendar_path is not None:
         paths.append((calendar_path, f"calendar:{calendar_path.resolve().as_posix()}"))
+    if factors_path is not None:
+        paths.append((factors_path, f"factors:{factors_path.resolve().as_posix()}"))
     files = []
     for path, label in paths:
         stat = path.stat()
@@ -334,6 +342,7 @@ def run_audit(
     batch_size: int = 128,
     suspensions_path: Path | None = None,
     calendar_path: Path | None = None,
+    factors_path: Path | None = None,
 ) -> dict:
     from app.strategy.huichun_a0 import CYCLE_SCHEMA, A0Params, audit_a0
 
@@ -343,7 +352,11 @@ def run_audit(
         raise ValueError("Output directory must be new; preserve previous runs")
     snapshot_kwargs = {
         key: value
-        for key, value in (("suspensions_path", suspensions_path), ("calendar_path", calendar_path))
+        for key, value in (
+            ("suspensions_path", suspensions_path),
+            ("calendar_path", calendar_path),
+            ("factors_path", factors_path),
+        )
         if value is not None
     }
     before = snapshot_files(repo.store.data_dir, **snapshot_kwargs)
@@ -401,6 +414,9 @@ def run_audit(
         else []
     )
     factors = pl.DataFrame(adj_rows, schema=FACTOR_SCHEMA, orient="row")
+    if factors_path is not None:
+        # Research-only replacement: never merge an incompatible factor chain or write the store.
+        factors = pl.read_parquet(factors_path).select(*FACTOR_SCHEMA).cast(FACTOR_SCHEMA)
     schema_names = {r[0] for r in repo.execute_all("DESCRIBE kline_daily")}
     columns = [*RAW_COLUMNS, *(["quote_ts"] if "quote_ts" in schema_names else [])]
     coverage, cycles, signals = [], [], []
@@ -501,6 +517,7 @@ def run_audit(
             "records": [asdict(evidence) for evidence in suspensions],
         },
         "price_basis": "raw_close_times_cumulative_effective_event_factor",
+        "factor_source": str(factors_path.resolve()) if factors_path else "repository_adj_factor",
         "scope": "A0 daily shape audit; no execution or return calculation",
         "source_code_sha256": {
             p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in source_code_paths

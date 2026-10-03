@@ -95,9 +95,7 @@ def load_market_calendar(path: Path, *, start: date, end: date) -> list[date]:
         raise ValueError("Calendar closures must be an array")
     closed = set()
     for index, value in enumerate(content["closures"]):
-        closure = _fields(
-            value, {"start_date", "end_date", "source_id"}, f"Closure {index}"
-        )
+        closure = _fields(value, {"start_date", "end_date", "source_id"}, f"Closure {index}")
         source_id = _text(closure["source_id"], "Closure source_id")
         if source_id not in source_ids:
             raise ValueError(f"Unknown calendar source id: {source_id}")

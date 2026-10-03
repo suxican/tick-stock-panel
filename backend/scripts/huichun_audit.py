@@ -25,6 +25,9 @@ def main() -> None:
         "--suspensions", type=Path, help="JSON full-day suspension evidence with publication dates"
     )
     parser.add_argument("--calendar", type=Path, help="JSON independent exchange holiday calendar")
+    parser.add_argument(
+        "--factors", type=Path, help="Research-only replacement event-factor Parquet"
+    )
     args = parser.parse_args()
     if not (args.data_dir / "kline_daily").is_dir():
         parser.error("data-dir must contain existing daily data")
@@ -40,6 +43,7 @@ def main() -> None:
             batch_size=args.batch_size,
             suspensions_path=args.suspensions,
             calendar_path=args.calendar,
+            factors_path=args.factors,
         )
         print(
             json.dumps({"output": str(output.resolve()), **summary}, ensure_ascii=False, indent=2)
