@@ -26,7 +26,7 @@ from app.strategy import config as _strategy_config
 from app.strategy.custom_signals import _OP_BUILDERS  # type: ignore  # 复用运算符构造器
 from app.strategy.custom_signals import signal_names as _custom_signal_names
 from app.strategy.intraday_signals import INTRADAY_SIGNAL_LABELS, uses_intraday_signals
-from app.strategy.monitor_rules import date_rule_in_window
+from app.strategy.monitor_rules import MODE_EVENT_LABELS, date_rule_in_window
 
 logger = logging.getLogger(__name__)
 
@@ -336,6 +336,12 @@ class MonitorRuleEngine:
         self._rules: dict[str, dict] = {}  # rule_id → rule
         # (rule_id, symbol, event_type) → 上次触发时间戳(秒)。用于 cooldown 去重。
         self._last_fire: dict[tuple[str, str, str], float] = {}
+        # 模式事件来自独立工作线程。已发送的源事件由告警留痕恢复, 规则编辑不会重放。
+        self._mode_lock = threading.Lock()
+        self._mode_seen: dict[tuple[str, str, str], float] = {}
+        self._mode_claims: dict[tuple[str, str, str], dict] = {}
+        self._mode_last_fire: dict[tuple[str, str, str], tuple[float, str]] = {}
+        self._configured_mode_rules: dict[str, str] = {}
         # date 规则每个交易日只在首个轮询评估一次; 规则集变更时失效重评
         self._date_eval_day: str | None = None
         self._date_eval_rules_version = -1
@@ -381,6 +387,19 @@ class MonitorRuleEngine:
     def set_data_dir(self, data_dir) -> None:
         """注入数据目录, 用于加载策略的用户覆盖配置。"""
         self._data_dir = data_dir
+        if data_dir is not None:
+            from app.services import alert_store
+
+            records = alert_store.list_recent(data_dir)
+            with self._mode_lock:
+                for event in records:
+                    if event.get("source") in MODE_EVENT_LABELS and event.get("source_event_id") and event.get("rule_id"):
+                        key = (event["rule_id"], event["source"], event["source_event_id"])
+                        self._mode_seen[key] = event["ts"] / 1000
+                        cooldown_key = (event["rule_id"], event.get("symbol", ""), event.get("type", ""))
+                        stamp = event["ts"] / 1000
+                        if stamp >= self._mode_last_fire.get(cooldown_key, (0, ""))[0]:
+                            self._mode_last_fire[cooldown_key] = (stamp, event["source_event_id"])
 
     def _signal_label(self, field: str) -> str:
         """信号/字段 → 中文名: 内置查 _SIGNAL_CN; 自定义 csg_/csgi_ 查用户命名。
@@ -459,6 +478,9 @@ class MonitorRuleEngine:
             rule.get("abnormal_window"),
             rule.get("remind_date"),
             rule.get("lead_days"),
+            tuple(rule.get("mode_events") or ()),
+            rule.get("cooldown_seconds") if rule.get("type") in MODE_EVENT_LABELS else None,
+            rule.get("group_id") if rule.get("type") in MODE_EVENT_LABELS else None,
         )
 
     def set_rules(self, rules: list[dict]) -> None:
@@ -478,8 +500,15 @@ class MonitorRuleEngine:
             and self._rule_state_signature(self._rules[rule_id])
             != self._rule_state_signature(rule)
         }
-        self._rules = new_rules
         active_ids = set(new_rules) - changed_ids
+        with self._mode_lock:
+            self._rules = new_rules
+            self._configured_mode_rules = {
+                rule["id"]: rule["type"] for rule in rules if rule.get("type") in MODE_EVENT_LABELS
+            }
+            self._mode_last_fire = {
+                key: value for key, value in self._mode_last_fire.items() if key[0] in active_ids
+            }
         self._last_fire = {
             key: value for key, value in list(self._last_fire.items()) if key[0] in active_ids
         }
@@ -510,14 +539,26 @@ class MonitorRuleEngine:
         self._rules_version += 1
 
     def add_rule(self, rule: dict) -> None:
-        if rule.get("enabled") is not False:
-            self._rules[rule["id"]] = rule
-        else:
-            self._rules.pop(rule["id"], None)
+        with self._mode_lock:
+            self._configured_mode_rules.pop(rule["id"], None)
+            if rule.get("type") in MODE_EVENT_LABELS:
+                self._configured_mode_rules[rule["id"]] = rule["type"]
+            self._mode_last_fire = {
+                key: value for key, value in self._mode_last_fire.items() if key[0] != rule["id"]
+            }
+            if rule.get("enabled") is not False:
+                self._rules[rule["id"]] = rule
+            else:
+                self._rules.pop(rule["id"], None)
         self._rules_version += 1
 
     def remove_rule(self, rule_id: str) -> None:
-        self._rules.pop(rule_id, None)
+        with self._mode_lock:
+            self._configured_mode_rules.pop(rule_id, None)
+            self._mode_last_fire = {
+                key: value for key, value in self._mode_last_fire.items() if key[0] != rule_id
+            }
+            self._rules.pop(rule_id, None)
         self._last_fire = {k: v for k, v in list(self._last_fire.items()) if k[0] != rule_id}
         self._strategy_pools = {
             k: v for k, v in list(self._strategy_pools.items()) if k[0] != rule_id
@@ -534,7 +575,10 @@ class MonitorRuleEngine:
         self._rules_version += 1
 
     def clear(self) -> None:
-        self._rules.clear()
+        with self._mode_lock:
+            self._configured_mode_rules.clear()
+            self._mode_last_fire.clear()
+            self._rules.clear()
         self._last_fire.clear()
         self._strategy_pools.clear()
         self._strategy_signal_state.clear()
@@ -573,6 +617,99 @@ class MonitorRuleEngine:
             r.get("enabled", True) and r.get("type") == rtype
             for r in list(self._rules.values())
         )
+
+    def has_mode_rules(self, source: str) -> bool:
+        """包含禁用规则, 供首板关闭规则后抑制旧的直接通知路径。"""
+        with self._mode_lock:
+            return source in self._configured_mode_rules.values()
+
+    def evaluate_mode_events(self, source: str, events: list[dict], now: float | None = None) -> list[dict]:
+        """订阅模式服务已计算的事件, 不重跑选股或把日线确认冒充盘中信号。
+
+        源事件必须提供稳定 id、symbol 和 type, change_pct 沿源服务小数口径。
+        已发送 id 在告警留痕保留窗口内去重; 清空留痕后重启可重新提示。
+        """
+        if source not in MODE_EVENT_LABELS or not events:
+            return []
+        from app.services import alert_store
+
+        now = time.time() if now is None else now
+        alerts: list[dict] = []
+        # 自选分组可能读取文件, 在锁外解析; 入锁后核对规则仍是同一版。
+        scoped_rules = []
+        for rule in list(self._rules.values()):
+            if rule.get("type") != source or rule.get("enabled") is False or rule.get("asset_type", "stock") != "stock":
+                continue
+            scope = rule.get("scope", "all")
+            if scope == "all":
+                symbols = None
+            elif scope == "symbols":
+                symbols = set(rule.get("symbols") or [])
+            elif scope == "watchlist_group":
+                symbols = _group_members_or_none(rule) or set()
+            else:
+                continue
+            scoped_rules.append((rule, symbols))
+        with self._mode_lock:
+            cutoff = now - alert_store.MAX_DAYS * 86400
+            self._mode_seen = {key: stamp for key, stamp in self._mode_seen.items() if stamp >= cutoff}
+            for rule, symbols in scoped_rules:
+                if self._rules.get(rule["id"]) is not rule:
+                    continue
+                selected = rule.get("mode_events") or []
+                for event in events:
+                    symbol, event_id = event.get("symbol"), event.get("id")
+                    event_type = event.get("type") or event.get("event_type")
+                    if not isinstance(symbol, str) or not symbol or not event_id or event_type not in MODE_EVENT_LABELS[source] or event_type not in selected:
+                        continue
+                    if event.get("source") not in (None, source):
+                        continue
+                    if symbols is not None and symbol not in symbols:
+                        continue
+                    seen_key = (rule["id"], source, str(event_id))
+                    cooldown_key = (rule["id"], symbol, event_type)
+                    if seen_key in self._mode_seen:
+                        continue
+                    last = self._mode_last_fire.get(cooldown_key)
+                    if last is not None and now - last[0] < rule.get("cooldown_seconds", 3600):
+                        continue
+                    self._mode_seen[seen_key] = now
+                    self._mode_last_fire[cooldown_key] = (now, str(event_id))
+                    alert = {
+                        **event, "source_event_id": str(event_id), "ts": int(now * 1000),
+                        "source": source, "type": event_type, "rule_id": rule["id"],
+                        "rule_name": rule.get("name", ""), "strategy_id": None,
+                        "message": rule.get("message") or event.get("message") or MODE_EVENT_LABELS[source][event_type],
+                        "name": event.get("name") or self._name_map.get(symbol),
+                        "severity": rule.get("severity", "info"), "signals": [], "conditions": [], "logic": "and",
+                    }
+                    alerts.append(alert)
+                    self._mode_claims[seen_key] = alert
+            if len(self._mode_seen) > alert_store.MAX_RECORDS:
+                self._mode_seen = dict(sorted(self._mode_seen.items(), key=lambda item: item[1])[-alert_store.MAX_RECORDS:])
+            self._mode_claims = {key: event for key, event in self._mode_claims.items() if key in self._mode_seen}
+        # 通知回调不持模式状态锁, 避免慢通知阻塞另一个模式的评估。
+        if self._alert_handler:
+            for event in alerts:
+                try:
+                    self._alert_handler(event)
+                except Exception as exc:
+                    logger.warning("alert handler failed: %s", exc)
+        return alerts
+
+    def rollback_mode_events(self, events: list[dict]) -> None:
+        """告警留痕失败时释放本批事件占位, 不清除已恢复或后续事件的去重状态。"""
+        with self._mode_lock:
+            for event in events:
+                key = (event.get("rule_id"), event.get("source"), event.get("source_event_id"))
+                # 调用方传 evaluate_mode_events 返回的原对象, 防止旧失败回调误撤销新一轮占位。
+                if self._mode_claims.get(key) is not event:
+                    continue
+                self._mode_claims.pop(key)
+                stamp = self._mode_seen.pop(key, None)
+                cooldown_key = (event["rule_id"], event["symbol"], event["type"])
+                if self._mode_last_fire.get(cooldown_key) == (stamp, event["source_event_id"]):
+                    self._mode_last_fire.pop(cooldown_key)
 
     def intraday_signal_symbols(self, asset_type: str) -> set[str]:
         """返回启用的分时信号规则所需标的并集。"""
@@ -704,7 +841,7 @@ class MonitorRuleEngine:
         for rule_id, rule in list(self._rules.items()):
             if rule.get("asset_type", "stock") != asset_type:
                 continue
-            if rule.get("type") in ("sector", "abnormal", "date"):
+            if rule.get("type") in ("sector", "abnormal", "date", *MODE_EVENT_LABELS):
                 # 三者不走行情 DataFrame 评估, 各走 evaluate_sectors / evaluate_abnormal /
                 # evaluate_date_rules 专用路径
                 continue

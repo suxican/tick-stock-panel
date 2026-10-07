@@ -12,6 +12,17 @@ from app.strategy import paper
 _NOTE = "统计覆盖整个关联模拟账户, 并非首板策略独立归因; 退出提示不执行卖出。"
 
 
+def minimum_buy_qty(symbol: str) -> int:
+    """科创板至少200股; 首板模拟沿用现有纸盘的百股步长。"""
+    return 200 if symbol.endswith(".SH") and symbol.startswith(("688", "689")) else paper.LOT_SIZE
+
+
+def paper_order_block_reason(symbol: str) -> str | None:
+    if symbol.endswith(".SH") and symbol.startswith("689"):
+        return "689科创存托凭证的模拟涨跌停规则暂不支持, 仅供候选观察"
+    return None
+
+
 def _number(value: object, *, positive: bool = False) -> float | None:
     if isinstance(value, bool):
         return None
@@ -84,6 +95,10 @@ def buy_budget(
 
     def denied(reason: str, **details) -> dict:
         return {"allowed": False, "amount": None, "qty": 0, "reasons": [reason], **details}
+
+    unsupported = paper_order_block_reason(symbol)
+    if unsupported:
+        return denied(unsupported)
 
     limits = _limits(config)
     if limits is None:
@@ -159,8 +174,10 @@ def buy_budget(
             quantity_upper = min(capacity / (execution_price * (1 + commission)),
                                  (capacity - paper.MIN_COMMISSION) / execution_price)
             qty = paper.normalize_qty(max(0, int(quantity_upper)))
-            if qty <= 0:
-                return denied("扣除待成交占资及仓位上限后不足买入一手", reserved_cash=round(reserved, 2), nav=nav)
+            if qty < minimum_buy_qty(symbol):
+                reason = ("扣除待成交占资及仓位上限后不足科创板最低200股" if minimum_buy_qty(symbol) == 200
+                          else "扣除待成交占资及仓位上限后不足买入一手")
+                return denied(reason, reserved_cash=round(reserved, 2), nav=nav)
             cost = qty * execution_price + paper.buy_fee(qty, execution_price, commission)
             if cost > capacity + 1e-6:
                 return denied("含费用预算超过剩余可用额度", reserved_cash=round(reserved, 2), nav=nav)

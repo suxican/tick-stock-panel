@@ -27,7 +27,13 @@ from app.services.first_board_context import (
     load_environment,
     load_sector_members,
 )
-from app.services.first_board_portfolio import buy_budget, exit_candidates, portfolio_snapshot
+from app.services.first_board_portfolio import (
+    buy_budget,
+    exit_candidates,
+    minimum_buy_qty,
+    paper_order_block_reason,
+    portfolio_snapshot,
+)
 from app.services.fs_utils import atomic_write_text
 from app.services.index_const import CORE_INDEX_SYMBOLS
 from app.strategy import paper
@@ -42,7 +48,8 @@ logger = logging.getLogger(__name__)
 _LIMITATIONS = [
     "临近涨停提示是可配置的实验规则, 不是课程打板、扫板或排板的逐笔执行。",
     "涨停价观察不能证明封单稳定或能够成交; 当前不模拟封板队列。",
-    "只覆盖沪深主板非风险警示股票; 历史名称和行业归属可能采用当前快照。",
+    "按所选版本覆盖沪深主板或主板、创业板、科创板非风险警示股票; 历史名称和行业归属可能采用当前快照。",
+    "科创板模拟买入至少200股, 沿用百股步长; 689存托凭证仅观察, 暂不支持模拟下单。",
     SECTOR_PROXY_NOTE,
 ]
 _MAX_EVENTS_PER_DAY = 50_000
@@ -667,6 +674,9 @@ class FirstBoardService:
                 raise ValueError("首板模拟需关闭账户的次日排队选项, 避免改变信号交易日")
             # 只接受后台最近计算且依然新鲜的当日证据, 不让前端提供价格。
             symbol = event["symbol"]
+            unsupported = paper_order_block_reason(symbol)
+            if unsupported:
+                raise ValueError(unsupported)
             row = next((item for item in self._snapshot["rows"] if item["symbol"] == symbol
                         and item.get("event_id") == event_id), None)
             fresh_prices = {item: value for item, value in self._latest_prices.items()
@@ -688,6 +698,8 @@ class FirstBoardService:
                 if not budget["allowed"] or not budget.get("qty"):
                     raise ValueError("; ".join(budget["reasons"]))
                 requested = qty if qty is not None else paper.qty_from_amount(amount, price) if amount is not None else budget["qty"]
+                if requested < minimum_buy_qty(symbol) and minimum_buy_qty(symbol) == 200:
+                    raise ValueError("科创板模拟买入每笔至少200股, 采用百股步长")
                 if requested <= 0 or requested > budget["qty"]:
                     raise ValueError("模拟买入数量超过当前风险预算或不足一手")
             else:
@@ -701,6 +713,14 @@ class FirstBoardService:
                     raise ValueError("该提示已不满足当前退出条件或没有剩余可卖数量")
                 available = paper.normalize_qty(int(current_exit["qty"]))
                 requested = qty if qty is not None else available
+                if minimum_buy_qty(symbol) == 200 and requested < 200:
+                    # 首板关联 lots 可能只是账户持仓的一部分; 余股豁免须按整账户核验。
+                    position = paper.load_positions(self.repo.store.data_dir, config.paper_account_id).get(symbol, {})
+                    reserved_sells = sum(int(order["qty"]) for order in orders if order.get("symbol") == symbol
+                                         and order.get("status") == "pending" and order.get("side") == "sell")
+                    account_available = paper._available_of(position, now.date().isoformat()) - reserved_sells
+                    if requested != account_available:
+                        raise ValueError("科创板模拟卖出至少200股, 不足200股的账户余股须一次卖出")
                 if requested <= 0 or requested > available:
                     raise ValueError("模拟卖出数量超过当前剩余可卖数量或不足一手")
             order, error = paper.create_order(self.repo.store.data_dir, symbol, side,

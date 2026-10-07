@@ -29,11 +29,23 @@ logger = logging.getLogger(__name__)
 
 # ── 常量 ────────────────────────────────────────────────
 ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
-RULE_TYPES = {"strategy", "signal", "price", "market", "ladder", "sector", "abnormal", "volume_delta", "date"}
+RULE_TYPES = {"strategy", "signal", "price", "market", "ladder", "sector", "abnormal", "volume_delta", "date", "first_board", "huichun"}
 SCOPES = {"symbols", "all", "sector", "watchlist_group"}
 LOGICS = {"and", "or"}
 DIRECTIONS = {"entry", "exit", "both"}
 STRATEGY_NOTIFY_EVENTS = {"buy_signal", "sell_signal", "pool_entry", "pool_exit"}
+MODE_EVENT_LABELS = {
+    "first_board": {
+        "buy_candidate": "临近涨停买入候选", "approaching": "临近涨停但条件未通过",
+        "sealed": "涨停价观察", "broken": "开板观察", "watch": "条件失效",
+        "invalid": "数据或条件失效", "exit_candidate": "次日退出提示",
+    },
+    "huichun": {"a0_confirmed": "A0 日线确认", "pending_cross": "待金叉观察"},
+}
+MODE_DEFAULT_EVENTS = {
+    "first_board": ["buy_candidate", "broken", "exit_candidate"],
+    "huichun": ["a0_confirmed"],
+}
 SEVERITIES = {"info", "warn", "critical"}
 OPS = {">", ">=", "<", "<=", "==", "!="}
 # ladder 规则: 封单监控的指标 (量=手, 额=元)
@@ -177,6 +189,17 @@ def validate(rule: dict) -> None:
                 raise ValueError(f"{label}必须是 0 到 100 之间的数字")
         if score_min is not None and score_max is not None and score_min > score_max:
             raise ValueError("评分下限不能大于评分上限")
+    elif rule.get("type") in MODE_EVENT_LABELS:
+        if rule.get("asset_type", "stock") != "stock":
+            raise ValueError("模式监控仅支持个股")
+        mode_events = rule.get("mode_events")
+        if not isinstance(mode_events, list) or not mode_events:
+            raise ValueError("模式监控至少选择一个通知事件")
+        allowed = MODE_EVENT_LABELS[rule["type"]]
+        if any(not isinstance(event, str) or event not in allowed for event in mode_events):
+            raise ValueError("mode_events 包含非法事件")
+        if rule.get("conditions"):
+            raise ValueError("模式监控不支持行情 conditions, 请在对应模式页调整筛选规则")
     elif rule.get("type") == "ladder":
         # 连板梯队封单监控: 需 metric + threshold + direction(up/down), 不用 conditions
         if rule.get("metric", "sealed_vol") not in LADDER_METRICS:
@@ -331,7 +354,7 @@ def normalize(rule: dict) -> dict:
     r.setdefault("enabled", True)
     r.setdefault("asset_type", "stock")
     # sector/abnormal 默认全市场 (sector 随后强制 all; abnormal 支持指定标的)
-    r.setdefault("scope", "all" if r.get("type") in {"sector", "abnormal", "volume_delta"} else "symbols")
+    r.setdefault("scope", "all" if r.get("type") in {"sector", "abnormal", "volume_delta", *MODE_EVENT_LABELS} else "symbols")
     r.setdefault("symbols", [])
     r.setdefault("group_id", None)
     # watchlist_group 作用域: 成员动态来自分组, symbols 不参与; 其他作用域清掉残留 group_id
@@ -363,6 +386,13 @@ def normalize(rule: dict) -> dict:
         r.pop("notify_events", None)
         r.pop("score_min", None)
         r.pop("score_max", None)
+    if r.get("type") in MODE_EVENT_LABELS:
+        if r.get("mode_events") is None:
+            r["mode_events"] = list(MODE_DEFAULT_EVENTS[r["type"]])
+        elif isinstance(r["mode_events"], list) and all(isinstance(event, str) for event in r["mode_events"]):
+            r["mode_events"] = list(dict.fromkeys(r["mode_events"]))
+    else:
+        r.pop("mode_events", None)
     r.setdefault("conditions", [])
     # ladder 专属默认字段
     r.setdefault("metric", "sealed_vol")

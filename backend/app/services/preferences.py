@@ -306,6 +306,19 @@ def get_financial_provider() -> str:
     return provider if provider in _allowed_data_providers() else "tickflow"
 
 
+def get_overseas_data_provider() -> str:
+    """Overseas quotes require an explicit dataset; never fall back to A shares."""
+    default = "yahoo_overseas"
+    provider = str(load().get("overseas_data_provider", default) or default).strip().lower()
+    try:
+        from app.data_providers import custom as custom_sources
+        if provider in custom_sources.names() and custom_sources.provider_has_dataset(provider, "overseas"):
+            return provider
+    except Exception:
+        pass
+    return default
+
+
 # ===== 盘后管道拉取内容开关 (A股 / ETF / 指数 独立控制) =====
 
 def get_pipeline_pull_a_share() -> bool:

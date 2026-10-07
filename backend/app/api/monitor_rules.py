@@ -95,6 +95,7 @@ class RuleModel(BaseModel):
     strategy_id: str | None = None
     direction: str = "entry"  # entry | exit | both | (sector/ladder/abnormal: up|down|both)
     notify_events: list[str] | None = None
+    mode_events: list[str] | None = None
     score_min: float | None = None
     score_max: float | None = None
     conditions: list[ConditionModel] = []
@@ -169,6 +170,8 @@ def get_options(request: Request):
             {"key": "price", "label": "价格/涨跌"},
             {"key": "market", "label": "市场异动"},
             {"key": "strategy", "label": "策略监控"},
+            {"key": "first_board", "label": "首板模式"},
+            {"key": "huichun", "label": "回春模式"},
             {"key": "abnormal", "label": "异动监控"},
             {"key": "sector", "label": "板块监控"},
             {"key": "volume_delta", "label": "轮询放量"},
@@ -198,6 +201,10 @@ def get_options(request: Request):
             getattr(request.app.state, "capabilities", None),
         ),
         "sector_targets": sector_targets,
+        "mode_events": {
+            source: [{"key": key, "label": label} for key, label in labels.items()]
+            for source, labels in monitor_rules.MODE_EVENT_LABELS.items()
+        },
     }
 
 
@@ -243,6 +250,26 @@ def list_rules(request: Request):
                 rule["runtime_warning"] = "部分板块数据已不存在, 请重新选择监控对象"
             elif unavailable:
                 rule["runtime_warning"] = "所选指数未加入实时指数池, 请先在实时监控设置中启用"
+    mode_warnings = {}
+    for source, label in (("first_board", "首板"), ("huichun", "回春")):
+        if not any(rule.get("type") == source and rule.get("enabled", True) for rule in rules):
+            continue
+        service_name = "first_board_service" if source == "first_board" else "huichun_mode_service"
+        service = getattr(request.app.state, service_name, None)
+        if service is None:
+            mode_warnings[source] = f"{label}模式服务未就绪, 暂无法产生监控事件"
+        elif source == "first_board" and callable(getattr(service, "get_config", None)):
+            try:
+                config = service.get_config()
+                if config.get("enabled") is False:
+                    mode_warnings[source] = "首板自动盯盘已关闭, 请在首板模式页开启"
+                elif config.get("notify") is False:
+                    mode_warnings[source] = "首板消息通知已关闭, 请在首板模式页开启"
+            except Exception:
+                mode_warnings[source] = "首板配置暂不可用, 请在首板模式页检查"
+    for rule in rules:
+        if rule.get("enabled", True) and rule.get("type") in mode_warnings:
+            rule["runtime_warning"] = mode_warnings[rule["type"]]
     # 分组作用域规则: 绑定的分组被删除 → 标注运行时警告 (引擎侧已 fail-closed 跳过)
     group_rules = [rule for rule in rules if rule.get("scope") == "watchlist_group"]
     if group_rules:
@@ -263,7 +290,10 @@ def list_rules(request: Request):
 # ── 新建 / 更新 ────────────────────────────────────────
 @router.post("")
 def save_rule(req: RuleModel, request: Request):
-    rule = monitor_rules.normalize(req.model_dump())
+    payload = req.model_dump()
+    if req.type in monitor_rules.MODE_EVENT_LABELS and "scope" not in req.model_fields_set:
+        payload["scope"] = "all"
+    rule = monitor_rules.normalize(payload)
     rule = _reconcile_index_asset_type(rule, request.app.state.repo)
     # 连板梯队封单监控 (type=ladder) 依赖五档盘口数据, 需 Pro+ (DEPTH5_BATCH 能力)。
     # 无能力时拒绝创建, 避免规则存了却永远无法触发。

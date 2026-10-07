@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta
 
 from app.market_time import CN_TZ, cn_now
 from app.services.index_const import CORE_INDEX_SYMBOLS
+from app.services.market_game_plan import plan_status
 
 
 def _day(value) -> date:
@@ -25,7 +26,7 @@ def _positive(value) -> float | None:
 
 
 def _closing_evidence(repo, table: str, symbols: list[str], start: date, end: date,
-                      known_by: datetime) -> dict[tuple[str, date], tuple[float, datetime]]:
+                      known_by: datetime) -> dict[tuple[str, date], tuple[float, datetime, float | None, float | None]]:
     """Verify raw closing observations through the repository's read API.
 
     A null quote timestamp is commonly a historical batch row, but it is also
@@ -41,15 +42,17 @@ def _closing_evidence(repo, table: str, symbols: list[str], start: date, end: da
         # Table identifiers are constants supplied by this module. Symbols and
         # dates remain bound parameters, including imported report identifiers.
         marks = ",".join("?" for _ in symbols)
+        high_column = "high" if "high" in columns else "NULL"
+        low_column = "low" if "low" in columns else "NULL"
         rows = repo.execute_all(
-            f"SELECT symbol,date,close,quote_ts FROM {table} "
+            f"SELECT symbol,date,close,quote_ts,{high_column},{low_column} FROM {table} "
             f"WHERE date >= ? AND date <= ? AND symbol IN ({marks})",
             [start, end, *symbols],
         )
     except Exception:
         return {}
     result, seen, duplicates = {}, set(), set()
-    for symbol, raw_day, raw_close, quote_ts in rows:
+    for symbol, raw_day, raw_close, quote_ts, raw_high, raw_low in rows:
         try:
             day = _day(raw_day)
             key = (symbol, day)
@@ -62,7 +65,7 @@ def _closing_evidence(repo, table: str, symbols: list[str], start: date, end: da
             observed = datetime.fromtimestamp(stamp / 1000, tz=CN_TZ)
             if observed.date() != day or observed.hour < 15 or observed > known_by:
                 continue
-            result[key] = (price, observed)
+            result[key] = (price, observed, _positive(raw_high), _positive(raw_low))
         except (TypeError, ValueError, OSError, OverflowError):
             continue
     for key in duplicates:
@@ -75,6 +78,16 @@ def _matches(evidence: dict, key: tuple[str, date], raw_close: float | None,
     value = evidence.get(key)
     return bool(value and raw_close and value[1] <= known_by
                 and math.isclose(value[0], raw_close, rel_tol=1e-8, abs_tol=1e-6))
+
+
+def _range_matches(evidence: dict, key: tuple[str, date], high: float | None,
+                   low: float | None, close: float | None) -> bool:
+    raw = evidence.get(key)
+    if not raw or not high or not low or not close or not raw[2] or not raw[3]:
+        return False
+    scale = raw[0] / close
+    return (math.isclose(high * scale, raw[2], rel_tol=1e-8, abs_tol=1e-6)
+            and math.isclose(low * scale, raw[3], rel_tol=1e-8, abs_tol=1e-6))
 
 
 def evaluate_observations(repo, report: dict, *, now: datetime | None = None) -> dict:
@@ -99,7 +112,14 @@ def evaluate_observations(repo, report: dict, *, now: datetime | None = None) ->
         "evaluated_at": now.isoformat(timespec="seconds"),
         "status": "pending", "kind": "observation_only", "rows": [],
         "limitations": limitations,
+        "plan_status": plan_status(report, now),
     }
+    validity = report.get("validity") or {}
+    calendar_verified = validity.get("calendar_verified") is True and validity.get("status") == "scheduled"
+    frozen_sessions = [_day(day) for day in validity.get("observation_sessions", [])] if calendar_verified else []
+    result["calendar_verified"] = calendar_verified
+    if calendar_verified:
+        limitations[1] = "观察日使用生成时冻结的独立交易日历, 行情缺日不会顺延日序。"
     candidates = report.get("candidates") or []
     if not candidates:
         result["status"] = "unavailable"
@@ -109,48 +129,58 @@ def evaluate_observations(repo, report: dict, *, now: datetime | None = None) ->
     prices: dict[tuple[str, date], float | None] = {}
     raw_prices: dict[tuple[str, date], float | None] = {}
     index_prices: dict[date, float | None] = {}
+    ranges: dict[tuple[str, date], tuple[float | None, float | None]] = {}
     stock_evidence, index_evidence = {}, {}
     if end > base_day:
         frame = repo.get_index_daily(CORE_INDEX_SYMBOLS[0], base_day, end, columns=["date", "close"])
         if not frame.is_empty() and {"date", "close"}.issubset(frame.columns):
-            sessions = sorted({
+            sessions = frozen_sessions or sorted({
                 _day(row["date"]) for row in frame.iter_rows(named=True)
                 if after_day < _day(row["date"]) <= end and _positive(row["close"]) is not None
             })[:3]
             for row in frame.iter_rows(named=True):
                 day = _day(row["date"])
-                if day in sessions:
+                if day in sessions or day == base_day:
                     # Multiple index rows cannot certify one closing value.
                     index_prices[day] = None if day in index_prices else _positive(row["close"])
+        if frozen_sessions:
+            sessions = frozen_sessions
         if sessions:
             symbols = [item["symbol"] for item in candidates]
-            stock_evidence = _closing_evidence(repo, "kline_daily", symbols, base_day, sessions[-1], now)
-            index_evidence = _closing_evidence(repo, "kline_index_daily", [CORE_INDEX_SYMBOLS[0]], sessions[0], sessions[-1], now)
+            read_end = min(end, sessions[-1])
+            stock_evidence = _closing_evidence(repo, "kline_daily", symbols, base_day, read_end, now)
+            index_evidence = _closing_evidence(repo, "kline_index_daily", [CORE_INDEX_SYMBOLS[0]], base_day, read_end, now)
             frame = repo.get_daily_batch(
-                symbols, base_day, sessions[-1],
-                columns=["symbol", "date", "close", "raw_close"],
+                symbols, base_day, read_end,
+                columns=["symbol", "date", "close", "high", "low", "raw_close"],
             )
             if not frame.is_empty() and {"symbol", "date", "close"}.issubset(frame.columns):
                 duplicates: set[tuple[str, date]] = set()
                 for row in frame.iter_rows(named=True):
                     day = _day(row["date"])
-                    if not base_day <= day <= sessions[-1]:
+                    if not base_day <= day <= read_end:
                         continue
                     key = (row["symbol"], day)
                     if key in prices:
                         duplicates.add(key)
                     prices[key] = _positive(row["close"])
                     raw_prices[key] = _positive(row.get("raw_close"))
+                    high, low = _positive(row.get("high")), _positive(row.get("low"))
+                    close = prices[key]
+                    ranges[key] = (high, low) if high and low and close and low <= close <= high else (None, None)
                 for key in duplicates:
                     prices[key] = None
                     raw_prices[key] = None
+                    ranges[key] = (None, None)
+    if frozen_sessions:
+        sessions = frozen_sessions
     for candidate in candidates:
         symbol = candidate["symbol"]
         base = prices.get((symbol, base_day))
         for horizon in range(1, 4):
             day = sessions[horizon - 1] if len(sessions) >= horizon else None
             close = prices.get((symbol, day)) if day else None
-            if day is None:
+            if day is None or day > completed:
                 state = "pending"
             elif not base or not close:
                 state = "missing"
@@ -162,10 +192,29 @@ def evaluate_observations(repo, report: dict, *, now: datetime | None = None) ->
                 state = "unavailable"
             else:
                 state = "available"
+            close_return = round(close / base - 1, 6) if state == "available" else None
+            benchmark = index_prices.get(day)
+            benchmark_base = index_prices.get(base_day)
+            benchmark_return = None
+            if (state == "available" and benchmark and benchmark_base
+                    and _matches(index_evidence, (CORE_INDEX_SYMBOLS[0], base_day), benchmark_base, cutoff)):
+                benchmark_return = round(benchmark / benchmark_base - 1, 6)
+            # Bounds describe the watchlist's price excursion from report close,
+            # not trade MFE/MAE: neither an entry time nor a fill is established.
+            observed_ranges = [ranges.get((symbol, observed), (None, None)) for observed in sessions[:horizon]]
+            ranges_verified = state == "available" and all(
+                _matches(stock_evidence, (symbol, observed), raw_prices.get((symbol, observed)), now)
+                and _range_matches(stock_evidence, (symbol, observed), high, low, prices.get((symbol, observed)))
+                for observed, (high, low) in zip(sessions[:horizon], observed_ranges, strict=True)
+            )
             result["rows"].append({
                 "symbol": symbol, "name": candidate["name"], "horizon": horizon,
                 "label": f"后续观察日 {horizon}", "trade_date": day.isoformat() if day else None,
-                "close_return": round(close / base - 1, 6) if state == "available" else None,
+                "close_return": close_return,
+                "benchmark_return": benchmark_return,
+                "excess_return": round(close_return - benchmark_return, 6) if benchmark_return is not None else None,
+                "max_upside": round(max(high for high, _ in observed_ranges) / base - 1, 6) if ranges_verified else None,
+                "max_drawdown": round(min(low for _, low in observed_ranges) / base - 1, 6) if ranges_verified else None,
                 "state": state,
             })
     states = [row["state"] for row in result["rows"]]

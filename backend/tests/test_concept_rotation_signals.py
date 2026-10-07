@@ -1,7 +1,11 @@
 """概念/行业轮动信号预计算 (_compute_rotation_signals) 单元测试。"""
 from __future__ import annotations
 
-from app.services.concept_rotation_analyzer import _compute_rotation_signals
+from app.services.concept_rotation_analyzer import (
+    _build_system_prompt,
+    _build_user_prompt,
+    _compute_rotation_signals,
+)
 
 # dates 与服务口径一致: 最新在最前
 _DATES = ["2026-01-09", "2026-01-08", "2026-01-07", "2026-01-06", "2026-01-05"]
@@ -58,3 +62,18 @@ def test_missing_recent_days_pad_at_the_right_end():
     assert "退潮题材" in by_name
     assert by_name["退潮题材"]["ranks"] == [1, 1, 999, 999, 999]
     assert "退潮题材" in [item["concept"] for item in signals["fading"]]
+
+
+def test_ranking_stability_is_behavior_not_investor_identity():
+    signals = _compute_rotation_signals(_DATES, _baseline_columns())
+    # Historical response keys stay compatible; their meaning is not identity.
+    assert signals["institutional"]
+    assert "hot_money" in signals
+    prompt = _build_system_prompt()
+    assert "不能确认机构、游资或量化身份" in prompt
+    assert "机构 vs 游资的判断必须基于排名稳定性" not in prompt
+    user = _build_user_prompt(signals, {}, len(_DATES), _DATES, "")
+    assert "持续强势特征 (排名稳定)" in user
+    assert "脉冲轮动特征 (排名波动大)" in user
+    assert "机构特征" not in user
+    assert "游资特征" not in user

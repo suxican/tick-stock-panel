@@ -25,8 +25,10 @@ async def _lifespan(app: FastAPI):
         repo = getattr(app.state, "repo", None)
         store = getattr(app.state, "datastore", None)
         if repo is not None and store is not None:
+            qs = getattr(app.state, "quote_service", None)
+            publish_options = {"publish": qs.publish_mode_alerts} if qs is not None else {}
             service = await run_in_threadpool(
-                HuichunModeService, repo, data_dir=store.data_dir,
+                HuichunModeService, repo, data_dir=store.data_dir, **publish_options,
             )
             app.state.huichun_mode_service = service
     except Exception:

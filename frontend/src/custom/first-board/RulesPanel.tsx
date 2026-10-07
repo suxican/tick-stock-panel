@@ -1,6 +1,6 @@
 import type { FormEvent } from 'react'
 import type { FirstBoardConfig, FirstBoardRules, PaperAccountSummary } from '@/lib/api'
-import { buttonClass, ErrorNotice, inputClass, marketStates, Notice, panelClass, patternLabels, stamp } from './shared'
+import { buttonClass, ErrorNotice, inputClass, marketStates, Notice, panelClass, patternLabels, stamp, universeLabels } from './shared'
 
 type NumericRule = Exclude<keyof FirstBoardRules, 'universe' | 'enabled_patterns'>
 type Field = { key: NumericRule; label: string; min: number; max: number; step?: number; scale?: number }
@@ -9,7 +9,7 @@ const groups: { title: string; fields: Field[] }[] = [
     { key: 'lookback_days', label: '最近无收盘涨停的交易日数', min: 1, max: 60 },
     { key: 'min_history_days', label: '最少历史交易日数', min: 20, max: 250 },
     { key: 'approaching_distance', label: '距涨停价最多（%）', min: 0, max: 10, step: 0.1, scale: 100 },
-    { key: 'min_change_pct', label: '盘中最低涨幅（%）', min: 0, max: 10, step: 0.1, scale: 100 },
+    { key: 'min_change_pct', label: '盘中最低涨幅（%）', min: 0, max: 20, step: 0.1, scale: 100 },
     { key: 'min_turnover_rate', label: '最低换手率（%）', min: 0, max: 100, step: 0.1 },
     { key: 'max_turnover_rate', label: '最高换手率（%）', min: 0.1, max: 100, step: 0.1 },
     { key: 'min_amount', label: '最低成交额（万元）', min: 0, max: 100000000, step: 100, scale: 0.0001 },
@@ -53,12 +53,13 @@ export function RulesPanel({ config, draft, onDraft, onSave, versions, accounts,
     <label className="space-y-1.5 text-xs text-secondary" key={key}><span>{label}</span><input className={inputClass} type="number" required min={min} max={max} step={scale === 100 ? 0.1 : 1} value={Number((draft[key] * scale).toFixed(4))} onChange={e => { if (Number.isFinite(e.target.valueAsNumber)) onDraft({ ...draft, [key]: e.target.valueAsNumber / scale }) }} /></label>
 
   return <div className="space-y-4">
-    <Notice>规则数值是用于验证的实验参数。默认范围为沪深主板非 ST，最近 10 个交易日没有收盘涨停。修改只在保存后生效；历史版本保留用于追溯。</Notice>
+    <Notice>规则数值是用于验证的实验参数。草稿范围为{universeLabels[draft.rules.universe]}，最近 {draft.rules.lookback_days} 个交易日没有收盘涨停。修改只在保存后生效；历史版本保留用于追溯。</Notice>
     {config.revision !== draft.revision && <Notice error>当前配置已更新至版本 {config.revision}。草稿基于版本 {draft.revision}，请先重新载入，避免覆盖其他修改。<button className={`${buttonClass} ml-3`} onClick={reload}>重新载入当前版</button></Notice>}
     <ErrorNotice error={error} />
     <form className="space-y-4" onSubmit={submit}>
       <fieldset disabled={saving} className={`${panelClass} space-y-4`}>
         <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-sm font-semibold">运行设置</h2><span className="text-xs text-secondary">当前版本 {config.revision} · {stamp(config.updated_at)}</span></div>
+        <label className="block max-w-md space-y-1.5 text-xs text-secondary"><span>候选市场范围</span><select className={inputClass} value={draft.rules.universe} onChange={event => onDraft({ ...draft, rules: { ...draft.rules, universe: event.target.value as FirstBoardRules['universe'] } })}>{Object.entries(universeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         <div className="flex flex-wrap gap-x-6 gap-y-3 text-sm">
           <label className="flex items-center gap-2"><input type="checkbox" checked={draft.enabled} onChange={e => onDraft({ ...draft, enabled: e.target.checked })} />开启自动盯盘</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={draft.notify} onChange={e => onDraft({ ...draft, notify: e.target.checked })} />发送信号通知</label>
@@ -87,6 +88,6 @@ export function RulesPanel({ config, draft, onDraft, onSave, versions, accounts,
       {invalid && <Notice error>{invalid}</Notice>}
       <div className="flex flex-wrap items-center gap-3"><button type="submit" className={`${buttonClass} border-accent/50 text-foreground`} disabled={saving || !!invalid || !dirty || config.revision !== draft.revision}>{saving ? '正在保存…' : '保存为新版本'}</button><button type="button" className={buttonClass} disabled={saving || !dirty} onClick={() => onDraft(config)}>放弃草稿</button><span aria-live="polite" className="text-xs text-secondary">{dirty ? '有未保存的修改' : '已与当前版本同步'}</span></div>
     </form>
-    <section className={panelClass}><h2 className="mb-3 text-sm font-semibold">历史版本</h2>{versions.length ? <ul className="divide-y divide-border">{versions.map(version => <li key={version.revision} className="flex flex-wrap items-center justify-between gap-3 py-3"><div className="text-xs"><span className="font-medium">版本 {version.revision}</span><span className="ml-3 text-secondary">{stamp(version.updated_at)} · {version.rules.enabled_patterns.map(pattern => patternLabels[pattern]).join(' / ') || '未启用形态'} · {version.rules.lookback_days} 日无收盘涨停</span></div><button className={buttonClass} disabled={saving} onClick={() => onDraft({ ...draft, rules: version.rules })}>载入规则到草稿</button></li>)}</ul> : <p className="text-sm text-secondary">首次保存后，规则版本会显示在这里。</p>}</section>
+    <section className={panelClass}><h2 className="mb-3 text-sm font-semibold">历史版本</h2>{versions.length ? <ul className="divide-y divide-border">{versions.map(version => <li key={version.revision} className="flex flex-wrap items-center justify-between gap-3 py-3"><div className="text-xs"><span className="font-medium">版本 {version.revision}</span><span className="ml-3 text-secondary">{stamp(version.updated_at)} · {universeLabels[version.rules.universe]} · {version.rules.enabled_patterns.map(pattern => patternLabels[pattern]).join(' / ') || '未启用形态'} · {version.rules.lookback_days} 日无收盘涨停</span></div><button className={buttonClass} disabled={saving} onClick={() => onDraft({ ...draft, rules: version.rules })}>载入规则到草稿</button></li>)}</ul> : <p className="text-sm text-secondary">首次保存后，规则版本会显示在这里。</p>}</section>
   </div>
 }

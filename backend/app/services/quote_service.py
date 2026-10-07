@@ -45,7 +45,7 @@ SOURCE_LABELS = {
     "strategy": "策略", "signal": "信号", "price": "价格",
     "market": "异动", "ladder": "连板梯队", "sector": "板块",
     "volume_delta": "放量", "abnormal": "异动", "date": "日期提醒",
-    "paper": "模拟盘", "first_board": "首板模式",
+    "paper": "模拟盘", "first_board": "首板模式", "huichun": "回春模式",
 }
 
 # final 定版确认容差: 快照时间戳允许早于边界 5s 内 (供应商时间戳精度不一)
@@ -686,6 +686,7 @@ class QuoteService:
         # 离锁执行结果不变; 时序不变式 (enriched 替换后才评估) 仍由调用顺序保证。
         if snapshot is not None:
             with self._evaluate_lock:
+                self._offer_first_board_snapshot(snapshot[0])
                 self._evaluate_monitors(*snapshot)
         return updated
 
@@ -954,8 +955,6 @@ class QuoteService:
         # 返回本轮快照 (daily_df, quote_extra) 作为评估输入
         return daily_df, quote_extra
 
-        self._offer_first_board_snapshot(daily_df)
-
     # ================================================================
     # 工具
     # ================================================================
@@ -979,15 +978,40 @@ class QuoteService:
             logger.exception("首板快照提交失败, 不影响行情和其他监控")
 
     def publish_first_board_alerts(self, events: list[dict]) -> None:
-        """首板工作线程复用统一告警留痕、SSE 与系统通知, 不自动跟单。"""
+        """兼容首板原通知设置; 配置模式规则后由规则统一筛选。"""
+        self.publish_mode_alerts(events, legacy_source="first_board")
+
+    def publish_mode_alerts(self, events: list[dict], *, legacy_source: str | None = None) -> None:
+        """模式工作线程复用规则、留痕、SSE 与通知出口, 不自动跟单。"""
         if not events or self._repo is None:
             return
         from app.services import alert_store
 
-        alerts = self._format_extension_notifications(events)
-        alert_store.append_many(self._repo.store.data_dir, alerts)
+        engine = getattr(self._app_state, "monitor_engine", None) if self._app_state else None
+        rule_events: list[dict] = []
+        pending: list[dict] = []
+        for source in dict.fromkeys(event.get("source") for event in events):
+            if source not in {"first_board", "huichun"}:
+                continue
+            batch = [event for event in events if event.get("source") == source]
+            if source == legacy_source and (engine is None or not engine.has_mode_rules(source)):
+                pending.extend(batch)
+            elif engine is not None:
+                rule_events.extend(engine.evaluate_mode_events(source, batch))
+        pending.extend(rule_events)
+        if not pending:
+            return
+        try:
+            alerts = self._format_extension_notifications(pending)
+            alert_store.append_many(self._repo.store.data_dir, alerts)
+        except Exception:
+            if rule_events:
+                engine.rollback_mode_events(rule_events)
+            raise
         self._broadcast_alerts(alerts)
         self._maybe_send_system_notifications(alerts)
+        if rule_events:
+            self._maybe_send_webhook([event for event in alerts if event.get("rule_id")], engine)
 
     def _collect_monitor_index_symbols(self) -> set[str]:
         """启用中的指数监控规则标的 (asset_type=index & scope=symbols)。"""

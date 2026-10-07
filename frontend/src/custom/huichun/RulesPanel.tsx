@@ -5,8 +5,8 @@ import { buttonClass, ErrorNotice, inputClass, Notice, panelClass, primaryClass 
 
 const fields: { key: keyof HuichunRules; label: string; hint: string; min: number; max: number; scale: number; step: number }[] = [
   { key: 'rally_threshold', label: '前段最小涨幅（%）', hint: '前一轮金叉至死叉的收盘涨幅下限。', min: 0, max: 1000, scale: 100, step: .01 },
-  { key: 'zero_threshold', label: '零轴距离上限（%）', hint: '回春金叉时 DIF、DEA 相对价格的距离上限。', min: 0, max: 100, scale: 100, step: .01 },
-  { key: 'ma_window', label: '趋势均线周期（交易日）', hint: '信号日收盘价需位于该均线上方。', min: 2, max: 500, scale: 1, step: 1 },
+  { key: 'zero_threshold', label: '零轴距离上限（%）', hint: '筛选日 DIF、DEA 相对价格的距离上限，适用于候选和观察池。', min: 0, max: 100, scale: 100, step: .01 },
+  { key: 'ma_window', label: '趋势均线周期（交易日）', hint: '信号日或观察日收盘价需位于该均线上方。', min: 2, max: 500, scale: 1, step: 1 },
   { key: 'slope_lag', label: '均线比较间隔（交易日）', hint: '当前均线需高于该间隔之前的均线。', min: 1, max: 250, scale: 1, step: 1 },
   { key: 'warmup_bars', label: '最少预热日线数', hint: '前段金叉前需要连续、有效的历史日线。', min: 1, max: 2000, scale: 1, step: 1 },
 ]
@@ -38,7 +38,7 @@ export function RulesPanel({ config, onSaved, reload }: { config: HuichunConfig;
   const changed = JSON.stringify(draft.values) !== JSON.stringify(draftFrom(config).values)
   useEffect(() => { if (changed) setSavedRevision(null) }, [changed])
   return <section className={`${panelClass} max-w-4xl space-y-5`}>
-    <div><h2 className="text-sm font-semibold">回春 A0 日线规则 <span className="ml-2 font-normal text-secondary">版本 {config.revision}</span></h2><p className="mt-2 max-w-prose text-xs leading-relaxed text-secondary">先经历符合涨幅要求的金叉与死叉，再寻找零轴附近的首次金叉，并确认价格与均线趋势。MACD 固定为 10 / 20 / 9。</p></div>
+    <div><h2 className="text-sm font-semibold">回春 A0 日线规则 <span className="ml-2 font-normal text-secondary">版本 {config.revision}</span></h2><p className="mt-2 max-w-prose text-xs leading-relaxed text-secondary">先经历符合涨幅要求的金叉与死叉，再寻找零轴附近的首次金叉，并确认价格与均线趋势。MACD 固定为 10 / 20 / 9。</p><p className="mt-2 max-w-prose text-xs leading-relaxed text-secondary">待金叉观察池共用以下参数，要求尚未出现首次金叉，且 DIF − DEA 连续两日为负、当日差值大于前日。保存后重新筛选，同时更新两个列表。</p></div>
     {config.revision !== draft.revision && <Notice>规则已在其他页面更新到版本 {config.revision}。请重新载入后再编辑，以免覆盖新的规则。</Notice>}
     {savedRevision !== null && <Notice>已保存为版本 {savedRevision}。重新筛选后使用新规则，已加入跟踪的股票保留原规则。</Notice>}
     <form className="space-y-5" onSubmit={event => { event.preventDefault(); if (!parsed.error) save.mutate({ rules: parsed.rules, expected_revision: draft.revision }) }}>

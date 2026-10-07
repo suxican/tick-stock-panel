@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Activity, BarChart3, Building2, ChartNoAxesCombined, Check, ChevronDown, ChevronUp, Eraser, Layers3, ListPlus, Plus, RadioTower, Save, Search, Siren, Tags, TrendingUp, Waypoints, X } from 'lucide-react'
 import { api, genRuleId, type MonitorRule, type MonitorCondition, type SectorKind, type SectorMonitorTarget, type StrategyNotifyEvent } from '@/lib/api'
 import { DEFAULT_STRATEGY_NOTIFY_EVENTS, LEGACY_STRATEGY_NOTIFY_EVENTS, STRATEGY_NOTIFY_EVENT_OPTIONS } from '@/lib/strategyMonitorEvents'
+import { DEFAULT_MODE_EVENTS, MODE_EVENT_OPTIONS, isModeMonitorType } from '@/lib/modeMonitorEvents'
 import { QK } from '@/lib/queryKeys'
 import { boardTag } from '@/components/stock-table/primitives'
 import { resolveWatchlistGroupColor } from '@/lib/watchlist-group-colors'
@@ -24,6 +25,7 @@ interface Props {
 
 const TYPE_DEFAULT_NAME: Record<string, string> = {
   signal: '信号监控', price: '价格监控', market: '市场异动监控', strategy: '策略监控', sector: '板块监控', abnormal: '异动监控', volume_delta: '轮询放量监控',
+  first_board: '首板模式监控', huichun: '回春模式监控',
 }
 
 const TYPE_ICONS = {
@@ -34,6 +36,8 @@ const TYPE_ICONS = {
   sector: Layers3,
   abnormal: Siren,
   volume_delta: BarChart3,
+  first_board: TrendingUp,
+  huichun: Activity,
 }
 
 const SECTOR_KIND_OPTIONS: Array<{ key: SectorKind; label: string; icon: typeof ChartNoAxesCombined }> = [
@@ -103,6 +107,9 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
         notify_events: rule.type === 'strategy'
           ? [...(rule.notify_events ?? LEGACY_STRATEGY_NOTIFY_EVENTS)]
           : undefined,
+        mode_events: isModeMonitorType(rule.type)
+          ? [...(rule.mode_events ?? DEFAULT_MODE_EVENTS[rule.type])]
+          : undefined,
         conditions: rule.conditions.map(c => ({ ...c })),
         sector_targets: rule.sector_targets?.map(target => ({ ...target })) ?? [],
       }
@@ -114,9 +121,19 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
     if (initial.type === 'strategy' && !initial.notify_events) {
       initial.notify_events = [...DEFAULT_STRATEGY_NOTIFY_EVENTS]
     }
+    if (isModeMonitorType(initial.type)) {
+      initial.asset_type = 'stock'
+      initial.scope = preset?.scope ?? 'all'
+      initial.conditions = []
+      initial.mode_events = [...(initial.mode_events ?? DEFAULT_MODE_EVENTS[initial.type])]
+    }
     return initial
   })
   const assetType = draft.asset_type ?? 'stock'
+  const isModeRule = isModeMonitorType(draft.type)
+  const modeEventOptions = isModeMonitorType(draft.type)
+    ? options.data?.mode_events?.[draft.type] ?? MODE_EVENT_OPTIONS[draft.type]
+    : []
   // 策略列表跟随资产类型: ETF 只列技术类策略。
   const strategies = useQuery({
     queryKey: QK.screenerStrategies(assetType),
@@ -181,6 +198,7 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
     mutationFn: () => {
       const d = { ...draft }
       delete d.runtime_warning
+      if (!isModeMonitorType(d.type)) delete d.mode_events
       // name 为空时用默认名
       if (!d.name.trim()) {
         const base = TYPE_DEFAULT_NAME[d.type] ?? '监控规则'
@@ -205,6 +223,14 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
         if (d.score_min != null && d.score_max != null && d.score_min > d.score_max) {
           throw new Error('最低分不能高于最高分')
         }
+      } else if (isModeMonitorType(d.type)) {
+        if (!d.mode_events?.length) throw new Error('至少选择一个模式事件')
+        d.asset_type = 'stock'
+        d.conditions = []
+        d.strategy_id = null
+        delete d.notify_events
+        delete d.score_min
+        delete d.score_max
       } else if (d.type === 'sector') {
         delete d.score_min
         delete d.score_max
@@ -394,6 +420,11 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
       }
     })
 
+  const toggleModeEvent = (event: string) => setDraft(d => {
+    const current = d.mode_events ?? []
+    return { ...d, mode_events: current.includes(event) ? current.filter(item => item !== event) : [...current, event] }
+  })
+
   const thresholdFields = options.data?.threshold_fields ?? []
   const operators = options.data?.operators ?? ['>', '>=', '<', '<=', '==', '!=']
   const selectedSignals = draft.conditions.filter(c => c.op === 'truth').map(c => c.field)
@@ -418,12 +449,14 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
   // 指数: 监控类型仅 signal/price (无涨跌停/策略/封单语义)
   // date: 由「持仓提醒」页 (批次派生) 生成, 监控中心不手工创建
   const visibleTypes = (options.data?.types ?? []).filter(
-    t => t.key !== 'date' && (assetType !== 'index' || t.key === 'signal' || t.key === 'price'),
+    t => t.key !== 'date' && (assetType !== 'index' || t.key === 'signal' || t.key === 'price')
+      && (assetType === 'stock' || !isModeMonitorType(t.key)),
   )
   // 指数: 作用范围仅 symbols (无全市场/板块语义); ETF: 不支持自选分组 (分组为个股)
   const visibleScopes = (options.data?.scopes ?? []).filter(
     s => (assetType !== 'index' || s.key === 'symbols')
-      && (assetType === 'stock' || s.key !== 'watchlist_group'),
+      && (assetType === 'stock' || s.key !== 'watchlist_group')
+      && (!isModeRule || ['all', 'symbols', 'watchlist_group'].includes(s.key)),
   )
   const sectorKind = draft.sector_kind ?? 'index'
   const sectorTargets = options.data?.sector_targets?.[sectorKind] ?? []
@@ -566,7 +599,7 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
       </div>
 
       {/* 资产类型: 股票 / ETF / 指数 (个股极简模式不显示; 板块/异动仅个股) */}
-      {!simple && draft.type !== 'sector' && draft.type !== 'abnormal' && (
+      {!simple && draft.type !== 'sector' && draft.type !== 'abnormal' && !isModeRule && (
         <div className="space-y-1.5">
           <span className="text-[11px] text-muted">资产类型</span>
           <div className="inline-flex h-9 rounded-btn border border-border overflow-hidden">
@@ -619,12 +652,17 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
                     ...d,
                     type,
                     // 轮询放量依赖全市场股票快照, 仅支持个股
-                    asset_type: type === 'volume_delta' ? 'stock' : d.asset_type,
+                    asset_type: type === 'volume_delta' || isModeMonitorType(type) ? 'stock' : d.asset_type,
                     notify_events: type === 'strategy'
                       ? [...(d.notify_events ?? DEFAULT_STRATEGY_NOTIFY_EVENTS)]
                       : undefined,
+                    mode_events: isModeMonitorType(type)
+                      ? [...(d.type === type ? d.mode_events ?? DEFAULT_MODE_EVENTS[type] : DEFAULT_MODE_EVENTS[type])]
+                      : undefined,
+                    conditions: isModeMonitorType(type) ? [] : d.conditions,
                     scope: type === 'sector' || type === 'abnormal' || type === 'volume_delta'
                       ? 'all'
+                      : isModeMonitorType(type) && (d.scope === 'sector' || (d.scope === 'symbols' && d.symbols.length === 0)) ? 'all'
                       : type === 'strategy' && d.scope === 'symbols' && d.symbols.length === 0 ? 'all' : d.scope,
                     // 轮询放量: 冷却期默认 300s (持续放量会连续多轮达标); 切走时还原 3600
                     cooldown_seconds: type === 'volume_delta' && d.type !== 'volume_delta' ? 300
@@ -663,6 +701,33 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
         <span className="text-[11px] text-muted">描述 (可选)</span>
         <input value={draft.name} onChange={e => setDraft(d => ({ ...d, name: e.target.value }))} placeholder="留空用默认名称" className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs text-foreground" />
       </label>
+
+      {isModeRule && (
+        <fieldset className="space-y-3 border-t border-border/60 pt-3">
+          <legend className="text-[11px] font-medium text-secondary">模式事件（任一命中即提醒）</legend>
+          <p className="text-[11px] leading-relaxed text-secondary">
+            {draft.type === 'first_board'
+              ? '接收首板模式已有的盘中事件。请在首板模式中开启「自动盯盘」和「消息通知」；本规则仅筛选通知事件与标的。'
+              : '在回春模式日线扫描完成后，按扫描交易日确认 A0 或待金叉事件。请在回春模式中执行扫描；创建规则不会启动自动扫描。'}
+            {' '}<Link to={draft.type === 'first_board' ? '/first-board' : '/huichun'} className="text-accent hover:underline">前往{draft.type === 'first_board' ? '首板' : '回春'}模式 →</Link>
+          </p>
+          <div className="grid gap-x-4 gap-y-2 sm:grid-cols-2">
+            {modeEventOptions.map(option => (
+              <label key={option.key} className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  value={option.key}
+                  checked={(draft.mode_events ?? []).includes(option.key)}
+                  onChange={() => toggleModeEvent(option.key)}
+                  className="h-3.5 w-3.5 accent-accent cursor-pointer"
+                />
+                <span className="text-[11px] text-foreground">{option.label}</span>
+              </label>
+            ))}
+          </div>
+          {(draft.mode_events ?? []).length === 0 && <p className="text-[11px] text-danger">至少选择一个模式事件</p>}
+        </fieldset>
+      )}
 
       {draft.type === 'sector' && (
         <div className="space-y-4 border-t border-border/60 pt-4">
@@ -1252,13 +1317,13 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
               )}
             </div>
           )}
-          {draft.scope === 'all' && <span className="text-[11px] text-muted">对全市场所有标的生效</span>}
+          {draft.scope === 'all' && <span className="text-[11px] text-muted">{isModeRule ? '接收该模式产生的所有标的事件' : '对全市场所有标的生效'}</span>}
           {draft.scope === 'sector' && <span className="text-[11px] text-muted/60">板块精确过滤(开发中,当前等同全市场)</span>}
         </div>
       </div>}
 
       {/* 触发条件 (非 strategy) */}
-      {draft.type !== 'strategy' && draft.type !== 'sector' && draft.type !== 'abnormal' && draft.type !== 'volume_delta' && (
+      {draft.type !== 'strategy' && draft.type !== 'sector' && draft.type !== 'abnormal' && draft.type !== 'volume_delta' && !isModeRule && (
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-[11px] text-muted">触发条件</span>

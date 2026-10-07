@@ -84,3 +84,23 @@ async def explain(request: Request, report_id: str):
         return await service.explain(report_id)
     except Exception as exc:
         raise _error(exc) from exc
+
+
+@router.get("/reports/{report_id}/capital")
+def capital(request: Request, report_id: str):
+    return _call(request, "capital", report_id)
+
+
+@router.post("/reports/{report_id}/capital")
+def refresh_capital(request: Request, report_id: str):
+    return _call(request, "refresh_capital", report_id)
+
+
+@router.get("/reports/{report_id}/model")
+def model(request: Request, report_id: str):
+    return _call(request, "model", report_id)
+
+
+@router.post("/reports/{report_id}/evaluate-model")
+def evaluate_model(request: Request, report_id: str):
+    return _call(request, "evaluate_model", report_id)

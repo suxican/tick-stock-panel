@@ -148,7 +148,7 @@ export function StockDailyKChart({
   extColumns,
   addedDate,
 }: Props) {
-  const [activeIndicators, setActiveIndicators] = useState<string[]>(['vol'])
+  const [activeIndicators, setActiveIndicators] = useState<string[]>(['vol', 'macd'])
   const [showMarkers, setShowMarkers] = useState(true)
   // 加入自选日标注（与「异动」标记相互独立）
   const [showAddedMark, setShowAddedMark] = useState(true)

@@ -15,11 +15,11 @@ from typing import Any
 import polars as pl
 
 from app.market_time import cn_today
-from app.price_limits import numpy_limit_price, price_limit_pct
 from app.strategy.first_board import (
     FirstBoardRules,
     evaluate_candidates,
     filter_pattern_history,
+    first_board_limit_price,
     required_history_bars,
 )
 
@@ -155,22 +155,17 @@ def _candidate_history(panel: pl.DataFrame, rules: FirstBoardRules) -> pl.DataFr
 
 
 def _limit(candidate: dict, current: dict, day: date) -> float | None:
-    import numpy as np
-
-    explicit = _number(current.get("limit_up"))
-    if explicit is not None:
-        return explicit if 0 < explicit < 10000 else None
     price = _number(current.get("raw_close"))
     adjusted = _number(current.get("close"))
     reference = _number(current.get("raw_prev_close"))
     if reference is None and price and adjusted and price > 0 and adjusted > 0:
         previous = _number(candidate.get("reference_adjusted_close"))
         reference = previous * price / adjusted if previous and previous > 0 else None
-    if reference is None or reference <= 0:
-        return None
-    return float(numpy_limit_price(
-        np.array([reference]), np.array([price_limit_pct(candidate["symbol"], day)]), up=True,
-    )[0])
+    # Share the exact live-rule limit, including historical ChiNext rates and
+    # correction of pre-reform 20% values cached by the generic enrichment path.
+    return first_board_limit_price(
+        candidate["symbol"], day, reference, explicit=_number(current.get("limit_up")),
+    )
 
 
 def _samples(panel: pl.DataFrame, sessions: list[date], start: date, end: date,

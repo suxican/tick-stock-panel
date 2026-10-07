@@ -1,7 +1,8 @@
 """能力注册表与能力路由矩阵 — 数据集维度的单一权威定义。
 
 能力 (capability) = 一个标准化数据集 (CONTRIBUTING「数据源插件化要求」):
-daily / adj_factor / realtime / minute / depth5 / financial (注册表顺序即设置页卡片顺序)。注册表集中声明每个
+daily / adj_factor / realtime / minute / depth5 / financial / full_minute / overseas
+(注册表顺序即设置页卡片顺序)。注册表集中声明每个
 能力的展示元数据、路由偏好字段与 TickFlow 档位要求, 前端设置页不再各自硬编码。
 depth5 与其他数据集一样可由插件声明并独立路由; 五档不可用时连板梯队封单/
 看板封单通过 usable 给出缺数据提示。
@@ -11,7 +12,7 @@ build_capability_matrix 把注册表、插件/自定义源的能力声明 (datas
 (preferences getters 自带合法源校验), 本模块不反向依赖 services 层。
 
 候选契约: 每个能力的 candidates 只包含「当前确实可提供该能力」的源 —
-TickFlow 按当前订阅档位过滤 (日K全档位, 其余按注册表 tf_tier 门槛),
+TickFlow 按当前订阅档位过滤 (日K全档位, tf_tier=None 表示不提供该能力),
 未就绪的插件/自定义源 (依赖未装/Key 未配) 放入 pending 并携带原因,
 供前端置灰提示。其他页面可以把 candidates 直接当作可用提供方名单。
 
@@ -85,6 +86,15 @@ CAPABILITY_REGISTRY: list[dict] = [
         "tf_tier": "expert",
         # TickFlow 侧需 Expert 档; 插件/自定义源声明 full_minute 数据集即可提供
         # (插件实现 get_intraday_batch / 可选 get_intraday_latest, YAML 仅修复轮)
+    },
+    {
+        "id": "overseas",
+        "label": "外围行情",
+        "desc": "纳斯达克与韩国市场参考行情",
+        "field": "overseas_data_provider",
+        "default": "yahoo_overseas",
+        # None means unsupported, distinct from the free domestic daily tier.
+        "tf_tier": None,
     },
 ]
 
@@ -163,7 +173,7 @@ def build_capability_matrix(current: dict[str, str], tickflow_tier: str = "none"
     for cap in CAPABILITY_REGISTRY:
         # field=None → 不可路由能力 (仅 TickFlow 提供, 无路由偏好), 生效源恒为默认
         effective = current.get(cap["field"], cap["default"]) if cap["field"] else cap["default"]
-        tf_available = tier_rank >= _TIER_RANK[cap["tf_tier"]]
+        tf_available = cap["tf_tier"] is not None and tier_rank >= _TIER_RANK[cap["tf_tier"]]
         candidates: list[dict] = []
         pending: list[dict] = []
         if tf_available:

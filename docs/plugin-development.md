@@ -271,11 +271,68 @@ provider 不应自行切换或回退到其他数据源。
 | `name` | 可选 | 快照无名称时置 None, 下游用标的维表关联 |
 | `amplitude` / `turnover_rate` / `session` | 可选 | 缺失置 None, 不启发式伪造; turnover_rate 入口为小数制 |
 
+### 海外观察数据集 `overseas`
+
+海外观察使用独立数据集和路由，不混入 A 股 `realtime`、国内指数缓存或本地日线仓库。
+目前仅支持 Python 插件；通用 YAML 数据源尚未实现此数据集的字段映射，声明该能力会被拒绝。插件只在真实提供此能力时声明 `datasets: [overseas]`，并实现：
+
+```python
+def get_overseas_quotes(self) -> dict:
+    # source 为插件名，fetched_at 为带时区的本次采集时间。
+    return {"source": self.name, "fetched_at": "2026-09-30T07:00:00+00:00", "quotes": []}
+```
+
+`quotes` 的四个固定标的是纳斯达克综合指数 `^IXIC`、韩国 KOSPI `^KS11`、
+三星电子 `005930.KS`、SK 海力士 `000660.KS`。每个标的始终返回一行，失败也应保留
+标识和原因，禁止用零涨跌幅代替缺失值：
+
+| 字段 | 契约 |
+| --- | --- |
+| `symbol` / `name` | 固定标识和中文显示名；不得用纳斯达克 100、ETF 或存托凭证暗中代替 |
+| `market` / `currency` | `US` 或 `KR`；本币报价为 `USD` 或 `KRW`，不做汇率换算 |
+| `state` | provider 返回 `ready`、`unavailable` 或 `unverified`；消费服务可再标记 `stale` |
+| `price` / `previous_close` | 正数或 `null`；最新常规交易报价、其相邻上一交易日的同口径收盘价 |
+| `change_pct` | **小数制**，`price / previous_close - 1`；无法核验时为 `null` |
+| `session_date` | 报价所属交易所本地日期，不能直接使用北京时间日期 |
+| `observed_at` | 带时区的报价时间；不能用抓取时间代替缺失的报价时间 |
+| `available_at` | 本系统本次实际取得报价的时间；不是历史最早公开时间 |
+| `phase` | `intraday`、`closed`、`unknown`；无法核验交易时段时为 `unknown` |
+| `source_url` / `reason` | 固定行情页面和可读状态原因；不得泄漏响应原文、密钥或底层异常 |
+
+内置 `yahoo_overseas` 使用项目已有 `httpx`，无需额外依赖或 API Key。
+注册、构造、`availability()`、`validate()` 均不联网；显式采集时最多四个并发请求，
+每个请求超时 8 秒，不重试、不跟随跳转、不使用账户凭据或浏览器伪装。HTTP 429、
+网络错误、空数据按标的隔离，采集结束关闭客户端，不静默换源。
+
+适配器使用 Yahoo chart 的 `regularMarketPrice`、`regularMarketTime`，
+按 `America/New_York`（自动处理夏令时）和 `Asia/Seoul` 归属交易日。
+`chartPreviousClose` 可能是查询区间的起点基准，**不得直接作为上一交易日收盘价**；
+适配器改用返回日线的相邻两个交易日，并检查日期、OHLC、空值和数组长度。
+最新报价须处于当日日线高低价之间，仅容许源声明价格精度的半单位舍入差；
+报价与日线尺度不一致时，适配器保留部分报价但不计算涨跌幅；消费服务会清空未核验行的数值，只展示原因，不猜测倍数或自行换算。
+日线时间只用于识别交易日，不代表该日收盘价何时可得。
+
+韩国个股请求除权事件并核对相邻两日 `adjclose / close` 的口径是否一致。
+比较窗口跨分红、拆股等事件，事件字段异常，或缺少除权校验数据时，保留有效报价，
+将涨跌幅标为不可核验。接口未返回事件仅表示本次返回中没有事件记录，不代表完整公告核验。
+本模块不修复或猜测公司行动。
+
+数据源的 `currentTradingPeriod` 可能已指向下一交易日，因此只有它与报价所属日期一致时
+才判断盘中/收盘；只有接近已结束时段末端的报价才能标为收盘。未取得独立海外交易日历，
+不根据周一至周五推定开市；消费服务还需校验报价新鲜度与分析截止时间。
+后取得的行情不得回填历史计划，延迟时长无法核验时必须明确显示，不能宣称实时行情。
+
+该公开 chart 端点并非有可用性保证的开发者接口。实现依据为
+[yfinance 维护者的 chart 调用](https://github.com/ranaroussi/yfinance/blob/main/yfinance/scrapers/history.py)
+及[相邻日线前收口径](https://github.com/ranaroussi/yfinance/blob/main/yfinance/scrapers/quote.py)。
+本次连接核验中四标的均收到 HTTP 429；自动化测试使用合成固定样本，不代表实盘源已可用。
+
 ### config.datasets 的作用
 
 `provider_has_dataset(name, dataset)` 通过 `dataset in provider.config.datasets` 判断。
-这是 services 层路由的关键: 用户在设置页选了插件, 但某数据集未声明时, 该数据集
-自动回退 TickFlow。
+这是 services 层路由的关键: 用户在设置页选了插件, 但某数据集未声明时, 国内数据集
+按各自契约回退 TickFlow。独立的 `overseas` 能力不支持 TickFlow；无有效配置时选默认
+`yahoo_overseas`，选定插件采集失败后不再尝试其他来源。
 
 ```python
 class MyConfig:

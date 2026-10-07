@@ -1,0 +1,9 @@
+name: yahoo_overseas
+display_name: "Yahoo Finance 海外行情"
+runtime: python
+entry: app.plugins.yahoo_overseas.provider:YahooOverseasProvider
+check: app.plugins.yahoo_overseas.provider:availability
+datasets: [overseas]
+description: "纳斯达克综合指数、韩国 KOSPI、三星电子及 SK 海力士的公开报价参考。可能延迟、限流或不可用；不提供历史时点可得性保证。"
+install_hint: "使用项目已有 httpx；无需 API Key。公开接口不可用时显示缺失，不跨源替换。"
+homepage: "https://finance.yahoo.com/"

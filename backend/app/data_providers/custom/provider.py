@@ -105,6 +105,9 @@ class GenericHTTPProvider:
     def validate(self) -> list[str]:
         errors: list[str] = []
         for dataset, cfg in self.config.datasets.items():
+            if dataset == "overseas":
+                errors.append("外围行情需使用实现 get_overseas_quotes 的 Python 插件, 暂不支持通用 YAML 映射")
+                continue
             if not cfg.url:
                 errors.append(f"{dataset}: url is required")
             required = _REQUIRED.get(dataset)

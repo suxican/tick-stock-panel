@@ -36,7 +36,9 @@ def load(tmp_path, data, *, start=date(2025, 1, 1), end=date(2025, 1, 12)):
 
 def test_calendar_excludes_closures_and_weekends_and_clips_request(tmp_path, calendar_data):
     assert load(tmp_path, calendar_data, end=date(2025, 1, 6)) == [
-        date(2025, 1, 2), date(2025, 1, 3), date(2025, 1, 6)
+        date(2025, 1, 2),
+        date(2025, 1, 3),
+        date(2025, 1, 6),
     ]
     assert load(tmp_path, calendar_data, start=date(2025, 1, 4), end=date(2025, 1, 5)) == []
 
@@ -71,10 +73,12 @@ def test_calendar_rejects_invalid_coverage_date(tmp_path, calendar_data, field, 
 
 @pytest.mark.parametrize(
     "start,end",
-    [(date(2024, 12, 31), date(2025, 1, 3)),
-     (date(2025, 1, 3), date(2025, 1, 13)),
-     (date(2025, 1, 3), date(2025, 1, 2)),
-     (datetime(2025, 1, 1), date(2025, 1, 3))],
+    [
+        (date(2024, 12, 31), date(2025, 1, 3)),
+        (date(2025, 1, 3), date(2025, 1, 13)),
+        (date(2025, 1, 3), date(2025, 1, 2)),
+        (datetime(2025, 1, 1), date(2025, 1, 3)),
+    ],
 )
 def test_calendar_rejects_uncovered_or_invalid_request(tmp_path, calendar_data, start, end):
     with pytest.raises(ValueError):
@@ -83,11 +87,16 @@ def test_calendar_rejects_uncovered_or_invalid_request(tmp_path, calendar_data, 
 
 @pytest.mark.parametrize(
     "field,value",
-    [("id", ""), ("title", " "), ("published_on", "2024-02-30"),
-     ("url", "file:///calendar.json"), ("url", "https://localhost/notice"),
-     ("url", "https://www.sse.com.cn.evil.example/notice"),
-     ("url", "https://user:secret@www.sse.com.cn/notice"),
-     ("url", "https://www.sse.com.cn:bad/notice")],
+    [
+        ("id", ""),
+        ("title", " "),
+        ("published_on", "2024-02-30"),
+        ("url", "file:///calendar.json"),
+        ("url", "https://localhost/notice"),
+        ("url", "https://www.sse.com.cn.evil.example/notice"),
+        ("url", "https://user:secret@www.sse.com.cn/notice"),
+        ("url", "https://www.sse.com.cn:bad/notice"),
+    ],
 )
 def test_calendar_rejects_invalid_source(tmp_path, calendar_data, field, value):
     calendar_data["sources"][0][field] = value
@@ -103,9 +112,14 @@ def test_calendar_rejects_duplicate_source_id(tmp_path, calendar_data):
 
 @pytest.mark.parametrize(
     "field,value",
-    [("source_id", "missing"), ("start_date", "2025-01-02"),
-     ("start_date", "2024-12-31"), ("end_date", "2025-01-13"),
-     ("end_date", "2025-02-30"), ("source_id", None)],
+    [
+        ("source_id", "missing"),
+        ("start_date", "2025-01-02"),
+        ("start_date", "2024-12-31"),
+        ("end_date", "2025-01-13"),
+        ("end_date", "2025-02-30"),
+        ("source_id", None),
+    ],
 )
 def test_calendar_rejects_invalid_closure(tmp_path, calendar_data, field, value):
     calendar_data["closures"][0][field] = value

@@ -32,7 +32,19 @@ frontend/dist/
 frontend/.vite/
 backend/static/
 backend/app/static/
-backend/tests/
+backend/tests/*
+# Keep the new market-model regression suite reviewable without exposing local fixtures.
+!backend/tests/test_market_game_ecology.py
+!backend/tests/test_market_game_feedback.py
+!backend/tests/test_market_game_execution.py
+!backend/tests/test_market_game_adaptation.py
+!backend/tests/test_market_game_model_store.py
+!backend/tests/test_market_game_model_service.py
+!backend/tests/test_market_game_api.py
+# Mode monitoring contract and publication regressions.
+!backend/tests/test_mode_monitor_rules.py
+!backend/tests/test_mode_monitor_publishing.py
+!backend/tests/test_huichun_mode_monitor.py
 
 # ===== IDE =====
 .idea/

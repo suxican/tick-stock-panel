@@ -165,13 +165,12 @@ if (-not (Test-Path (Join-Path $BackendDir '.venv')) -or $BackendExtraArgs.Count
     Log-Ok 'backend deps installed'
 }
 
-if (-not (Test-Path (Join-Path $FrontendDir 'node_modules'))) {
-    Log-Info 'first run - installing Node deps...'
-    Push-Location $FrontendDir
-    try { & pnpm install } finally { Pop-Location }
-    if ($LASTEXITCODE -ne 0) { Log-Err 'pnpm install failed'; exit 1 }
-    Log-Ok 'frontend deps installed'
-}
+# Existing node_modules may predate a code update; sync against the checked-in lockfile.
+Log-Info 'syncing Node deps...'
+Push-Location $FrontendDir
+try { & pnpm install --frozen-lockfile } finally { Pop-Location }
+if ($LASTEXITCODE -ne 0) { Log-Err 'pnpm install failed'; exit 1 }
+Log-Ok 'frontend deps synced'
 
 # ===== 4. Banner (ASCII so it renders on any codepage) =====
 Write-Host ''

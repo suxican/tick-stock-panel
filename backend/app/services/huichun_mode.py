@@ -17,6 +17,7 @@ import math
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import suppress
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -42,11 +43,13 @@ from app.services.huichun_audit import (
 )
 from app.services.huichun_calendar import load_market_calendar
 from app.strategy.huichun_a0 import A0Params, audit_a0
+from app.strategy.huichun_watch import pending_crosses
 
 logger = logging.getLogger(__name__)
 _WRITE_LOCK = threading.RLock()
 _LIMITATIONS = [
     "A0 日线收盘形态筛选，MACD 参数固定为 10/20/9；不包含 A1/B1 分钟信号。",
+    "待金叉观察池只表示截至所选交易日差值收敛，尚未确认金叉，不作为买入或收益跟踪信号。",
     "按当前证券简称排除 ST/*ST；历史风险警示、退市状态及复权事件完整性未核实，资格仍待核验。",
     "收益以信号日复权收盘为基准，不含费用、滑点及成交限制，不代表可成交收益。",
     "按独立交易日历计数；缺口不填补，未来收益待观察。无可用独立日历时收益保持未知。",
@@ -130,8 +133,12 @@ def _idle_job() -> dict:
 
 
 class HuichunModeService:
-    def __init__(self, repo, *, data_dir: Path | None = None, calendar_path: Path | None = None):
+    def __init__(
+        self, repo, *, data_dir: Path | None = None, calendar_path: Path | None = None,
+        publish: Callable[[list[dict]], None] | None = None,
+    ):
         self.repo = repo
+        self._publish = publish
         self.root: Path = (data_dir or repo.store.data_dir) / "user_data" / "huichun"
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -371,12 +378,54 @@ class HuichunModeService:
                     self._write("snapshot.json", self._snapshot)
                 except OSError:
                     logger.exception("Huichun mode failure state could not be saved")
+        else:
+            if scan is not None:
+                self._publish_scan_events(scan)
         finally:
             with self._lock:
                 refresh = self._refresh_requested and not self._stop.is_set()
                 self._refresh_requested = False
             if refresh:
                 self.start_tracking_refresh()
+
+    def _publish_scan_events(self, scan: dict) -> None:
+        if self._publish is None:
+            return
+        try:
+            day = scan["observation_date"]
+            # Historical reviews retain their results but must not become new
+            # monitoring signals, nor may an obsolete rule revision notify.
+            with self._lock, _WRITE_LOCK:
+                if (
+                    day != str(self._latest_observed_date)
+                    or scan["rule_revision"] != self._read_config().revision
+                ):
+                    return
+            events = []
+            published_at = int(_now().timestamp() * 1000)
+            for pool, date_field, event_type, label in (
+                ("candidates", "signal_date", "a0_confirmed", "A0 形态确认"),
+                ("observations", "observation_date", "pending_cross", "待金叉观察，尚未确认金叉"),
+            ):
+                for row in scan.get(pool, []):
+                    if row[date_field] != day:
+                        continue
+                    events.append({
+                        "id": f"huichun:{event_type}:{row['id']}",
+                        "source": "huichun", "type": event_type, "event_type": event_type,
+                        "ts": published_at, "date": day, "observation_date": day,
+                        "symbol": row["symbol"], "name": row["name"],
+                        "price": row["raw_close"], "rule_revision": scan["rule_revision"],
+                        "message": (
+                            f"回春模式 {row['name']}（{row['symbol']}）{day}：{label}；"
+                            "日线观察，不代表成交。"
+                        ),
+                    })
+            if events:
+                self._publish(events)
+        except Exception:
+            # Notification availability must not invalidate persisted research.
+            logger.exception("Huichun mode monitor publication failed")
 
     def _calendar(self) -> list[date]:
         if not _table_exists(self.repo, "kline_daily"):
@@ -517,7 +566,8 @@ class HuichunModeService:
                     listings[symbol] = date.fromisoformat(str(listing)[:10])
         st_symbols = {symbol for symbol in symbols if is_risk_warning_name(names.get(symbol))}
         symbols = [symbol for symbol in symbols if symbol not in st_symbols]
-        candidates, factor_excluded, gaps = [], set(), 0
+        candidates, observations, factor_excluded, gaps = [], [], set(), 0
+        params = A0Params(**config.rules.model_dump())
         with self._lock:
             self._snapshot["job"]["total_symbols"] = len(symbols)
         for offset in range(0, len(symbols), 128):
@@ -540,14 +590,16 @@ class HuichunModeService:
             if not prepared.frame.is_empty():
                 result = audit_a0(
                     prepared.frame,
-                    start=start,
+                    # Observation state and the preceding indicator must not
+                    # depend on the selected confirmed-signal start date.
+                    start=prepared.frame["date"].min(),
                     end=end,
-                    params=A0Params(**config.rules.model_dump()),
+                    params=params,
                 )
                 raw_prices = {
                     (s, d): c for s, d, c in raw.select("symbol", "date", "close").iter_rows()
                 }
-                for row in result.signals.iter_rows(named=True):
+                for row in result.signals.filter(pl.col("r_date") >= start).iter_rows(named=True):
                     symbol, day = row["symbol"], row["r_date"]
                     candidates.append(
                         {
@@ -570,18 +622,39 @@ class HuichunModeService:
                             "baseline_fingerprint": self._baseline(raw, factors, symbol, day),
                         }
                     )
+                pending = pending_crosses(result, observation_date=calendar[-1], params=params)
+                for row in pending.iter_rows(named=True):
+                    symbol, day = row["symbol"], row["observation_date"]
+                    observations.append(
+                        {
+                            **row,
+                            "id": _digest([
+                                "pending_cross", symbol, day, config.revision,
+                                config.rules.model_dump(),
+                            ]),
+                            "name": names.get(symbol, symbol),
+                            "observation_date": str(day),
+                            "g_date": str(row["g_date"]),
+                            "d_date": str(row["d_date"]),
+                            "raw_close": raw_prices[symbol, day],
+                            "eligibility_status": "unknown",
+                            "rule_revision": config.revision,
+                        }
+                    )
             with self._lock:
                 self._snapshot["job"]["processed_symbols"] = min(offset + 128, len(symbols))
         return {
             "id": job_id,
             "start_date": str(start),
             "end_date": str(end),
+            "observation_date": str(calendar[-1]),
             "created_at": _now().isoformat(),
             "rule_revision": config.revision,
             "rules": config.rules.model_dump(),
             "candidates": sorted(
                 candidates, key=lambda r: (r["signal_date"], r["rally_return"]), reverse=True
             ),
+            "observations": sorted(observations, key=lambda r: (r["gap_distance"], r["symbol"])),
             "coverage": {
                 "universe": "sh_sz_a_shares",
                 "st_filter": "current_instrument_name",
@@ -596,6 +669,86 @@ class HuichunModeService:
             "limitations": list(_LIMITATIONS),
         }
 
+    def _tracking_quotes(self, symbols: list[str]) -> dict[str, tuple[date, float]]:
+        """Read one shared snapshot in the worker; no per-record quote calls."""
+        try:
+            frame, _ = self.repo.get_enriched_latest()
+        except Exception:
+            logger.warning("Huichun current quote cache unavailable", exc_info=True)
+            return {}
+        if not {"symbol", "date", "raw_close"}.issubset(frame.columns):
+            return {}
+        frame = frame.filter(pl.col("symbol").is_in(symbols))
+        frame = frame.filter(~pl.col("symbol").is_duplicated())
+        quotes = {}
+        for symbol, day, price in frame.select("symbol", "date", "raw_close").iter_rows():
+            if isinstance(day, str):
+                try:
+                    parsed = date.fromisoformat(day)
+                    day = parsed if parsed.isoformat() == day else None
+                except ValueError:
+                    day = None
+            if (
+                type(day) is date
+                and day <= _now().date()
+                and isinstance(price, (int, float))
+                and not isinstance(price, bool)
+                and math.isfinite(price)
+                and price > 0
+            ):
+                quotes[symbol] = (day, float(price))
+        return quotes
+
+    def _current_basis(self, record, quote, raw, factors, calendar, *, changed, undated) -> dict:
+        """Validate a same-date multiplier without storing or freezing live price."""
+        day = date.fromisoformat(record["signal_date"])
+        result = {"quote_date": None, "status": "no_quote", "factor_multiplier": None}
+        if quote is None or quote[0] < day:
+            return result
+        target, current_price = quote
+        result["quote_date"] = str(target)
+        if undated:
+            result["status"] = "invalid_factor"
+        elif changed:
+            result["status"] = "baseline_changed"
+        elif self._calendar_source != "official_exchange_calendar" or day not in calendar or target not in calendar:
+            result["status"] = "unknown_gap"
+        else:
+            symbol = record["symbol"]
+            window = [d for d in calendar if day <= d <= target]
+            scoped_raw = raw.filter((pl.col("symbol") == symbol) & pl.col("date").is_between(day, target))
+            prepared = prepare_batch(
+                scoped_raw, pl.DataFrame(schema=FACTOR_SCHEMA), market_dates=window,
+                end=target, listing_dates={symbol: day},
+            )
+            prices = {d: c for d, c in prepared.frame.select("date", "close").iter_rows()}
+            base = prices.get(day)
+            # The quote may be intraday. Every earlier session still needs a
+            # valid completed bar; the signal itself must retain its close.
+            if base is None or any(d not in prices for d in window[:-1]):
+                result["status"] = "unknown_gap"
+            elif base != record.get("base_close"):
+                result["status"] = "baseline_changed"
+            else:
+                events = factors.filter(
+                    (pl.col("symbol") == symbol)
+                    & (pl.col("trade_date") > day)
+                    & (pl.col("trade_date") <= target)
+                )
+                event_prices = pl.DataFrame(
+                    [(symbol, d, prices[d]) for d in window[:-1]] + [(symbol, target, current_price)],
+                    schema={"symbol": pl.String, "date": pl.Date, "close": pl.Float64}, orient="row",
+                )
+                if symbol in self._invalid_factors(event_prices, events, calendar):
+                    result["status"] = "invalid_factor"
+                else:
+                    multiplier = math.prod(events["ex_factor"].to_list())
+                    if not math.isfinite(multiplier) or multiplier <= 0:
+                        result["status"] = "invalid_factor"
+                    else:
+                        result.update(status="ok", factor_multiplier=multiplier)
+        return result
+
     def _calculate_tracking(self) -> dict[str, dict]:
         records = self.get_tracking()["records"]
         if not records:
@@ -605,7 +758,15 @@ class HuichunModeService:
             raise ValueError("暂无已收盘日线数据，跟踪结果未更新")
         end = calendar[-1]
         symbols = sorted({r["symbol"] for r in records})
-        raw, factors = self._raw(symbols, end), self._factors(symbols, end)
+        quotes = self._tracking_quotes(symbols)
+        quote_end = max([end, *(quote[0] for quote in quotes.values())])
+        raw, factors = self._raw(symbols, quote_end), self._factors(symbols, quote_end)
+        quote_calendar = calendar
+        if quote_end > end:
+            try:
+                quote_calendar = load_market_calendar(self._calendar_path, start=calendar[0], end=quote_end) if self._calendar_path else []
+            except (OSError, ValueError):
+                quote_calendar = []
         indices = {day: i for i, day in enumerate(calendar)}
         updates = {}
         for record in records:
@@ -682,6 +843,10 @@ class HuichunModeService:
                 )
             updates[record["id"]] = {
                 "returns": observations,
+                "current_basis": self._current_basis(
+                    record, quotes.get(symbol), raw, factors, quote_calendar,
+                    changed=changed, undated=undated_factor,
+                ),
                 "updated_at": _now().isoformat(),
                 "baseline_fingerprint": record["baseline_fingerprint"],
                 "added_at": record["added_at"],

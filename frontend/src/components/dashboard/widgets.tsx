@@ -368,6 +368,7 @@ export function HotRankCard({ title, rank, configUrl, onStockClick, onDimensionC
 // ===== 监控中心小组件 — 前 10 条触发记录 =====
 const _SOURCE_BADGE: Record<string, string> = {
   first_board: 'bg-accent/10 text-accent',
+  huichun: 'bg-accent/10 text-accent',
   strategy: 'bg-amber-400/10 text-amber-400',
   signal: 'bg-accent/10 text-accent',
   price: 'bg-emerald-400/10 text-emerald-400',
@@ -376,6 +377,7 @@ const _SOURCE_BADGE: Record<string, string> = {
 }
 const _SOURCE_LABEL: Record<string, string> = {
   first_board: '首板模式',
+  huichun: '回春模式',
   strategy: '策略', signal: '信号', price: '价格', market: '异动', sector: '板块',
 }
 const _SEVERITY_BAR: Record<string, string> = {

@@ -514,3 +514,34 @@ def test_changed_official_calendar_aborts_before_report_publication(tmp_path, da
         assert not output.exists()
     finally:
         store.db.close()
+
+
+def test_research_factor_replacement_is_hashed_and_does_not_merge_repository(tmp_path, days):
+    import json
+
+    from app.services.huichun_audit import run_audit, snapshot_files
+    from app.tickflow.repository import DataStore, KlineRepository
+
+    store = DataStore(tmp_path / "data")
+    try:
+        raw_rows(days).write_parquet(store.data_dir / "kline_daily/sample.parquet")
+        factors([days[2]], [2.0]).write_parquet(store.data_dir / "adj_factor/sample.parquet")
+        store._register_views()
+        before = snapshot_files(store.data_dir)
+        replacement = tmp_path / "replacement.parquet"
+        factors([]).write_parquet(replacement)
+        output = tmp_path / "audit"
+        run_audit(
+            KlineRepository(store),
+            start=days[0],
+            end=days[-1],
+            output_dir=output,
+            factors_path=replacement,
+        )
+        assert snapshot_files(store.data_dir) == before
+        coverage = pl.read_parquet(output / "coverage_by_symbol.parquet")
+        assert coverage["factor_events"].sum() == 0
+        manifest = json.loads((output / "run_manifest.json").read_text(encoding="utf-8"))
+        assert any(r["path"].startswith("factors:") for r in manifest["inputs"]["files"])
+    finally:
+        store.db.close()

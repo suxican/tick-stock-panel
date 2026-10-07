@@ -290,13 +290,13 @@ Get-NetTCPConnection -State Listen -LocalPort 3018,3011 -ErrorAction SilentlyCon
 .\dev.ps1
 ```
 
-第一次运行时脚本会：
+每次运行时脚本会：
 
 1. 检查 `uv` 和 `pnpm`。
 2. 读取根目录 `.env` 中的 `HOST`、`PORT` 和 `BACKEND_EXTRAS`。
 3. 释放后端 3018 与前端 3011 端口。
 4. 如果 `backend/.venv` 不存在，执行 `uv sync --frozen`。
-5. 如果 `frontend/node_modules` 不存在，执行 `pnpm install`。
+5. 执行 `pnpm install --frozen-lockfile`，按仓库锁文件同步前端依赖，确保更新代码后新增依赖也会安装。
 6. 启动 Uvicorn：`app.main:app`，开启后端热重载。
 7. 启动 Vite，并把 API 请求代理到同一后端端口。
 8. 在当前窗口持续输出带 `[backend]`、`[frontend]` 前缀的日志。

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections import Counter
 from datetime import date
 from typing import Literal, Self
@@ -14,6 +15,8 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.price_limits import (
+    GEM_REGISTRATION_DATE,
+    MAIN_BOARD_LIMIT,
     is_risk_warning_name,
     numpy_limit_price,
     polars_is_risk_warning_name,
@@ -24,12 +27,16 @@ from app.price_limits import (
 
 Pattern = Literal["platform", "trend", "oversold"]
 PATTERN_LABELS = {"platform": "平台突破", "trend": "趋势加速", "oversold": "超跌反弹"}
+_UNIVERSE_PATTERNS = {
+    "main_board_non_st": r"^(60\d{4}\.SH|00\d{4}\.SZ)$",
+    "hs_a_non_st": r"^(60\d{4}\.SH|00\d{4}\.SZ|30[01]\d{3}\.SZ|68[89]\d{3}\.SH)$",
+}
 
 
 class FirstBoardRules(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
-    universe: Literal["main_board_non_st"] = "main_board_non_st"
+    universe: Literal["main_board_non_st", "hs_a_non_st"] = "hs_a_non_st"
     lookback_days: int = Field(default=10, ge=1, le=60)
     enabled_patterns: list[Pattern] = Field(default_factory=lambda: list(PATTERN_LABELS))
     min_history_days: int = Field(default=60, ge=20, le=250)
@@ -42,7 +49,7 @@ class FirstBoardRules(BaseModel):
     oversold_window: int = Field(default=60, ge=20, le=120)
     oversold_min_drawdown: float = Field(default=0.25, gt=0, lt=1)
     approaching_distance: float = Field(default=0.03, ge=0, le=0.10)
-    min_change_pct: float = Field(default=0.05, ge=0, le=0.10)
+    min_change_pct: float = Field(default=0.05, ge=0, le=0.20)
     min_turnover_rate: float = Field(default=2.0, ge=0, le=100)
     max_turnover_rate: float = Field(default=30.0, gt=0, le=100)
     min_amount: float = Field(default=50_000_000.0, ge=0, le=1e12)
@@ -117,8 +124,13 @@ def _features(history: pl.DataFrame, rules: FirstBoardRules) -> pl.DataFrame:
     df = df.with_columns(
         pl.when(previous.is_finite() & (previous > 0))
         .then(previous / pl.col("_adjustment")).otherwise(None).alias("_reference_raw"),
-        polars_price_limit_pct(pl.col("symbol"), pl.col("date"),
-                              polars_is_risk_warning_name(pl.col("name"))).alias("_limit_pct"),
+        # 全局 helper 尚未覆盖创业板注册制前10%的历史规则, 首板统一补足。
+        pl.when(pl.col("symbol").str.contains(r"^30[01]\d{3}\.SZ$")
+                & (pl.col("date") < pl.lit(GEM_REGISTRATION_DATE)))
+        .then(MAIN_BOARD_LIMIT)
+        .otherwise(polars_price_limit_pct(pl.col("symbol"), pl.col("date"),
+                                         polars_is_risk_warning_name(pl.col("name"))))
+        .alias("_limit_pct"),
     ).with_columns(
         polars_limit_price(pl.col("_reference_raw"), pl.col("_limit_pct"), up=True)
         .alias("_limit_price"),
@@ -155,9 +167,9 @@ def _features(history: pl.DataFrame, rules: FirstBoardRules) -> pl.DataFrame:
         pl.col("raw_close").alias("reference_price"),
         pl.col("close").alias("reference_adjusted_close"),
     )
-    main_board = pl.col("symbol").str.contains(r"^(60\d{4}\.SH|00\d{4}\.SZ)$")
+    in_universe = pl.col("symbol").str.contains(_UNIVERSE_PATTERNS[rules.universe])
     return df.with_columns((
-        main_board & pl.col("name").is_not_null() & (pl.col("name").str.len_chars() > 0)
+        in_universe & pl.col("name").is_not_null() & (pl.col("name").str.len_chars() > 0)
         & ~pl.col("name").str.contains("(?i)ST|退")
         & (pl.col("history_bars") >= rules.min_history_days)
         & (pl.col("_valid_count") == window) & (pl.col("_date_span") == window - 1)
@@ -229,6 +241,32 @@ def _finite(value: object) -> float | None:
         return None
 
 
+def first_board_limit_pct(symbol: str, trade_date: date) -> float:
+    """首板共享日期规则: 创业板改革前10%, 其余复用全局规则。"""
+    if symbol.endswith(".SZ") and symbol.startswith(("300", "301")) and trade_date < GEM_REGISTRATION_DATE:
+        return MAIN_BOARD_LIMIT
+    return price_limit_pct(symbol, trade_date)
+
+
+def first_board_limit_price(symbol: str, trade_date: date, previous: float | None, *,
+                            explicit: float | None = None) -> float | None:
+    """观察与研究共用原价涨停边界, 防止旧创业板20%缓存污染改革前结果。"""
+    import numpy as np
+
+    explicit = _finite(explicit)
+    if explicit is not None and explicit >= 10000:
+        return None
+    legacy_gem = (symbol.endswith(".SZ") and symbol.startswith(("300", "301"))
+                  and trade_date < GEM_REGISTRATION_DATE)
+    if explicit is not None and explicit > 0 and not legacy_gem:
+        return explicit
+    previous = _finite(previous)
+    if previous is None or previous <= 0:
+        return None
+    return float(numpy_limit_price(
+        np.array([previous]), np.array([first_board_limit_pct(symbol, trade_date)]), up=True)[0])
+
+
 def evaluate_candidates(
     candidates: pl.DataFrame, current: pl.DataFrame, rules: FirstBoardRules, *, as_of: date,
 ) -> list[dict]:
@@ -237,10 +275,9 @@ def evaluate_candidates(
     日内高点只证明当日曾触板; broken 不证明事件顺序/回封可买。服务负责秒级
     时效、事件状态持久化与环境门控。sealed 永远不等价于买入或可成交。
     """
-    import numpy as np
-
     if candidates.is_empty():
         return []
+    universe = re.compile(_UNIVERSE_PATTERNS[rules.universe])
     if "date" in current.columns:
         current = current.with_columns(pl.col("date").cast(pl.Date, strict=False))
     quote_rows = current.to_dicts() if "symbol" in current.columns else []
@@ -258,6 +295,10 @@ def evaluate_candidates(
         evidence["experimental"] = True
         row.update(state="invalid", price=None, change_pct=None, distance_to_limit_pct=None,
                    turnover_rate=None, reasons=[], evidence=evidence)
+        if not universe.fullmatch(symbol):
+            row["reasons"] = ["股票不在当前首板范围内"]
+            result.append(row)
+            continue
         quote = quotes.get(symbol)
         if not quote or symbol in duplicates or quote.get("date") != as_of:
             row["reasons"] = ["缺少唯一的当日行情"]
@@ -276,14 +317,11 @@ def evaluate_candidates(
             row["reasons"] = ["原价、复权尺度或昨收基准无效, 或当日为风险警示股票"]
             result.append(row)
             continue
-        limit_price = _finite(quote.get("limit_up"))
-        if limit_price is not None and limit_price >= 10000:
+        limit_price = first_board_limit_price(symbol, as_of, reference, explicit=quote.get("limit_up"))
+        if limit_price is None:
             row["reasons"] = ["当日无涨跌幅限制, 首板规则不适用"]
             result.append(row)
             continue
-        if limit_price is None or limit_price <= 0:
-            limit_price = float(numpy_limit_price(
-                np.array([reference]), np.array([price_limit_pct(symbol, as_of)]), up=True)[0])
         high = _finite(quote.get("raw_high"))
         change, distance = price / reference - 1, (limit_price - price) / limit_price
         evidence.update(limit_up_price=limit_price, raw_prev_close=reference,
@@ -342,6 +380,6 @@ def pattern_strategy_meta(pattern: Pattern) -> dict:
             params.append({"id": name, "label": labels[name], "type": "int" if isinstance(value, int) else "float",
                            "default": value, "min": minimum, "max": maximum})
     return {"id": f"first_board_{pattern}", "name": f"首板·{PATTERN_LABELS[pattern]}观察池",
-            "description": "T-1完成日线构建的首板候选; 参数为实验假设, 非盘中买入信号或可成交胜率",
+            "description": "沪深主板、创业板、科创板非ST的T-1日线首板候选; 参数为实验假设, 非盘中买入信号或可成交胜率",
             "tags": ["首板", "实验", "观察池"], "asset_types": ["stock"], "timeframes": ["1d"],
             "params": params, "scoring": {}, "order_by": "symbol", "descending": False, "limit": 1000}

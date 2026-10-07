@@ -783,6 +783,7 @@ export interface MarketGameRisk {
   risk_per_trade: number
   min_amount: number
   max_candidates: number
+  portfolio_risk_budget?: number
 }
 
 export interface MarketGameSummary {
@@ -811,16 +812,80 @@ export interface MarketGameCandidate {
   trigger: string[]
   invalidation: string[]
   exit_rules: string[]
+  score?: number | null
+  pressure_price?: number | null
+  reward_risk_ratio?: number | null
+  conditions?: {
+    id: string; phase: 'entry' | 'cancel'; scope: 'stock' | 'sector' | 'market' | 'execution'
+    metric: string; operator: '>' | '>=' | '<=' | '<' | '==' | 'between'; value: number; upper: number | null
+    window: 'quote' | '1m' | 'session' | 'execution'; minimum_samples: number; description: string
+  }[]
+}
+
+export interface MarketGamePsychology {
+  version: string
+  scope: 'market_proxy'
+  summary: string
+  dimensions: {
+    id: 'risk_appetite' | 'panic_pressure' | 'profit_pressure' | 'repair_support'
+    label: string; score: number | null; delta: number | null; level: string
+    sample_size: number; coverage: number
+    metrics: { id: string; label: string; value: number | null; unit: string; percentile: number | null }[]
+    facts: string[]; interpretation: string; alternative: string; confirm: string[]; invalidation: string[]; limitations: string[]
+  }[]
+  history: { date: string; risk_appetite: number | null; panic_pressure: number | null; profit_pressure: number | null; repair_support: number | null }[]
+  limitations: string[]
+}
+
+/** 海外涨跌幅为小数制；行情时间与实际取得时间分别记录。 */
+export interface MarketGameOverseasContext {
+  version: '1.0.0'
+  source: string
+  fetched_at: string | null
+  cutoff: string
+  state: 'ready' | 'limited' | 'unavailable' | 'historical_unverified'
+  quotes: {
+    symbol: string; name: string; market: 'US' | 'KR'; currency: string
+    state: 'ready' | 'stale' | 'unavailable' | 'unverified'
+    price: number | null; previous_close: number | null; change_pct: number | null
+    session_date: string | null; observed_at: string | null; available_at: string | null
+    phase: 'intraday' | 'closed' | 'unknown'; source_url: string | null; reason: string
+  }[]
+  factors: {
+    id: 'us_tech' | 'korea_market' | 'memory_chain'; label: string
+    state: 'support' | 'pressure' | 'mixed' | 'neutral' | 'unknown'
+    change_pct: number | null; symbols: string[]; explanation: string
+  }[]
+  summary: string
+  psychology_link: string
+  risk_state: 'caution' | 'support' | 'mixed' | 'neutral' | 'unknown'
+  affected_sectors: string[]
+  limitations: string[]
 }
 
 export interface MarketGameReport extends MarketGameSummary {
   cutoff: string
   input_version: string
   rule_version: string
+  psychology?: MarketGamePsychology | null
+  overseas?: MarketGameOverseasContext | null
+  ecology?: MarketGameEcology | null
+  feedback_hypothesis?: MarketGameFeedbackHypothesis | null
+  execution_policy?: {
+    version: '1.0.0'; market_gate: 'frozen_universe_breadth_v1'; minimum_market_breadth: 0.4
+    minimum_market_median: -0.005; minimum_winner_premium: -0.01; scheduled_exit_time: '14:55'
+    vwap_basis: 'archived_continuous_minutes'; costs: MarketGameExecutionEvaluation['costs']
+  } | null
+  requested_risk?: MarketGameRisk | null
+  validity?: {
+    calendar_verified: boolean; entry_session: string | null; observation_sessions: string[]
+    expires_at: string | null; status: 'scheduled' | 'unverified' | 'research_only'; reason: string
+  } | null
   market_state: { trend: string; phase: string; emotion: string; crowding: string; change: string }
   allocation: {
     min: number; max: number; total_cap: number; single_cap: number; sector_cap: number
     risk_per_trade: number; reason: string
+    portfolio_risk_budget?: number | null; estimated_stress_loss?: number | null
   }
   hypotheses: {
     id: string; title: string; status: 'matched' | 'watch' | 'inactive'; facts: string[]
@@ -839,10 +904,122 @@ export interface MarketGameEvaluation {
   evaluated_at: string
   status: 'pending' | 'partial' | 'complete' | 'unavailable'
   kind: 'observation_only'
+  plan_status?: string
+  calendar_verified?: boolean
   rows: {
     symbol: string; name: string; horizon: number; label: string; trade_date: string | null
     close_return: number | null; state: 'pending' | 'available' | 'missing' | 'unavailable'
+    benchmark_return?: number | null; excess_return?: number | null
+    max_upside?: number | null; max_drawdown?: number | null
   }[]
+  limitations: string[]
+}
+
+export interface MarketGameCapitalMetric {
+  score: number | null
+  raw_value: number | null
+  sample_size: number
+}
+
+export interface MarketGameCapitalRow {
+  symbol: string; name: string; sector: string | null; is_candidate: boolean
+  status: string; reason: string; as_of: string | null
+  windows: { minutes: 5 | 15 | 30; return: number | null; volume_ratio: number | null }[]
+  participation: MarketGameCapitalMetric; support: MarketGameCapitalMetric; distribution: MarketGameCapitalMetric
+  reference_price: number | null; price_bias: number | null
+  scenario: { id: string; label: string; evidence: string[]; alternative: string; confirmation: string; invalidation: string }
+}
+
+export interface MarketGameCapitalObservation {
+  id: string; report_id: string; version: string; created_at: string
+  background_date: string; background_usable: boolean; background_reason: string
+  overseas?: MarketGameOverseasContext | null
+  behavior: {
+    input_version: string; status: 'ready' | 'limited' | 'unavailable' | 'stale' | 'historical'
+    reason: string; data_date: string | null; observed_at: string | null
+    rows: MarketGameCapitalRow[]
+    sectors: { name: string; sample_size: number; valid_count: number; coverage: number; breadth: number | null; participation: number | null; support: number | null; distribution: number | null; scenario: string }[]
+    series: { time: string; sample_size: number; participation: number | null; support: number | null; distribution: number | null }[]
+    limitations: string[]
+  }
+  disclosures: {
+    source: string; source_label: string; requested_date: string; trade_date: string | null
+    fetched_at: string; available_at: string | null; point_in_time_verified: false; realtime: false
+    state: 'ok' | 'fallback_prev' | 'source_unavailable' | 'no_data' | 'invalid_data'
+    status: string
+    rows: { symbol: string; name: string; trade_date: string; range_days: 1 | 3; org_net_value: number | null; org_net_rate: number | null; org_buy_num: number | null; org_sell_num: number | null }[]
+    omitted_count: number; limitations: string[]
+  }
+  plan_status: string
+  plan_links: { symbol: string; name: string; status: 'watch' | 'blocked' | 'inactive' | 'unverified'; original_max_position: number; observation_cap: number; retained_cap?: number | null; reason: string; unchecked_conditions: string[] }[]
+  entry_authorized: false; summary: string; changes: string[]; limitations: string[]
+}
+
+export interface MarketGameCapitalEnvelope {
+  report_id: string
+  latest: MarketGameCapitalObservation | null
+  observations: { id: string; created_at: string; observed_at: string | null; data_date: string | null; summary: string; changes: string[] }[]
+  refresh_allowed: boolean; refresh_reason: string; auto_refresh_allowed: boolean; history_limit: number
+}
+
+/** 存量竞争与反馈研究；观察结果不授予交易或自动调仓权限。 */
+export interface MarketGameEcology {
+  version: string; shadow_only: true; scope: 'audited_daily_sample'
+  state: 'expanding' | 'rotation' | 'concentrated' | 'contracting' | 'unconfirmed'
+  label: string; as_of: string; cutoff: string; metadata_scope: string; universe_version: string
+  membership_version: string | null; coverage: number | null; comparison_date: string | null
+  metrics: { id: string; label: string; value: number | null; unit: string; sample_size: number; reason: string }[]
+  sectors: { name: string; member_count: number; amount_share: number; share_change: number | null; breadth: number | null; avg_return: number | null; relative_return: number | null; status: string; evidence: string[] }[]
+  evidence: string[]; interpretation: string; limitations: string[]
+}
+
+export interface MarketGameFeedbackHypothesis {
+  version: string; id: string; shadow_only: true; entry_authorized: false
+  kind: 'continuation' | 'repair' | 'unconfirmed'; label: string; as_of: string; cutoff: string
+  observation_sessions: string[]; expires_at: string | null; risk_appetite: number | null; panic_pressure: number | null; minimum_samples: number
+  confirmation: { metric: string; operator: '>' | '>=' | '<' | '<='; value: number; description: string }[]
+  invalidation: { metric: string; operator: '>' | '>=' | '<' | '<='; value: number; description: string }[]
+  interpretation: string; alternative: string; limitations: string[]
+}
+
+export interface MarketGameFeedbackObservation {
+  version: string; hypothesis_id: string | null; shadow_only: true; entry_authorized: false
+  scope: 'frozen_plan_sample'; observed_at: string | null; status: 'available' | 'limited' | 'unavailable'
+  summary: string
+  rows: { symbol: string; name: string; observed_at: string | null; status: 'supported' | 'contradicted' | 'pending' | 'unavailable' | 'expired'; price_direction: 'up' | 'down' | 'flat' | 'unknown'; feedback_type: 'reinforcing' | 'corrective' | 'unclear'; stage: 'strengthening' | 'repair' | 'fragile' | 'unconfirmed'; label: string; evidence: string[]; reason: string }[]
+  limitations: string[]
+}
+
+export interface MarketGameExecutionEvaluation {
+  version: string; report_id: string; evaluated_at: string; kind: 'simulated_execution'
+  input_version: string; rule_version: string
+  report_created_at?: string | null
+  status: 'pending' | 'partial' | 'complete' | 'unavailable'; entry_authorized: false
+  rows: {
+    symbol: string; name: string; mode: string; sector: string; regime: string
+    signal_time: string | null; entry_time: string | null; entry_price: number | null; quantity: number; reason: string
+    labels: { horizon: 1 | 2 | 3; trade_date: string | null; state: 'pending' | 'unavailable' | 'no_entry' | 'open' | 'exited' | 'not_executable'; mature: boolean; exit_time: string | null; exit_price: number | null; net_return: number | null; outcome_available_at: string | null; reason: string }[]
+  }[]
+  costs: { account_equity: number; commission_rate: number; minimum_commission: number; sell_tax_rate: number; transfer_rate: number; slippage: number; max_volume_participation: number }
+  evidence_summary: string[]
+  limitations: string[]
+}
+
+export interface MarketGameAdaptation {
+  version: string; evaluated_at: string; status: 'shadow'; automatic_adjustment: false; validation_status: 'not_validated'
+  groups: {
+    id: string; rule_version: string; mode: string; regime: string; horizon: number; sample_size: number; independent_dates: number; excluded_count: number
+    state: 'insufficient' | 'observing' | 'weakening'; mean_net_return: number | null; reason: string
+    walk_forward: { state: 'insufficient' | 'shadow_only'; training_min_dates: number; test_dates: number; accepted_dates: number; withheld_dates: number; fixed_mean_net_return: number | null; filtered_mean_net_return: number | null; difference: number | null; reason: string }
+  }[]
+  limitations: string[]
+}
+
+export interface MarketGameModelEnvelope {
+  report_id: string; evaluated_at: string | null
+  feedback: MarketGameFeedbackObservation[]
+  execution: MarketGameExecutionEvaluation | null
+  adaptation: MarketGameAdaptation | null
   limitations: string[]
 }
 
@@ -1124,7 +1301,7 @@ export interface MonitorRule {
   id: string
   name: string
   enabled: boolean
-  type: 'strategy' | 'signal' | 'price' | 'market' | 'ladder' | 'sector' | 'abnormal' | 'volume_delta' | 'date'
+  type: 'strategy' | 'signal' | 'price' | 'market' | 'ladder' | 'sector' | 'abnormal' | 'volume_delta' | 'date' | 'first_board' | 'huichun'
   asset_type?: 'stock' | 'etf' | 'index'
   scope: 'symbols' | 'all' | 'sector' | 'watchlist_group'
   symbols: string[]
@@ -1141,6 +1318,8 @@ export interface MonitorRule {
   strategy_id?: string | null
   direction: 'entry' | 'exit' | 'both' | 'up' | 'down'
   notify_events?: StrategyNotifyEvent[]
+  /** 首板/回春模式的事件订阅，沿用模式服务已计算的结果。 */
+  mode_events?: string[]
   score_min?: number | null
   score_max?: number | null
   conditions: MonitorCondition[]
@@ -1353,6 +1532,7 @@ export interface MonitorRuleOptions {
   custom_signals: { key: string; label: string }[]
   operators: string[]
   types: { key: string; label: string }[]
+  mode_events?: Record<'first_board' | 'huichun', { key: string; label: string }[]>
   scopes: { key: string; label: string }[]
   logics: { key: string; label: string }[]
   severities: { key: string; label: string }[]
@@ -2037,6 +2217,7 @@ export type ProviderField =
   | 'depth5_data_provider'
   | 'realtime_data_provider'
   | 'financial_data_provider'
+  | 'overseas_data_provider'
 
 /** 能力路由矩阵中的一个候选源 (candidates 只含当前确实可提供该能力的源) */
 export interface CapabilityCandidate {
@@ -2055,7 +2236,7 @@ export interface CapabilityRoute {
   desc: string
   field: ProviderField | null                    // null = 不可路由能力 (仅 TickFlow 提供)
   default: string
-  tf_tier: string                                  // TickFlow 所需最低订阅档位
+  tf_tier: string | null                           // null = TickFlow 不提供该能力
   tf_available: boolean                            // 当前 TickFlow 档位是否提供该能力
   usable: boolean                                  // 生效源当前能否真正提供 (各页能力门控的统一判定)
   current: string                                  // 原始偏好值
@@ -2170,6 +2351,7 @@ export interface Preferences {
   depth5_data_provider?: string
   realtime_data_provider?: string
   financial_data_provider?: string
+  overseas_data_provider?: string
   data_source_job_timeout_s: number
   data_source_long_job_timeout_s: number
   minute_batch_compress: boolean
@@ -3777,6 +3959,10 @@ export const api = {
     method: 'POST', quiet: true, timeoutMs: 660_000,
   }),
   marketGameEvaluation: (id: string) => request<MarketGameEvaluation>(`/api/market-game/reports/${encodeURIComponent(id)}/evaluation`, { quiet: true }),
+  marketGameCapital: (id: string) => request<MarketGameCapitalEnvelope>(`/api/market-game/reports/${encodeURIComponent(id)}/capital`, { quiet: true }),
+  marketGameRefreshCapital: (id: string) => request<MarketGameCapitalEnvelope>(`/api/market-game/reports/${encodeURIComponent(id)}/capital`, { method: 'POST', quiet: true, timeoutMs: 120_000 }),
+  marketGameModel: (id: string) => request<MarketGameModelEnvelope>(`/api/market-game/reports/${encodeURIComponent(id)}/model`, { quiet: true }),
+  marketGameEvaluateModel: (id: string) => request<MarketGameModelEnvelope>(`/api/market-game/reports/${encodeURIComponent(id)}/evaluate-model`, { method: 'POST', quiet: true, timeoutMs: 120_000 }),
 
   // ===== 大盘复盘 =====
   reviewReportsList: () =>
@@ -4547,7 +4733,7 @@ export interface AnalysisMenu {
 export type FirstBoardPattern = 'platform' | 'trend' | 'oversold'
 export type FirstBoardState = 'watch' | 'approaching' | 'sealed' | 'broken' | 'invalid'
 export interface FirstBoardRules {
-  universe: 'main_board_non_st'
+  universe: 'hs_a_non_st' | 'main_board_non_st'
   lookback_days: number
   enabled_patterns: FirstBoardPattern[]
   min_history_days: number
@@ -4759,6 +4945,15 @@ export interface HuichunCoverage {
   latest_daily_date: string | null
   calendar_source: 'official_exchange_calendar' | 'observed_market_daily_dates'
 }
+export interface HuichunObservation extends Omit<HuichunCandidate, 'signal_date'> {
+  observation_date: string
+  gap_distance: number
+  previous_gap_distance: number
+  dif: number
+  dea: number
+  q: number
+  previous_q: number
+}
 export interface HuichunSnapshot {
   job: {
     id: string | null
@@ -4778,6 +4973,8 @@ export interface HuichunSnapshot {
     rule_revision: number
     rules: HuichunRules
     candidates: HuichunCandidate[]
+    observation_date?: string
+    observations?: HuichunObservation[]
     coverage: HuichunCoverage
     limitations: string[]
   } | null
@@ -4799,6 +4996,11 @@ export interface HuichunTrackingRecord {
   added_at: string
   base_close: number
   base_adjusted_close: number
+  current_basis?: {
+    quote_date: string | null
+    status: 'ok' | 'no_quote' | 'unknown_gap' | 'invalid_factor' | 'baseline_changed'
+    factor_multiplier: number | null
+  }
   returns: HuichunReturn[]
   updated_at: string | null
 }

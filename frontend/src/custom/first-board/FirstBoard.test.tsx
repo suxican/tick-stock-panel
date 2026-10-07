@@ -97,6 +97,64 @@ it('registers one isolated route and 首板模式 menu', () => {
   expect(extension.routes?.map(route => route.path)).toEqual(['/first-board'])
   expect(extension.navigation?.[0].label).toBe('首板模式')
 })
+it.each([
+  ['300001.SZ', '创'], ['301001.SZ', '创'], ['688001.SH', '科'], ['689009.SH', '科'],
+])('shows the shared board badge beside the name for %s', async (symbol, label) => {
+  const data = snapshot()
+  data.rows[0] = { ...data.rows[0], symbol }
+  calls.firstBoardSnapshot.mockResolvedValue(data)
+  await render()
+  const nameButton = host.querySelector<HTMLButtonElement>('table[aria-label="首板实时候选"] tbody button')!
+  const badge = [...nameButton.querySelectorAll('span')].find(span => span.textContent === label)
+  expect(badge).toBeDefined()
+  expect(badge?.classList.contains('w-[18px]')).toBe(true)
+  expect(badge?.classList.contains(label === '创' ? 'text-[#f97316]' : 'text-cyan-400')).toBe(true)
+  await act(async () => nameButton.click())
+  expect(host.querySelector('[role="dialog"]')?.getAttribute('data-symbol')).toBe(symbol)
+})
+it.each([
+  [.08, 10.8, '+8.00%', 'text-bull'], [-.025, 9.75, '-2.50%', 'text-bear'],
+  [0, 10, '0.00%', 'text-muted'], [null, 10, '—', 'text-muted'],
+])('colors candidate price and change consistently for change %s', async (change, price, formatted, color) => {
+  const data = snapshot()
+  data.rows[0] = { ...data.rows[0], price: price as number, change_pct: change as number | null }
+  calls.firstBoardSnapshot.mockResolvedValue(data)
+  await render()
+  const cells = host.querySelectorAll('table[aria-label="首板实时候选"] tbody tr td')
+  expect(cells[3].classList.contains(color as string)).toBe(true)
+  expect(cells[4].classList.contains(color as string)).toBe(true)
+  expect(cells[4].textContent).toBe(formatted)
+  expect(cells[0].textContent).not.toContain('创')
+  expect(cells[0].textContent).not.toContain('科')
+})
+it('keeps a missing price neutral even when change is positive', async () => {
+  const data = snapshot()
+  data.rows[0] = { ...data.rows[0], price: null }
+  calls.firstBoardSnapshot.mockResolvedValue(data)
+  await render()
+  const cells = host.querySelectorAll('table[aria-label="首板实时候选"] tbody tr td')
+  expect(cells[3].textContent).toBe('—')
+  expect(cells[3].classList.contains('text-muted')).toBe(true)
+  expect(cells[4].classList.contains('text-bull')).toBe(true)
+})
+it('shows the current universe in the live monitor', async () => {
+  calls.firstBoardConfig.mockResolvedValue({ ...config(), rules: { ...config().rules, universe: 'hs_a_non_st' } })
+  await render()
+  expect(host.textContent).toContain('沪深主板、创业板、科创板（非 ST）')
+})
+it('keeps legacy universe explicit and saves expanded scope with a 20 percent threshold', async () => {
+  await render('rules')
+  const scopeLabel = [...host.querySelectorAll('label')].find(item => item.textContent?.startsWith('候选市场范围'))!
+  const select = scopeLabel.querySelector('select')!
+  expect(select.value).toBe('main_board_non_st')
+  expect([...host.querySelectorAll('li')].some(item => item.textContent?.includes('沪深主板（非 ST）'))).toBe(true)
+  await act(async () => { select.value = 'hs_a_non_st'; select.dispatchEvent(new Event('change', { bubbles: true })) })
+  await numberInput('盘中最低涨幅', '20')
+  await click('保存为新版本')
+  const saved = calls.firstBoardSaveConfig.mock.calls[0][0]
+  expect(saved.rules.universe).toBe('hs_a_non_st')
+  expect(saved.rules.min_change_pct).toBe(.2)
+})
 it('shows decimal percentages correctly, permits quote-based alerts without minute capability and reuses stock preview', async () => {
   await render()
   expect(host.textContent).toContain('8.00%')

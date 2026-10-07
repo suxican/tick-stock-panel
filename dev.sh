@@ -133,11 +133,10 @@ if [ ! -d "$BACKEND_DIR/.venv" ] || [ "${#BACKEND_EXTRA_ARGS[@]}" -gt 0 ]; then
   ok "后端依赖装好了"
 fi
 
-if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
-  info "前端首次启动 — 安装 Node 依赖..."
-  ( cd "$FRONTEND_DIR" && pnpm install )
-  ok "前端依赖装好了"
-fi
+# 已有 node_modules 可能落后于更新后的代码，始终按仓库锁文件同步。
+info "同步前端 Node 依赖..."
+( cd "$FRONTEND_DIR" && pnpm install --frozen-lockfile )
+ok "前端依赖已同步"
 
 # ===== 4. 启动 + 日志前缀 =====
 PIDS=()

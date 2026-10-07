@@ -450,6 +450,7 @@ class DataProvidersIn(BaseModel):
     depth5_data_provider: str | None = None
     realtime_data_provider: str | None = None
     financial_data_provider: str | None = None
+    overseas_data_provider: str | None = None
 
 
 class PluginKeyIn(BaseModel):
@@ -546,6 +547,7 @@ def get_preferences() -> dict:
         "depth5_data_provider": preferences.get_depth5_data_provider(),
         "realtime_data_provider": preferences.get_realtime_data_provider(),
         "financial_data_provider": preferences.get_financial_provider(),
+        "overseas_data_provider": preferences.get_overseas_data_provider(),
         "data_source_job_timeout_s": preferences.get_data_source_job_timeout_s(),
         "data_source_long_job_timeout_s": preferences.get_data_source_long_job_timeout_s(),
         "minute_batch_compress": preferences.get_minute_batch_compress(),
@@ -631,6 +633,7 @@ def get_capability_matrix() -> dict:
             "depth5_data_provider": preferences.get_depth5_data_provider(),
             "adj_factor_provider": preferences.get_adj_factor_provider(),
             "financial_data_provider": preferences.get_financial_provider(),
+            "overseas_data_provider": preferences.get_overseas_data_provider(),
         },
         tickflow_tier=policy.base_tier_name(),
     )
@@ -714,7 +717,7 @@ def install_plugin(name: str) -> dict:
 def uninstall_plugin(name: str) -> dict:
     """卸载指定插件的依赖 (删除 node_modules / pip uninstall), 完成后重新扫描。
 
-    如果该插件当前正被使用, 自动回退到 tickflow。
+    如果该插件当前正被使用, 自动回退到对应能力默认源。
     """
     from app.data_providers import custom as custom_sources
     from app.services import preferences
@@ -730,6 +733,10 @@ def uninstall_plugin(name: str) -> dict:
     ]:
         if getter() == name:
             preferences.save({key: default})
+    # Compare the stored route: after removal the validated getter may already
+    # have fallen back, while the removed provider still remains on disk.
+    if str(preferences.load().get("overseas_data_provider", "")).strip().lower() == name.lower():
+        preferences.save({"overseas_data_provider": "yahoo_overseas"})
     custom_sources.load_all()
     result = list_data_sources()
     result["uninstall_ok"] = ok
@@ -784,6 +791,8 @@ def delete_data_source(name: str, request: Request) -> dict:
         updates["financial_data_provider"] = "tickflow"
     if preferences.get_adj_factor_provider() == name:
         updates["adj_factor_provider"] = "tickflow"
+    if str(preferences.load().get("overseas_data_provider", "")).strip().lower() == name.lower():
+        updates["overseas_data_provider"] = "yahoo_overseas"
     if updates:
         preferences.save(updates)
     # 删除源可能触发偏好回退 tickflow, 同步刷新能力快照
@@ -833,6 +842,7 @@ def update_data_providers(req: DataProvidersIn, request: Request) -> dict:
         "depth5_data_provider": preferences.get_depth5_data_provider(),
         "realtime_data_provider": preferences.get_realtime_data_provider(),
         "financial_data_provider": preferences.get_financial_provider(),
+        "overseas_data_provider": preferences.get_overseas_data_provider(),
     }
 
 

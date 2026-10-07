@@ -21,6 +21,7 @@ DEFAULT_CURRENT = {
     "depth5_data_provider": "tickflow",
     "realtime_data_provider": "tickflow",
     "financial_data_provider": "tickflow",
+    "overseas_data_provider": "yahoo_overseas",
 }
 
 
@@ -34,31 +35,35 @@ def _by_id(matrix: dict) -> dict[str, dict]:
 
 
 def test_registry_covers_all_routing_fields():
-    """注册表是能力的单一权威: 可路由能力与偏好键一一对应、无重复;
-    full_minute 为不可路由能力 (field=None, 仅 TickFlow Expert 提供)。"""
+    """注册表是能力的单一权威: 可路由能力与偏好键一一对应、无重复。"""
     routable = [c["field"] for c in CAPABILITY_REGISTRY if c["field"] is not None]
     assert sorted(routable) == sorted(DEFAULT_CURRENT)
     assert len(set(routable)) == len(routable)
     assert {c["id"] for c in CAPABILITY_REGISTRY} == {
-        "realtime", "daily", "minute", "full_minute", "depth5", "adj_factor", "financial",
+        "realtime", "daily", "minute", "full_minute", "depth5", "adj_factor", "financial", "overseas",
     }
     full_minute = next(c for c in CAPABILITY_REGISTRY if c["id"] == "full_minute")
     assert full_minute["field"] == "full_minute_data_provider"
     assert full_minute["tf_tier"] == "expert"
     for cap in CAPABILITY_REGISTRY:
-        assert cap["default"] == "tickflow"
-        assert cap["tf_tier"] in ("none", "starter", "pro", "expert")
+        assert cap["default"] == ("yahoo_overseas" if cap["id"] == "overseas" else "tickflow")
+        assert cap["tf_tier"] in (None, "none", "starter", "pro", "expert")
         assert "follow" not in cap
 
 
 def test_matrix_without_third_party_sources(monkeypatch):
-    """无插件无自定义源: 每个能力只剩 TickFlow 候选, 默认路由全部生效。"""
+    """无外部来源时 A 股保留 TickFlow, 外围行情明确不可用。"""
     _fake_sources(monkeypatch, [])
     matrix = build_capability_matrix(dict(DEFAULT_CURRENT), tickflow_tier="expert")
     assert matrix["tickflow_tier"] == "expert"
-    assert len(matrix["capabilities"]) == 7
+    assert len(matrix["capabilities"]) == 8
     for cap in matrix["capabilities"]:
         names = [c["name"] for c in cap["candidates"]]
+        if cap["id"] == "overseas":
+            assert names == [] and cap["pending"] == []
+            assert not cap["tf_available"] and not cap["usable"]
+            assert cap["current"] == cap["effective"] == "yahoo_overseas"
+            continue
         assert names == ["tickflow"]
         assert cap["candidates"][0]["kind"] == "builtin"
         assert cap["tf_available"] is True
@@ -289,6 +294,7 @@ def test_api_endpoint_injects_all_routing_preferences(monkeypatch):
         "depth5_data_provider": "d5-src",
         "adj_factor_provider": "adj-src",
         "financial_data_provider": "fin-src",
+        "overseas_data_provider": "overseas-src",
     }
     getter_names = {
         "realtime_data_provider": "get_realtime_data_provider",
@@ -298,6 +304,7 @@ def test_api_endpoint_injects_all_routing_preferences(monkeypatch):
         "depth5_data_provider": "get_depth5_data_provider",
         "adj_factor_provider": "get_adj_factor_provider",
         "financial_data_provider": "get_financial_provider",
+        "overseas_data_provider": "get_overseas_data_provider",
     }
     for field, getter in getter_names.items():
         monkeypatch.setattr(preferences, getter, lambda f=field: getter_values[f])
