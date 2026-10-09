@@ -31,6 +31,8 @@ let client: QueryClient
 
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-09-30T07:30:00Z'))
   calls.market.mockReset()
   calls.stocks.mockReset()
   host = document.createElement('div')
@@ -104,6 +106,43 @@ it('registers one lazy route and matching 市场情绪 navigation without changi
   expect(extension.navigation![0].routeId).toBe(extension.routes![0].id)
 })
 
+it.each(['2026-10-08T16:05:00Z', '2026-10-09T07:25:52Z'])('opens on Beijing today despite a previous-session latest cache: %s', async now => {
+  vi.setSystemTime(new Date(now))
+  client.setQueryData(QK.kaipanlaMarketEmotion(), market('2026-10-08'))
+  calls.market.mockResolvedValue(market('2026-10-09'))
+  await render()
+  expect(calls.market).toHaveBeenCalledWith('2026-10-09', false)
+  expect(host.querySelector<HTMLInputElement>('input[aria-label="行情日期"]')?.value).toBe('2026-10-09')
+  expect(host.textContent).toContain('行情归属 2026-10-09')
+  expect(host.textContent).not.toContain('2026-10-08')
+  await click('刷新数据')
+  expect(calls.market).toHaveBeenLastCalledWith('2026-10-09', true)
+})
+
+it('does not display previous-session metrics as today when the source returns an older date', async () => {
+  vi.setSystemTime(new Date('2026-10-09T07:25:52Z'))
+  calls.market.mockResolvedValue(market('2026-10-08'))
+  await render()
+  expect(host.querySelector<HTMLInputElement>('input[aria-label="行情日期"]')?.value).toBe('2026-10-09')
+  expect(host.textContent).toContain('数据日期与所选日期不一致')
+  expect(host.textContent).not.toContain('+3.66%')
+})
+
+it('keeps today selected on an empty holiday and lets the user request the latest supplier session', async () => {
+  vi.setSystemTime(new Date('2026-10-02T07:30:00Z'))
+  const empty = { ...market('2026-10-02'), state: 'empty' as const, datasets: {} }
+  calls.market.mockImplementation((date?: string) => Promise.resolve(date ? empty : market()))
+  await render()
+  expect(calls.market).toHaveBeenCalledWith('2026-10-02', false)
+  expect(host.querySelector<HTMLInputElement>('input[aria-label="行情日期"]')?.value).toBe('2026-10-02')
+  expect(host.textContent).toContain('暂无数据')
+  expect(host.textContent).not.toContain('+3.66%')
+  await click('最新交易日')
+  expect(calls.market).toHaveBeenLastCalledWith(undefined, false)
+  expect(host.querySelector<HTMLInputElement>('input[aria-label="行情日期"]')?.value).toBe('2026-09-30')
+  expect(host.textContent).toContain('最近来源交易日快照')
+})
+
 it('shows sourced percentages without scaling, real historical values and explicit missing states', async () => {
   calls.market.mockResolvedValue(market())
   await render()
@@ -150,7 +189,7 @@ it('isolates delayed dates and retains the last valid same-date snapshot on refr
   let resolveNext!: (value: KaipanlaMarketEmotion) => void
   calls.market.mockImplementation((date?: string, force?: boolean) => {
     if (force) return Promise.reject(new Error('supplier internals'))
-    return date ? new Promise<KaipanlaMarketEmotion>(resolve => { resolveNext = resolve }) : Promise.resolve(market())
+    return date === '2026-09-28' ? new Promise<KaipanlaMarketEmotion>(resolve => { resolveNext = resolve }) : Promise.resolve(market())
   })
   await render()
   await selectDate('2026-09-28')
@@ -195,6 +234,7 @@ it('never polls a historical snapshot every minute', async () => {
   calls.market.mockResolvedValueOnce(market()).mockResolvedValue(market('2026-09-29'))
   await render()
   await selectDate('2026-09-29')
+  vi.useRealTimers()
   vi.useFakeTimers()
   const count = calls.market.mock.calls.length
   await act(async () => { await vi.advanceTimersByTimeAsync(180_000) })
@@ -203,6 +243,7 @@ it('never polls a historical snapshot every minute', async () => {
 })
 
 it('polls only confirmed current-day data every minute and rejects an explicit date mismatch', async () => {
+  vi.useRealTimers()
   vi.useFakeTimers()
   vi.setSystemTime(new Date('2026-10-02T02:00:00Z'))
   calls.market.mockResolvedValue(market('2026-10-02'))
@@ -218,15 +259,19 @@ it('polls only confirmed current-day data every minute and rejects an explicit d
 })
 
 it('keeps discovering the current session in latest mode when the first response is the previous session', async () => {
+  vi.useRealTimers()
   vi.useFakeTimers()
   vi.setSystemTime(new Date('2026-10-02T02:00:00Z'))
   calls.market.mockResolvedValue(market('2026-09-30'))
   await act(async () => root.render(<QueryClientProvider client={client}><MarketEmotion /></QueryClientProvider>))
   await act(async () => { await vi.advanceTimersByTimeAsync(0) })
-  expect(calls.market).toHaveBeenCalledTimes(1)
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === '最新交易日')!.click())
+  await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+  expect(calls.market).toHaveBeenLastCalledWith(undefined, false)
+  const count = calls.market.mock.calls.length
   calls.market.mockResolvedValue(market('2026-10-02'))
   await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
-  expect(calls.market).toHaveBeenCalledTimes(2)
+  expect(calls.market).toHaveBeenCalledTimes(count + 1)
   expect(host.textContent).toContain('行情归属 2026-10-02')
 })
 
@@ -238,7 +283,7 @@ it('preserves successful same-date datasets when a refresh returns partial error
   await click('刷新数据')
   const stats = host.querySelector('[aria-label="核心统计"]')!
   expect(stats.textContent).toContain('61.5')
-  const saved = client.getQueryData<KaipanlaMarketEmotion>(QK.kaipanlaMarketEmotion())!
+  const saved = client.getQueryData<KaipanlaMarketEmotion>(QK.kaipanlaMarketEmotion('2026-09-30'))!
   expect(saved.datasets.emotion.state).toBe('error')
   expect(saved.datasets.emotion.fetched_at).toBe('2026-09-30T15:30:00+08:00')
   expect(stats.textContent).toContain('更新失败 · 显示上次')

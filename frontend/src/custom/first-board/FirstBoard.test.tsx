@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import type { FirstBoardComparison, FirstBoardConfig, FirstBoardResearch, FirstBoardSnapshot, FirstBoardSummary } from '@/lib/api'
+import type { FirstBoardCandidate, FirstBoardComparison, FirstBoardConfig, FirstBoardResearch, FirstBoardSnapshot, FirstBoardSummary } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { FirstBoard } from './FirstBoard'
 import extension from './extension'
@@ -22,7 +22,7 @@ vi.mock('@/lib/useSharedQueries', () => ({ useCapabilityMatrix: () => ({ data: c
   { id: 'daily', label: '日线', usable: true }, { id: 'realtime', label: '实时报价', usable: capabilityState.available },
   { id: 'minute', label: '分钟数据', usable: false },
 ] } : undefined, isError: capabilityState.failed }) }))
-vi.mock('@/components/StockPreviewDialog', () => ({ StockPreviewDialog: ({ symbol, onClose }: { symbol: string | null; onClose: () => void }) => symbol ? <div role="dialog" data-symbol={symbol}><button onClick={onClose}>关闭股票</button></div> : null }))
+vi.mock('@/components/StockPreviewDialog', () => ({ StockPreviewDialog: ({ symbol, onClose, navList }: { symbol: string | null; onClose: () => void; navList?: { symbol: string; name: string }[] }) => symbol ? <div role="dialog" data-symbol={symbol} data-nav-list={JSON.stringify(navList)}><button onClick={onClose}>关闭股票</button></div> : null }))
 
 function config(): FirstBoardConfig {
   return { schema_version: 1, revision: 1, updated_at: '2026-09-30T09:30:00+08:00', enabled: true, notify: true, require_sector_confirmation: true,
@@ -79,7 +79,7 @@ beforeEach(() => {
   root = createRoot(host)
   client = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0, gcTime: Infinity } } })
 })
-afterEach(async () => { await act(async () => root.unmount()); client.clear(); host.remove() })
+afterEach(async () => { await act(async () => root.unmount()); client.clear(); host.remove(); vi.restoreAllMocks() })
 async function settle() { for (let i = 0; i < 6; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) }) }
 async function render(tab = 'live') {
   await act(async () => root.render(<MemoryRouter initialEntries={[`/first-board?tab=${tab}`]}><QueryClientProvider client={client}><FirstBoard /></QueryClientProvider></MemoryRouter>))
@@ -90,6 +90,23 @@ async function click(text: string) { expect(button(text)).toBeDefined(); await a
 async function numberInput(label: string, value: string) {
   const input = [...host.querySelectorAll('label')].find(item => item.textContent?.includes(label))!.querySelector('input')!
   await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })) })
+  await settle()
+}
+function candidate(name: string, values: Partial<FirstBoardCandidate> = {}): FirstBoardCandidate {
+  return { ...snapshot().rows[0], name, symbol: `60000${name.charCodeAt(0) - 65}.SH`, ...values }
+}
+function candidateNames() {
+  return [...host.querySelectorAll('table[aria-label="首板实时候选"] tbody tr')].map(row => row.querySelector('td button')!.firstChild!.textContent)
+}
+function sortButton(label: string) { return host.querySelector<HTMLButtonElement>(`button[aria-label="按${label}排序"]`)! }
+async function sortBy(label: string) {
+  expect(sortButton(label)).not.toBeNull()
+  await act(async () => sortButton(label).click())
+  await settle()
+}
+async function filterPattern(value: string) {
+  const select = host.querySelector<HTMLSelectElement>('select')!
+  await act(async () => { select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })) })
   await settle()
 }
 
@@ -136,6 +153,103 @@ it('keeps a missing price neutral even when change is positive', async () => {
   expect(cells[3].textContent).toBe('—')
   expect(cells[3].classList.contains('text-muted')).toBe(true)
   expect(cells[4].classList.contains('text-bull')).toBe(true)
+})
+it.each([
+  ['形态', ['B', 'E', 'D', 'A', 'C'], ['A', 'C', 'D', 'B', 'E']],
+  ['状态', ['C', 'E', 'B', 'D', 'A'], ['A', 'D', 'B', 'E', 'C']],
+  ['现价', ['D', 'B', 'E', 'A', 'C'], ['C', 'A', 'E', 'B', 'D']],
+  ['涨幅', ['B', 'D', 'A', 'E', 'C'], ['C', 'E', 'A', 'D', 'B']],
+  ['距涨停', ['C', 'A', 'E', 'B', 'D'], ['D', 'B', 'E', 'A', 'C']],
+] as const)('sorts %s ascending, descending and back to snapshot order', async (label, ascending, descending) => {
+  const data = { ...snapshot(), rows: [
+    candidate('A', { pattern: 'oversold', state: 'invalid', price: 12, change_pct: .02, distance_to_limit_pct: .02 }),
+    candidate('B', { pattern: 'platform', state: 'sealed', price: 2, change_pct: -.02, distance_to_limit_pct: .08 }),
+    candidate('C', { pattern: 'oversold', state: 'watch', price: 30, change_pct: .11, distance_to_limit_pct: 0 }),
+    candidate('D', { pattern: 'trend', state: 'broken', price: -1, change_pct: 0, distance_to_limit_pct: .1 }),
+    candidate('E', { pattern: 'platform', state: 'approaching', price: 10, change_pct: .05, distance_to_limit_pct: .04 }),
+  ] }
+  Object.freeze(data.rows)
+  calls.firstBoardSnapshot.mockResolvedValue(data)
+  await render()
+  const cached = client.getQueryData<FirstBoardSnapshot>(QK.firstBoardSnapshot)!
+  const originalRows = [...cached.rows]
+  expect(candidateNames()).toEqual(['A', 'B', 'C', 'D', 'E'])
+  expect(sortButton(label)?.closest('th')?.getAttribute('aria-sort')).toBe('none')
+  await sortBy(label)
+  expect(candidateNames()).toEqual(ascending)
+  expect(sortButton(label).closest('th')?.getAttribute('aria-sort')).toBe('ascending')
+  await sortBy(label)
+  expect(candidateNames()).toEqual(descending)
+  expect(sortButton(label).closest('th')?.getAttribute('aria-sort')).toBe('descending')
+  await sortBy(label)
+  expect(candidateNames()).toEqual(['A', 'B', 'C', 'D', 'E'])
+  expect(sortButton(label).closest('th')?.getAttribute('aria-sort')).toBe('none')
+  expect(client.getQueryData(QK.firstBoardSnapshot)).toBe(cached)
+  expect(cached.rows).toEqual(originalRows)
+})
+it.each([
+  ['现价', 'price'], ['涨幅', 'change_pct'], ['距涨停', 'distance_to_limit_pct'],
+] as const)('keeps missing %s last in both directions, accepts zero and preserves ties', async (label, field) => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [null, 2, NaN, 0, 2, Infinity, -1, -Infinity].map((value, index) => candidate(String.fromCharCode(65 + index), { [field]: value })) })
+  await render()
+  await sortBy(label)
+  expect(candidateNames()).toEqual(['G', 'D', 'B', 'E', 'A', 'C', 'F', 'H'])
+  await sortBy(label)
+  expect(candidateNames()).toEqual(['B', 'E', 'D', 'G', 'A', 'C', 'F', 'H'])
+})
+it('starts a newly selected column in ascending order and clears the previous indicator', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [candidate('A', { price: 20, change_pct: -.02 }), candidate('B', { price: 10, change_pct: .05 })] })
+  await render()
+  await sortBy('现价')
+  await sortBy('现价')
+  expect(candidateNames()).toEqual(['A', 'B'])
+  await sortBy('涨幅')
+  expect(candidateNames()).toEqual(['A', 'B'])
+  expect(sortButton('现价').closest('th')?.getAttribute('aria-sort')).toBe('none')
+  expect(sortButton('涨幅').closest('th')?.getAttribute('aria-sort')).toBe('ascending')
+})
+it('preserves sorting across filters, an empty result and a refreshed snapshot', async () => {
+  const data = { ...snapshot(), rows: [candidate('A', { price: 30 }), candidate('B', { price: 10, can_buy: false }), candidate('C', { price: 20 }), candidate('D', { price: 5, pattern: 'oversold' })] }
+  calls.firstBoardSnapshot.mockResolvedValue(data)
+  await render()
+  await sortBy('现价')
+  expect(candidateNames()).toEqual(['D', 'B', 'C', 'A'])
+  await filterPattern('trend')
+  expect(candidateNames()).toEqual([])
+  await filterPattern('platform')
+  expect(candidateNames()).toEqual(['B', 'C', 'A'])
+  const actionable = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+  await act(async () => actionable.click())
+  expect(candidateNames()).toEqual(['C', 'A'])
+  const refreshed = { ...data, observed_at: '2026-09-30T10:01:00+08:00', rows: [candidate('E', { price: 40 }), data.rows[3], { ...data.rows[2], price: 50 }, data.rows[1], data.rows[0]] }
+  calls.firstBoardSnapshot.mockResolvedValue(refreshed)
+  await click('刷新')
+  expect(candidateNames()).toEqual(['A', 'E', 'C'])
+  expect(sortButton('现价').closest('th')?.getAttribute('aria-sort')).toBe('ascending')
+  expect(client.getQueryData<FirstBoardSnapshot>(QK.firstBoardSnapshot)?.rows.map(row => row.name)).toEqual(['E', 'D', 'C', 'B', 'A'])
+  await act(async () => actionable.click())
+  expect(candidateNames()).toEqual(['B', 'A', 'E', 'C'])
+  await filterPattern('all')
+  expect(candidateNames()).toEqual(['D', 'B', 'A', 'E', 'C'])
+  await sortBy('现价')
+  expect(candidateNames()).toEqual(['C', 'E', 'A', 'B', 'D'])
+  await sortBy('现价')
+  expect(candidateNames()).toEqual(['E', 'D', 'C', 'B', 'A'])
+})
+it('navigates stock details in sorted visible order with duplicate symbols removed', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [
+    candidate('A', { price: 30, pattern: 'platform' }), candidate('B', { price: 10, pattern: 'platform' }),
+    candidate('A', { price: 30, pattern: 'trend' }), candidate('C', { price: 20, pattern: 'oversold', can_buy: false }),
+  ] })
+  await render()
+  await sortBy('现价')
+  await act(async () => host.querySelector<HTMLButtonElement>('table[aria-label="首板实时候选"] tbody td button')!.click())
+  const navigation = () => JSON.parse(host.querySelector('[role="dialog"]')!.getAttribute('data-nav-list')!) as { name: string; symbol: string }[]
+  expect(navigation().map(row => row.name)).toEqual(['B', 'C', 'A'])
+  await act(async () => host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click())
+  expect(navigation().map(row => row.name)).toEqual(['B', 'A'])
+  await sortBy('现价')
+  expect(navigation().map(row => row.name)).toEqual(['A', 'B'])
 })
 it('shows the current universe in the live monitor', async () => {
   calls.firstBoardConfig.mockResolvedValue({ ...config(), rules: { ...config().rules, universe: 'hs_a_non_st' } })
@@ -230,6 +344,26 @@ it('preserves a rejected draft and offers reload after optimistic-concurrency co
   expect(lookback.value).toBe('12')
   await click('重新载入当前版')
   expect(lookback.value).toBe('10')
+})
+it('requests an ISO event date even when the browser falls back to another locale', async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-08T16:00:00Z'))
+  const DateTimeFormat = Intl.DateTimeFormat
+  vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(function (_locales, options) {
+    return new DateTimeFormat('en-US', options)
+  })
+  await render('events')
+  expect(calls.firstBoardEvents).toHaveBeenCalledWith('2026-10-09')
+  const input = host.querySelector<HTMLInputElement>('input[type="date"]')!
+  expect(input.value).toBe('2026-10-09')
+  expect(input.max).toBe('2026-10-09')
+  expect(host.textContent).toContain('该日暂无首板信号')
+  await numberInput('交易日期', '2026-09-30')
+  expect(calls.firstBoardEvents).toHaveBeenLastCalledWith('2026-09-30')
+  expect(client.getQueryData(QK.firstBoardEvents('2026-09-30'))).toBeDefined()
+  calls.firstBoardEvents.mockClear()
+  await numberInput('交易日期', '')
+  expect(input.value).toBe('2026-09-30')
+  expect(calls.firstBoardEvents).not.toHaveBeenCalled()
 })
 it('renders historical events by selected date without turning them into live buys', async () => {
   calls.firstBoardEvents.mockResolvedValue({ events: [{ id: 'old1', ts: 1790720400000, date: '2026-09-30', symbol: '600000.SH', name: '历史股票',

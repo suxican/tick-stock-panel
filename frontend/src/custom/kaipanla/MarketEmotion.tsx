@@ -520,7 +520,7 @@ function StockLists({ date, live, onOpenStock }: { date: string; live: boolean; 
 
 export function MarketEmotion() {
   const client = useQueryClient()
-  const [date, setDate] = useState<string | undefined>()
+  const [date, setDate] = useState<string | undefined>(() => beijingToday())
   const [tab, setTab] = useState<'analysis' | 'stocks'>('analysis')
   const [preview, setPreview] = useState<{ stock: NavItem; items: NavItem[] } | null>(null)
   const openStock: OpenStock = (stock, items) => setPreview({ stock, items })
