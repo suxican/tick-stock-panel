@@ -15,6 +15,7 @@ import { toNavItems } from '@/lib/listNav'
 import { boardTag } from '@/components/stock-table/primitives'
 import type { FrontendExtension } from '@/extensions/types'
 import { IconLots } from '@/components/BrandIcons'
+import { PositionTMonitor } from './PositionTMonitor'
 
 const emptyDraft = (): Lot => ({
   id: '',
@@ -47,6 +48,17 @@ function CostPnL({ close, cost }: { close?: number; cost: number }) {
 }
 
 export function Lots() {
+  const [view, setView] = useState<'position-t' | 'batches'>('position-t')
+  return <div className="flex h-full min-h-0 flex-col">
+    <PageHeader title="持仓提醒" subtitle="按核对持仓监控日内价差机会，跟踪两笔交易与未完成敞口" />
+    <div className="flex shrink-0 gap-2 border-b border-border px-5 py-3" aria-label="持仓提醒视图">
+      {([['position-t', '持仓做 T'], ['batches', '批次提醒']] as const).map(([key, label]) => <button key={key} aria-current={view === key ? 'page' : undefined} onClick={() => setView(key)} className={cn('rounded-btn px-4 py-2 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent', view === key ? 'bg-accent/10 text-accent' : 'text-secondary hover:bg-elevated')}>{label}</button>)}
+    </div>
+    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">{view === 'position-t' ? <PositionTMonitor /> : <BatchLots />}</div>
+  </div>
+}
+
+function BatchLots() {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const [editing, setEditing] = useState<Lot | null>(null) // null=关闭
@@ -114,7 +126,6 @@ export function Lots() {
 
   return (
     <div className="flex flex-col h-full">
-      <PageHeader title="持仓提醒" subtitle="记录个股 / ETF 买入批次, 自动生成止盈止损 / 到期监控规则" />
       <div className="flex-1 min-h-0 px-5 py-4">
         <div className="mx-auto max-w-5xl space-y-4">
           <div className="flex items-center justify-between">
@@ -416,7 +427,7 @@ function LotDialog({ lot, onClose }: { lot: Lot; onClose: () => void }) {
   )
 }
 
-// ── 扩展注册清单 — 本文件即完整扩展(组件+路由+导航), 单文件可整体摘除/导入 ──
+// ── 扩展注册清单 — lots 目录集中维护页面、路由和导航 ──
 const extension: FrontendExtension = {
   id: 'official.lots',
   apiVersion: 1,

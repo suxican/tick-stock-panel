@@ -259,6 +259,8 @@ class QuoteService:
         self._index_symbol_count: int = 0
         self._etf_symbol_count: int = 0
         self._index_quotes_cache: pl.DataFrame | None = None
+        # 原始价格快照保留逐证券市场时间；账户监控不能把拉取成功时间当行情时间。
+        self._market_records: dict[str, dict] = {}
         self._intraday_signal_evaluator = IntradaySignalEvaluator()
         self._intraday_signal_bucket: dict[str, str] = {}
         # 午休/收盘最终同步状态: 到边界后必须成功拉取一版行情, 再进入休盘态。
@@ -565,6 +567,13 @@ class QuoteService:
             return df.filter(pl.col("symbol").is_in(symbols))
         return df
 
+    def get_market_records(self, symbols: list[str] | None = None) -> dict[str, dict]:
+        """读取标准化原始报价及来源封套，不触发网络、不应用前复权。"""
+        with self._lock:
+            records = self._market_records
+            wanted = symbols if symbols is not None else records.keys()
+            return {symbol: dict(records[symbol]) for symbol in wanted if symbol in records}
+
     def status(self) -> dict:
         """返回行情服务状态。"""
         age = (time.perf_counter() - self._fetch_time) * 1000 if self._fetch_time else -1
@@ -745,6 +754,7 @@ class QuoteService:
                     now_ts=now_ts,
                     replace_index_cache=replace_index_cache,
                     final_boundary_ms=final_boundary_ms,
+                    source=provider_name,
                 )
             # 自定义源未配置 realtime → 回退 TickFlow
 
@@ -830,6 +840,11 @@ class QuoteService:
                 "turnover_rate": ext.get("turnover_rate"),
                 "timestamp": q.get("timestamp"),
                 "session": q.get("session"),
+                "trade_status": q.get("trade_status"),
+                "limit_up_price": q.get("limit_up_price"),
+                "limit_down_price": q.get("limit_down_price"),
+                "price_limit_rule": q.get("price_limit_rule"),
+                "no_price_limit": q.get("no_price_limit"),
             })
 
         return self._process_full_market_records(
@@ -844,6 +859,7 @@ class QuoteService:
         now_ts: float,
         replace_index_cache: bool = True,
         final_boundary_ms: int | None = None,
+        source: str = "tickflow",
     ) -> tuple[pl.DataFrame, pl.DataFrame | None] | None:
         """把全市场 records 写盘并增量计算 enriched。
 
@@ -887,6 +903,15 @@ class QuoteService:
 
         # ---- 更新元信息 ----
         with self._lock:
+            previous_indices = {
+                symbol: row for symbol, row in self._market_records.items()
+                if symbol in all_index_symbols
+            } if not replace_index_cache else {}
+            self._market_records = {
+                **previous_indices,
+                **{str(row["symbol"]): {**row, "source": source, "received_ts": fetched_at}
+                   for row in records if row.get("symbol")},
+            }
             self._fetch_time = now_ts
             self._fetch_ms = fetch_ms
             self._fetched_at = fetched_at

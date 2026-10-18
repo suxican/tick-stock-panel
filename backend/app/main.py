@@ -33,6 +33,7 @@ from app.api import (
     overview,
     paper,
     pipeline,
+    position_t,
     regime,
     rps,
     screener,
@@ -436,6 +437,19 @@ async def _application_lifespan(app: FastAPI):
             except Exception:
                 logger.exception("首板启动失败后的清理未完成")
 
+    # 持仓监控独立于前端页面运行，使用既有行情和盘口服务。
+    try:
+        from app.services.position_t_market import PositionTMarket
+        from app.services.position_t_service import PositionTService
+
+        position_t_service = PositionTService(
+            store.data_dir, PositionTMarket(repo, qs, depth_service, capset),
+        )
+        app.state.position_t_service = position_t_service
+        position_t_service.start()
+    except Exception:
+        logger.exception("持仓做 T 服务未启动，其他功能继续运行")
+
     # 源码内二次开发启动钩子: 仅暴露稳定只读上下文, 单个扩展失败不影响核心启动。
     extension_registry = app.state.extension_registry
     start_backend_extensions(
@@ -447,6 +461,9 @@ async def _application_lifespan(app: FastAPI):
         yield
     finally:
         repo._on_refresh_done = None  # noqa: SLF001
+        position_t_service = getattr(app.state, "position_t_service", None)
+        if position_t_service:
+            position_t_service.stop()
         first_board_service = getattr(app.state, "first_board_service", None)
         if first_board_service:
             try:
@@ -631,6 +648,7 @@ app.include_router(strategy.router)
 app.include_router(signals.router)
 app.include_router(monitor_rules.router)
 app.include_router(lots.router)
+app.include_router(position_t.router)
 app.include_router(alerts.router)
 app.include_router(events.router)
 app.include_router(rps.router)

@@ -66,6 +66,8 @@ class DepthService:
         # 请求线程 (run_once persist=True)、轮询线程、盘后 finalize 触发, 都写同一 parquet,
         # 无锁会交叉写坏文件。_lock 只护内存缓存, 此锁护整段 fetch+seal。
         self._fetch_lock = threading.Lock()
+        self._request_lock = threading.Lock()
+        self._last_depth_request = 0.0
         self._running = False
         self._thread: threading.Thread | None = None
         self._repo = None              # 延迟注入(KlineRepository)
@@ -300,6 +302,12 @@ class DepthService:
         if persist and enriched_date:
             self._persist(enriched_date)
 
+    def get_order_books(self, symbols: list[str]) -> dict:
+        """为持仓监控提供盘口；复用五档能力路由和全服务请求节流。"""
+        if not symbols or not self._has_capability():
+            return {}
+        return self._call_depth_batch(list(dict.fromkeys(symbols)))
+
     def _call_depth_batch(self, symbols: list[str]) -> dict:
         """按独立五档路由取数; 所有 provider 共用分片限速且失败不跨源回退。"""
         from app.services import preferences
@@ -334,7 +342,13 @@ class DepthService:
         for i, chunk in enumerate(chunks):
             sleep_between_batches(i, limit.rpm, default_interval=2.0)
             try:
-                data = fetch_depth(chunk)
+                # 封单和持仓共用请求预算；网络锁不阻塞行情/账户状态锁。
+                with self._request_lock:
+                    delay = 60 / max(1, limit.rpm or 30) - (time.monotonic() - self._last_depth_request)
+                    if delay > 0:
+                        time.sleep(delay)
+                    self._last_depth_request = time.monotonic()
+                    data = fetch_depth(chunk)
                 if isinstance(data, dict):
                     result.update(data)
                 else:

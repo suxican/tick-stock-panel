@@ -86,7 +86,7 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
       } else if (typeof raw === 'string') {
         detail = raw
       } else if (raw && typeof raw === 'object') {
-        detail = JSON.stringify(raw)
+        detail = typeof raw.message === 'string' ? raw.message : JSON.stringify(raw)
       }
     } catch { /* ignore */ }
     const msg = detail || `${res.status} ${res.statusText}`
@@ -1078,7 +1078,103 @@ export interface MonitorRule {
   lot_id?: string               // 由「持仓提醒」页生成的规则, 托管在批次页 (监控中心只读)
 }
 
-// 批次登记 (薄批次, 页面名"持仓提醒") — 只作监控规则生成的载体, 不做任何会计
+// 持仓做 T：人工／模拟账户、两笔计划与实际成交分开记录。
+export type PositionTDirection = 'buy_sell' | 'sell_buy'
+export interface PositionTConfig {
+  min_net_profit: number; min_net_return: number; max_daily_plans: number
+  max_symbol_daily_plans: number; daily_quantity_ratio: number; cooldown_minutes: number
+  single_risk_budget: number; daily_risk_budget: number; max_extra_notional: number
+  quote_max_age_seconds: number; position_max_age_seconds: number; new_plan_cutoff: string
+  max_leg_minutes: number; commission_rate: number; min_commission: number
+  stamp_tax_rate: number; transfer_rate: number; slippage_per_share: number
+  fee_effective_from: string; fees_confirmed: boolean; enabled: boolean
+  minute_timestamp_semantics: 'unknown' | 'start' | 'end'
+  other_fee_rate?: number; commission_includes_transfer?: boolean; commission_includes_other?: boolean
+  reference_includes_slippage?: boolean; fee_effective_to?: string | null
+}
+export interface PositionTAccount {
+  id: string; name: string; mode: 'manual' | 'simulation'; available_cash: number | null
+  broker_frozen_cash: number; cash_net_of_frozen: boolean; trade_date: string
+  snapshot_at: string; reconciled: boolean; version: number; event_seq: number
+  config: PositionTConfig; effective_cash?: number | null; reserved_cash?: number
+  needs_reconciliation?: boolean
+  cash_estimated?: boolean
+}
+export interface PositionTPosition {
+  account_id: string; symbol: string; name: string; exchange: 'SH' | 'SZ' | 'BJ'
+  board: 'main' | 'chinext' | 'star' | 'bse'; security_type: 'stock'
+  qty: number; sellable_qty: number | null; today_bought: number; today_sold: number
+  broker_frozen_qty: number; sellable_net_of_frozen: boolean; external_sell_qty: number
+  core_qty: number; target_qty: number; max_t_qty: number; max_extra_qty: number
+  cost_price: number | null; cost_method: string; enabled: boolean; trade_date: string
+  snapshot_at: string; reconciled: boolean; version: number; benchmark_symbol: string
+  sector_id: string; effective_sellable?: number | null; reserved_qty?: number
+  source?: string; source_synced_at?: string; source_lot_ids?: string[]
+}
+export interface PositionTLotsSyncResult {
+  created: { symbol: string; name: string; qty: number }[]
+  skipped: { symbol: string; reason: string }[]
+  account_version: number
+}
+export interface PositionTSignal {
+  id: string; account_id: string; symbol: string; direction: PositionTDirection
+  state: 'none' | 'watching' | 'triggered' | 'blocked' | 'paused' | 'expired'
+  reasons: string[]; reason_codes?: string[]; evidence: Record<string, unknown>
+  first_price: [number, number] | null; second_price: [number, number] | null
+  stop_price?: number | null; cover_guard?: number | null; quantity: number
+  net_min: number | null; net_max: number | null; fees: Record<string, unknown>
+  created_at: string; expires_at: string; strategy_version: string
+  account_version: number; position_version: number; market: Record<string, unknown>
+  source_mode: string
+}
+export interface PositionTPlanLeg {
+  leg: number; side?: 'buy' | 'sell'; status?: string; quantity?: number
+  filled?: number; filled_qty?: number; order_id?: string; orders?: PositionTOrderEvent[]
+}
+export interface PositionTPlan {
+  id: string; account_id: string; symbol: string; direction: PositionTDirection
+  quantity: number; state: string; leg1_filled: number; leg2_filled: number
+  matched_qty: number; unmatched_qty: number; exposure_qty: number; matched_pnl: number | null
+  reserved_cash: number; reserved_qty: number; first_price: [number, number] | null
+  second_price: [number, number] | null; stop_price?: number | null; cover_guard?: number | null
+  created_at: string; updated_at: string; version: number; reasons: string[]
+  legs: PositionTPlanLeg[]; strategy_version: string
+  monitor?: { reasons?: string[]; second_leg_condition?: string; computed_at?: string; risk_codes?: string[]; unmatched_qty?: number }
+}
+export interface PositionTExecution {
+  id?: string; plan_id: string; leg: 1 | 2; order_id: string; quantity: number
+  price: number; executed_at: string; fee: number | null; idempotency_key: string
+  proceeds_available?: boolean
+  allocated_fee?: number
+  fee_unverified?: boolean
+}
+export interface PositionTOrderEvent {
+  plan_id: string; leg: 1 | 2; order_id: string; event_id: string
+  status: 'submitted' | 'partially_filled' | 'filled' | 'cancel_pending' | 'cancelled' | 'rejected'
+  quantity: number; cumulative_filled: number; cancelled_quantity: number
+  price: number; occurred_at: string
+}
+export interface PositionTOverview {
+  accounts: PositionTAccount[]; account: PositionTAccount | null
+  positions: PositionTPosition[]; signals: PositionTSignal[]; plans: PositionTPlan[]
+  health: { status?: string; running?: boolean; last_run?: string; reasons?: string[]; [key: string]: unknown }
+  config: PositionTConfig | null
+}
+export interface PositionTReview {
+  date?: string; matched_pnl?: number | null; unmatched_qty?: number; exposure_value?: number | null
+  total_equity?: number | null; hold_equity?: number | null; incremental_equity?: number | null
+  fees?: number | null; completion_rate?: number | null; incomplete_rate?: number | null
+  max_drawdown?: number | null; plan_count?: number; completed_count?: number
+  reasons?: string[]; plans?: PositionTPlan[]; limitations?: string[]; benchmark_valid?: boolean
+  valuation_missing?: string[]; sample_size?: number; unfinished_ratio?: number | null
+  valuation_scope?: string
+  [key: string]: unknown
+}
+export interface PositionTReplay extends PositionTReview {
+  source_mode?: string; sample_count?: number; out_of_sample?: boolean; assumptions?: string[]
+}
+
+// 批次登记只作旧监控规则生成的载体，不自动转为账户库存。
 export interface Lot {
   id: string
   symbol: string
@@ -4039,6 +4135,34 @@ export const api = {
 
   monitorRuleDelete: (id: string) =>
     request<{ ok: boolean }>(`/api/monitor-rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // ===== 持仓做 T（手工登记与保守模拟，不向券商下单） =====
+  positionTOverview: (account = '') => request<PositionTOverview>(`/api/position-t/overview?account_id=${encodeURIComponent(account)}`, { quiet: true }),
+  positionTCreateAccount: (body: { name: string; mode: 'manual' | 'simulation'; available_cash: number | null; trade_date: string }) =>
+    request<{ account: PositionTAccount }>('/api/position-t/accounts', { method: 'POST', body: JSON.stringify(body), quiet: true }),
+  positionTSnapshot: (id: string, body: Pick<PositionTAccount, 'available_cash' | 'broker_frozen_cash' | 'cash_net_of_frozen' | 'trade_date' | 'snapshot_at' | 'reconciled'> & { included_event_seq: number; expected_version: number }) =>
+    request<{ account: PositionTAccount }>(`/api/position-t/accounts/${encodeURIComponent(id)}/snapshot`, { method: 'PUT', body: JSON.stringify(body), quiet: true }),
+  positionTSavePosition: (id: string, symbol: string, body: Omit<PositionTPosition, 'account_id' | 'version' | 'effective_sellable' | 'reserved_qty' | 'source' | 'source_synced_at' | 'source_lot_ids'> & { included_event_seq: number; expected_version?: number }) =>
+    request<{ position: PositionTPosition }>(`/api/position-t/accounts/${encodeURIComponent(id)}/positions/${encodeURIComponent(symbol)}`, { method: 'PUT', body: JSON.stringify(body), quiet: true }),
+  positionTSyncLots: (id: string, body: { expected_version: number }) =>
+    request<PositionTLotsSyncResult>(`/api/position-t/accounts/${encodeURIComponent(id)}/sync-lots`, { method: 'POST', body: JSON.stringify(body), quiet: true }),
+  positionTConfig: (id: string, body: PositionTConfig & { expected_version: number }) =>
+    request<{ account: PositionTAccount; config: PositionTConfig }>(`/api/position-t/accounts/${encodeURIComponent(id)}/config`, { method: 'PUT', body: JSON.stringify(body), quiet: true }),
+  positionTCreatePlan: (body: { signal_id: string; quantity: number; expected_account_version: number; expected_position_version: number; idempotency_key: string }) =>
+    request<{ plan: PositionTPlan }>('/api/position-t/plans', { method: 'POST', body: JSON.stringify(body), quiet: true }),
+  positionTStopFirstLeg: (id: string, expected_version: number) =>
+    request<{ plan: PositionTPlan }>(`/api/position-t/plans/${encodeURIComponent(id)}/stop-first-leg`, { method: 'POST', body: JSON.stringify({ expected_version }), quiet: true }),
+  positionTOrderEvent: (body: PositionTOrderEvent) =>
+    request<{ plan: PositionTPlan }>('/api/position-t/order-events', { method: 'POST', body: JSON.stringify(body), quiet: true }),
+  positionTExecution: (body: PositionTExecution) =>
+    request<{ plan: PositionTPlan; execution: PositionTExecution }>('/api/position-t/executions', { method: 'POST', body: JSON.stringify(body), quiet: true }),
+  positionTExecutionFee: (id: string, body: { fee: number; reason: string; idempotency_key: string }) =>
+    request<{ plan: PositionTPlan; execution: PositionTExecution }>(`/api/position-t/executions/${encodeURIComponent(id)}/fee`, { method: 'POST', body: JSON.stringify(body), quiet: true }),
+  positionTPlan: (id: string) => request<{ plan: PositionTPlan; executions: PositionTExecution[]; events: PositionTOrderEvent[] }>(`/api/position-t/plans/${encodeURIComponent(id)}`, { quiet: true }),
+  positionTReview: (account: string, date: string) => request<{ review: PositionTReview }>(`/api/position-t/reviews?account_id=${encodeURIComponent(account)}&date=${encodeURIComponent(date)}`, { quiet: true }),
+  positionTReplay: (body: { account_id: string; symbol: string; start_date: string; end_date: string; direction?: PositionTDirection }) =>
+    request<{ replay: PositionTReplay }>('/api/position-t/replays', { method: 'POST', body: JSON.stringify(body), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, quiet: true }),
+  positionTCapabilities: () => request<{ manual: boolean; simulation: boolean; broker: boolean; auto_order: boolean; reasons?: string[] }>('/api/position-t/capabilities', { quiet: true }),
 
   // ===== Lots (批次登记, 页面名"持仓提醒"; 保存/删除自动同步监控规则) =====
   lotsList: () =>
