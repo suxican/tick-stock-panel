@@ -67,3 +67,14 @@ it('keeps other notifications linked to the monitor', async () => {
   await act(async () => host.querySelector<HTMLElement>('[role="button"]')!.click())
   expect(host.querySelector('output')?.textContent).toBe('/monitor')
 })
+
+it('labels huichun notifications and opens their monitor records', async () => {
+  await act(async () => pushAlertToast({
+    ts: 1, source: 'huichun', type: 'a0_confirmed', symbol: '600000.SH', name: '回春样本',
+    message: '回春 A0 确认',
+  } as AlertEvent))
+  expect(host.textContent).toContain('回春模式')
+  expect(host.textContent).toContain('回春 A0 确认')
+  await act(async () => host.querySelector<HTMLElement>('[role="button"]')!.click())
+  expect(host.querySelector('output')?.textContent).toBe('/monitor')
+})

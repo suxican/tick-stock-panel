@@ -46,7 +46,7 @@ SOURCE_LABELS = {
     "strategy": "策略", "signal": "信号", "price": "价格",
     "market": "异动", "ladder": "连板梯队", "sector": "板块",
     "volume_delta": "放量", "abnormal": "异动", "date": "日期提醒",
-    "paper": "模拟盘", "first_board": "首板模式",
+    "paper": "模拟盘", "first_board": "首板模式", "huichun": "回春模式",
 }
 
 # final 定版确认容差: 快照时间戳允许早于边界 5s 内 (供应商时间戳精度不一)
@@ -995,7 +995,7 @@ class QuoteService:
         rule_events: list[dict] = []
         pending: list[dict] = []
         for source in dict.fromkeys(event.get("source") for event in events):
-            if source != "first_board":
+            if source not in {"first_board", "huichun"}:
                 continue
             batch = [event for event in events if event.get("source") == source]
             if source == legacy_source and (engine is None or not engine.has_mode_rules(source)):

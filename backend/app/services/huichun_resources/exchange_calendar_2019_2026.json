@@ -1,0 +1,309 @@
+{
+  "version": 1,
+  "coverage_start": "2019-09-12",
+  "coverage_end": "2026-12-31",
+  "weekends_closed": true,
+  "sources": [
+    {
+      "id": "sse-2019",
+      "url": "https://www.sse.com.cn/disclosure/announcement/general/c/c_20181220_4696473.shtml",
+      "published_on": "2018-12-20",
+      "title": "关于上海证券交易所2019年全年休市安排的通知"
+    },
+    {
+      "id": "sse-2020",
+      "url": "https://www.sse.com.cn/disclosure/announcement/general/c/c_20191220_4969627.shtml",
+      "published_on": "2019-12-20",
+      "title": "关于上海证券交易所2020年全年休市安排的通知"
+    },
+    {
+      "id": "sse-2020-extension",
+      "url": "https://www.sse.com.cn/disclosure/announcement/general/c/c_20200127_4991582.shtml",
+      "published_on": "2020-01-27",
+      "title": "关于调整2020年春节休市相关安排的公告"
+    },
+    {
+      "id": "sse-2021",
+      "url": "https://www.sse.com.cn/disclosure/announcement/general/c/c_20201224_5286949.shtml",
+      "published_on": "2020-12-24",
+      "title": "关于上海证券交易所2021年全年休市安排的通知"
+    },
+    {
+      "id": "sse-2022",
+      "url": "https://www.sse.com.cn/disclosure/announcement/general/c/c_20211220_5662606.shtml",
+      "published_on": "2021-12-20",
+      "title": "关于上海证券交易所2022年全年休市安排的通知"
+    },
+    {
+      "id": "sse-2023",
+      "url": "https://www.sse.com.cn/disclosure/announcement/general/c/c_20221227_5714458.shtml",
+      "published_on": "2022-12-27",
+      "title": "关于上海证券交易所2023年全年休市安排的通知"
+    },
+    {
+      "id": "sse-2024",
+      "url": "https://www.sse.com.cn/disclosure/announcement/general/c/c_20231226_5733939.shtml",
+      "published_on": "2023-12-26",
+      "title": "关于上海证券交易所2024年部分节假日休市安排的通知"
+    },
+    {
+      "id": "sse-2025",
+      "url": "https://www.sse.com.cn/disclosure/announcement/general/c/c_20241223_10767108.shtml",
+      "published_on": "2024-12-23",
+      "title": "关于上海证券交易所2025年部分节假日休市安排的通知"
+    },
+    {
+      "id": "sse-2026",
+      "url": "https://www.sse.com.cn/disclosure/announcement/general/c/c_20251222_10802507.shtml",
+      "published_on": "2025-12-22",
+      "title": "关于上海证券交易所2026年部分节假日休市安排的通知"
+    }
+  ],
+  "closures": [
+    {
+      "start_date": "2019-09-13",
+      "end_date": "2019-09-15",
+      "source_id": "sse-2019"
+    },
+    {
+      "start_date": "2019-10-01",
+      "end_date": "2019-10-07",
+      "source_id": "sse-2019"
+    },
+    {
+      "start_date": "2020-01-01",
+      "end_date": "2020-01-01",
+      "source_id": "sse-2020"
+    },
+    {
+      "start_date": "2020-01-24",
+      "end_date": "2020-01-30",
+      "source_id": "sse-2020"
+    },
+    {
+      "start_date": "2020-01-31",
+      "end_date": "2020-02-02",
+      "source_id": "sse-2020-extension"
+    },
+    {
+      "start_date": "2020-04-04",
+      "end_date": "2020-04-06",
+      "source_id": "sse-2020"
+    },
+    {
+      "start_date": "2020-05-01",
+      "end_date": "2020-05-05",
+      "source_id": "sse-2020"
+    },
+    {
+      "start_date": "2020-06-25",
+      "end_date": "2020-06-27",
+      "source_id": "sse-2020"
+    },
+    {
+      "start_date": "2020-10-01",
+      "end_date": "2020-10-08",
+      "source_id": "sse-2020"
+    },
+    {
+      "start_date": "2021-01-01",
+      "end_date": "2021-01-03",
+      "source_id": "sse-2021"
+    },
+    {
+      "start_date": "2021-02-11",
+      "end_date": "2021-02-17",
+      "source_id": "sse-2021"
+    },
+    {
+      "start_date": "2021-04-03",
+      "end_date": "2021-04-05",
+      "source_id": "sse-2021"
+    },
+    {
+      "start_date": "2021-05-01",
+      "end_date": "2021-05-05",
+      "source_id": "sse-2021"
+    },
+    {
+      "start_date": "2021-06-12",
+      "end_date": "2021-06-14",
+      "source_id": "sse-2021"
+    },
+    {
+      "start_date": "2021-09-19",
+      "end_date": "2021-09-21",
+      "source_id": "sse-2021"
+    },
+    {
+      "start_date": "2021-10-01",
+      "end_date": "2021-10-07",
+      "source_id": "sse-2021"
+    },
+    {
+      "start_date": "2022-01-01",
+      "end_date": "2022-01-03",
+      "source_id": "sse-2022"
+    },
+    {
+      "start_date": "2022-01-31",
+      "end_date": "2022-02-06",
+      "source_id": "sse-2022"
+    },
+    {
+      "start_date": "2022-04-03",
+      "end_date": "2022-04-05",
+      "source_id": "sse-2022"
+    },
+    {
+      "start_date": "2022-04-30",
+      "end_date": "2022-05-04",
+      "source_id": "sse-2022"
+    },
+    {
+      "start_date": "2022-06-03",
+      "end_date": "2022-06-05",
+      "source_id": "sse-2022"
+    },
+    {
+      "start_date": "2022-09-10",
+      "end_date": "2022-09-12",
+      "source_id": "sse-2022"
+    },
+    {
+      "start_date": "2022-10-01",
+      "end_date": "2022-10-07",
+      "source_id": "sse-2022"
+    },
+    {
+      "start_date": "2022-12-31",
+      "end_date": "2023-01-02",
+      "source_id": "sse-2023"
+    },
+    {
+      "start_date": "2023-01-21",
+      "end_date": "2023-01-27",
+      "source_id": "sse-2023"
+    },
+    {
+      "start_date": "2023-04-05",
+      "end_date": "2023-04-05",
+      "source_id": "sse-2023"
+    },
+    {
+      "start_date": "2023-04-29",
+      "end_date": "2023-05-03",
+      "source_id": "sse-2023"
+    },
+    {
+      "start_date": "2023-06-22",
+      "end_date": "2023-06-24",
+      "source_id": "sse-2023"
+    },
+    {
+      "start_date": "2023-09-29",
+      "end_date": "2023-10-06",
+      "source_id": "sse-2023"
+    },
+    {
+      "start_date": "2023-12-30",
+      "end_date": "2024-01-01",
+      "source_id": "sse-2024"
+    },
+    {
+      "start_date": "2024-02-09",
+      "end_date": "2024-02-17",
+      "source_id": "sse-2024"
+    },
+    {
+      "start_date": "2024-04-04",
+      "end_date": "2024-04-06",
+      "source_id": "sse-2024"
+    },
+    {
+      "start_date": "2024-05-01",
+      "end_date": "2024-05-05",
+      "source_id": "sse-2024"
+    },
+    {
+      "start_date": "2024-06-10",
+      "end_date": "2024-06-10",
+      "source_id": "sse-2024"
+    },
+    {
+      "start_date": "2024-09-15",
+      "end_date": "2024-09-17",
+      "source_id": "sse-2024"
+    },
+    {
+      "start_date": "2024-10-01",
+      "end_date": "2024-10-07",
+      "source_id": "sse-2024"
+    },
+    {
+      "start_date": "2025-01-01",
+      "end_date": "2025-01-01",
+      "source_id": "sse-2025"
+    },
+    {
+      "start_date": "2025-01-28",
+      "end_date": "2025-02-04",
+      "source_id": "sse-2025"
+    },
+    {
+      "start_date": "2025-04-04",
+      "end_date": "2025-04-06",
+      "source_id": "sse-2025"
+    },
+    {
+      "start_date": "2025-05-01",
+      "end_date": "2025-05-05",
+      "source_id": "sse-2025"
+    },
+    {
+      "start_date": "2025-05-31",
+      "end_date": "2025-06-02",
+      "source_id": "sse-2025"
+    },
+    {
+      "start_date": "2025-10-01",
+      "end_date": "2025-10-08",
+      "source_id": "sse-2025"
+    },
+    {
+      "start_date": "2026-01-01",
+      "end_date": "2026-01-03",
+      "source_id": "sse-2026"
+    },
+    {
+      "start_date": "2026-02-15",
+      "end_date": "2026-02-23",
+      "source_id": "sse-2026"
+    },
+    {
+      "start_date": "2026-04-04",
+      "end_date": "2026-04-06",
+      "source_id": "sse-2026"
+    },
+    {
+      "start_date": "2026-05-01",
+      "end_date": "2026-05-05",
+      "source_id": "sse-2026"
+    },
+    {
+      "start_date": "2026-06-19",
+      "end_date": "2026-06-21",
+      "source_id": "sse-2026"
+    },
+    {
+      "start_date": "2026-09-25",
+      "end_date": "2026-09-27",
+      "source_id": "sse-2026"
+    },
+    {
+      "start_date": "2026-10-01",
+      "end_date": "2026-10-07",
+      "source_id": "sse-2026"
+    }
+  ]
+}

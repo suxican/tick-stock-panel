@@ -37,3 +37,12 @@ def test_spec_declares_builtin_plugin_tdx():
     assert "app.plugins.tdxquant.client" in SPEC_CODE
     assert "app.plugins.tdxquant.probe" in SPEC_CODE
     assert '"plugins" / "tdxquant" / "plugin.yaml"' in SPEC_CODE  # 源路径必须指向现存目录
+
+
+def test_spec_includes_huichun_calendar_resource():
+    """收益跟踪必须使用随包日历, 不能依赖开发者未入库的 docs 文件。"""
+    assert '"services" / "huichun_resources"' in SPEC_CODE
+    assert '"app/services/huichun_resources"' in SPEC_CODE
+    from app.services.huichun_calendar import BUNDLED_CALENDAR_PATH
+
+    assert BUNDLED_CALENDAR_PATH.is_file()

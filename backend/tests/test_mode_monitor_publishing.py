@@ -28,7 +28,7 @@ def configured_service(tmp_path, rules):
 def rule(source, **overrides):
     return {
         "id": "mr_mode", "name": "模式提醒", "type": source, "scope": "all",
-        "mode_events": ["buy_candidate"],
+        "mode_events": ["buy_candidate" if source == "first_board" else "a0_confirmed"],
         **overrides,
     }
 
@@ -41,13 +41,15 @@ def event(source, event_type, event_id="event1"):
     }
 
 
-def test_mode_rule_routes_one_formatted_event_to_every_output(tmp_path):
-    source, event_type = "first_board", "buy_candidate"
+@pytest.mark.parametrize("source,event_type", [
+    ("first_board", "buy_candidate"), ("huichun", "a0_confirmed"),
+])
+def test_mode_rule_routes_one_formatted_event_to_every_output(tmp_path, source, event_type):
     service = configured_service(tmp_path, [rule(source)])
     service._format_extension_notifications = lambda events: [
         {**item, "message": "统一中文通知"} for item in events
     ]
-    publish = service.publish_first_board_alerts
+    publish = service.publish_first_board_alerts if source == "first_board" else service.publish_mode_alerts
     publish([event(source, event_type), event(source, "not_selected", "event2")])
     stored = alert_store.list_recent(tmp_path)
     assert len(stored) == 1
@@ -77,6 +79,15 @@ def test_unknown_mode_is_quiet(tmp_path):
     service = configured_service(tmp_path, [])
     service.publish_mode_alerts([event("unsupported", "unsupported")])
     assert alert_store.list_recent(tmp_path) == []
+    service._maybe_send_webhook.assert_not_called()
+
+
+@pytest.mark.parametrize("rules", [[], [rule("huichun", enabled=False)]])
+def test_huichun_without_enabled_rules_is_quiet(tmp_path, rules):
+    service = configured_service(tmp_path, rules)
+    service.publish_mode_alerts([event("huichun", "a0_confirmed")])
+    assert alert_store.list_recent(tmp_path) == []
+    service._broadcast_alerts.assert_not_called()
     service._maybe_send_webhook.assert_not_called()
 
 
@@ -111,9 +122,12 @@ def test_failed_quote_fetch_does_not_offer_a_snapshot():
     service._offer_first_board_snapshot.assert_not_called()
 
 
-def test_failed_alert_write_can_retry_the_same_source_event(tmp_path, monkeypatch):
-    service = configured_service(tmp_path, [rule("first_board")])
-    source_event = event("first_board", "buy_candidate")
+@pytest.mark.parametrize("source,event_type", [
+    ("first_board", "buy_candidate"), ("huichun", "a0_confirmed"),
+])
+def test_failed_alert_write_can_retry_the_same_source_event(tmp_path, monkeypatch, source, event_type):
+    service = configured_service(tmp_path, [rule(source)])
+    source_event = event(source, event_type)
     append = alert_store.append_many
     writes = Mock(side_effect=[OSError("disk unavailable"), None])
 
@@ -182,21 +196,24 @@ def test_offer_failure_does_not_block_regular_monitors():
     service._evaluate_monitors.assert_called_once_with(daily, None)
 
 
-def test_first_board_reuses_current_event_bus_without_duplicate_publication(tmp_path):
+@pytest.mark.parametrize("source,event_type", [
+    ("first_board", "buy_candidate"), ("huichun", "a0_confirmed"),
+])
+def test_modes_reuse_current_event_bus_without_duplicate_publication(tmp_path, source, event_type):
     from app.services.events import bus
 
-    service = configured_service(tmp_path, [rule("first_board")])
+    service = configured_service(tmp_path, [rule(source)])
     subscriber = bus.subscribe()
     try:
-        source_event = event("first_board", "buy_candidate")
-        service.publish_first_board_alerts([source_event])
+        source_event = event(source, event_type)
+        service.publish_mode_alerts([source_event])
         stored = alert_store.list_recent(tmp_path)
         published = subscriber.get_nowait()
         assert published["type"] == "alert"
         assert published["scope"] == "read:analysis"
         assert published["data"] == stored[0]
         assert subscriber.empty()
-        service.publish_first_board_alerts([source_event])
+        service.publish_mode_alerts([source_event])
         assert subscriber.empty()
         service._broadcast_alerts.assert_called_once_with(stored)
     finally:

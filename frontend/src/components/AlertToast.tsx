@@ -99,6 +99,7 @@ const SOURCE_BADGE: Record<string, { label: string; cls: string }> = {
   dropped:   { label: '移出', cls: 'bg-bear/15 text-bear' },
   paper:     { label: '模拟盘', cls: 'bg-sky-400/15 text-sky-500 dark:text-sky-300' },
   first_board: { label: '首板模式', cls: 'bg-accent/15 text-accent' },
+  huichun: { label: '回春模式', cls: 'bg-accent/15 text-accent' },
 }
 
 // ===== 容器 — 挂在 Layout =====

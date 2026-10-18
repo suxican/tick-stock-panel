@@ -8,6 +8,11 @@
 // ===== Query Key 工厂 =====
 
 export const QK = {
+  // 回春扫描和收益快照独立刷新；现价仍复用市场行情缓存。
+  huichun: ['huichun'] as const,
+  huichunConfig: ['huichun', 'config'] as const,
+  huichunSnapshot: ['huichun', 'snapshot'] as const,
+  huichunTracking: ['huichun', 'tracking'] as const,
   // 首板工作台独立轮询快照，复用行情缓存。
   firstBoard: ['first-board'] as const,
   firstBoardConfig: ['first-board', 'config'] as const,
@@ -55,6 +60,7 @@ export const QK = {
   screenerCached:       (asOf?: string, ext?: string) => ['screener-cached', 'all', asOf ?? '', ext ?? ''] as const,
   screenerKlineBatch:   (symbols: string) => ['screener-kline-batch', symbols] as const,
   marketSnapshot:       ['market-snapshot'] as const,
+  marketSnapshotForSymbols: (symbols: string) => ['market-snapshot', 'symbols', symbols] as const,
   limitLadder:          (asOf?: string) => ['limit-ladder', asOf] as const,
 
   // Backtest

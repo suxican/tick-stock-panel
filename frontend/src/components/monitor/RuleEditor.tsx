@@ -25,7 +25,7 @@ interface Props {
 
 const TYPE_DEFAULT_NAME: Record<string, string> = {
   signal: '信号监控', price: '价格监控', market: '市场异动监控', strategy: '策略监控', sector: '板块监控', abnormal: '异动监控', volume_delta: '轮询放量监控',
-  first_board: '首板模式监控',
+  first_board: '首板模式监控', huichun: '回春模式监控',
 }
 
 const TYPE_ICONS = {
@@ -37,6 +37,7 @@ const TYPE_ICONS = {
   abnormal: Siren,
   volume_delta: BarChart3,
   first_board: TrendingUp,
+  huichun: Activity,
 }
 
 const SECTOR_KIND_OPTIONS: Array<{ key: SectorKind; label: string; icon: typeof ChartNoAxesCombined }> = [
@@ -704,8 +705,10 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
         <fieldset className="space-y-3 border-t border-border/60 pt-3">
           <legend className="text-[11px] font-medium text-secondary">模式事件（任一命中即提醒）</legend>
           <p className="text-[11px] leading-relaxed text-secondary">
-            接收首板模式已有的盘中事件。请在首板模式中开启「自动盯盘」和「消息通知」；本规则仅筛选通知事件与标的。
-            {' '}<Link to="/first-board" className="text-accent hover:underline">前往首板模式 →</Link>
+            {draft.type === 'first_board'
+              ? '接收首板模式已有的盘中事件。请在首板模式中开启「自动盯盘」和「消息通知」；本规则仅筛选通知事件与标的。'
+              : '在回春模式日线扫描完成后，按扫描交易日确认 A0 或待金叉事件。请在回春模式中执行扫描；创建规则不会启动自动扫描。'}
+            {' '}<Link to={draft.type === 'first_board' ? '/first-board' : '/huichun'} className="text-accent hover:underline">前往{draft.type === 'first_board' ? '首板' : '回春'}模式 →</Link>
           </p>
           <div className="grid gap-x-4 gap-y-2 sm:grid-cols-2">
             {modeEventOptions.map(option => (

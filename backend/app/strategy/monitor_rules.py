@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # ── 常量 ────────────────────────────────────────────────
 ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
-RULE_TYPES = {"strategy", "signal", "price", "market", "ladder", "sector", "abnormal", "volume_delta", "date", "first_board"}
+RULE_TYPES = {"strategy", "signal", "price", "market", "ladder", "sector", "abnormal", "volume_delta", "date", "first_board", "huichun"}
 SCOPES = {"symbols", "all", "sector", "watchlist_group"}
 LOGICS = {"and", "or"}
 DIRECTIONS = {"entry", "exit", "both"}
@@ -40,9 +40,11 @@ MODE_EVENT_LABELS = {
         "sealed": "涨停价观察", "broken": "开板观察", "watch": "条件失效",
         "invalid": "数据或条件失效", "exit_candidate": "次日退出提示",
     },
+    "huichun": {"a0_confirmed": "A0 日线确认", "pending_cross": "待金叉观察"},
 }
 MODE_DEFAULT_EVENTS = {
     "first_board": ["buy_candidate", "broken", "exit_candidate"],
+    "huichun": ["a0_confirmed"],
 }
 SEVERITIES = {"info", "warn", "critical"}
 OPS = {">", ">=", "<", "<=", "==", "!="}

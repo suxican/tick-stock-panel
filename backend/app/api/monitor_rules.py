@@ -177,6 +177,7 @@ def get_options(request: Request):
             {"key": "market", "label": "市场异动"},
             {"key": "strategy", "label": "策略监控"},
             {"key": "first_board", "label": "首板模式"},
+            {"key": "huichun", "label": "回春模式"},
             {"key": "abnormal", "label": "异动监控"},
             {"key": "sector", "label": "板块监控"},
             {"key": "volume_delta", "label": "轮询放量"},
@@ -275,6 +276,10 @@ def list_rules(request: Request):
         if warning:
             for rule in first_board_rules:
                 rule["runtime_warning"] = warning
+    if getattr(request.app.state, "huichun_mode_service", None) is None:
+        for rule in rules:
+            if rule.get("type") == "huichun" and rule.get("enabled", True):
+                rule["runtime_warning"] = "回春模式服务未就绪, 暂无法产生监控事件"
     # 分组作用域规则: 绑定的分组被删除 → 标注运行时警告 (引擎侧已 fail-closed 跳过)
     group_rules = [rule for rule in rules if rule.get("scope") == "watchlist_group"]
     if group_rules:

@@ -15,6 +15,7 @@ vi.mock('@/lib/api', () => ({
       types: [
         { key: 'signal', label: '信号' }, { key: 'strategy', label: '策略监控' },
         { key: 'first_board', label: '首板模式' },
+        { key: 'huichun', label: '回春模式' },
       ],
       scopes: [
         { key: 'all', label: '全市场' }, { key: 'symbols', label: '指定标的' },
@@ -131,5 +132,44 @@ it('initializes a mode deep link as a stock rule for the whole market', async ()
   await click('保存')
   expect(fixtures.save).toHaveBeenCalledWith(expect.objectContaining({
     type: 'first_board', asset_type: 'stock', scope: 'all', mode_events: ['buy_candidate', 'broken', 'exit_candidate'],
+  }))
+})
+
+it('resets first-board events to huichun defaults and rejects an empty event selection', async () => {
+  await render()
+  await click('首板模式')
+  await click('回春模式')
+  expect(checkedEvents()).toEqual(['a0_confirmed'])
+  expect(host.textContent).toContain('日线扫描完成后')
+  await act(async () => host.querySelector<HTMLInputElement>('input[value="a0_confirmed"]')!.click())
+  await click('保存')
+  expect(fixtures.save).not.toHaveBeenCalled()
+  expect(host.textContent).toContain('至少选择一个模式事件')
+  await act(async () => host.querySelector<HTMLInputElement>('input[value="pending_cross"]')!.click())
+  await click('保存')
+  expect(fixtures.save).toHaveBeenCalledWith(expect.objectContaining({ type: 'huichun', mode_events: ['pending_cross'] }))
+})
+
+it('preserves huichun events and symbol scope while editing and reports save failures', async () => {
+  fixtures.save.mockRejectedValue(new Error('保存失败，请重试'))
+  await render({
+    id: 'existing', type: 'huichun', name: '回春自选', enabled: true, asset_type: 'stock',
+    scope: 'symbols', symbols: ['600000.SH'], conditions: [], mode_events: ['pending_cross'],
+    direction: 'entry', logic: 'or', cooldown_seconds: 1800, severity: 'info', message: '',
+  })
+  expect(checkedEvents()).toEqual(['pending_cross'])
+  await click('保存')
+  expect(fixtures.save).toHaveBeenCalledWith(expect.objectContaining({
+    id: 'existing', type: 'huichun', scope: 'symbols', symbols: ['600000.SH'], mode_events: ['pending_cross'],
+  }))
+  expect(host.textContent).toContain('保存失败，请重试')
+  expect(fixtures.close).not.toHaveBeenCalled()
+})
+
+it('initializes a huichun deep link with its confirmation event', async () => {
+  await render(null, { type: 'huichun' })
+  await click('保存')
+  expect(fixtures.save).toHaveBeenCalledWith(expect.objectContaining({
+    type: 'huichun', asset_type: 'stock', scope: 'all', mode_events: ['a0_confirmed'],
   }))
 })

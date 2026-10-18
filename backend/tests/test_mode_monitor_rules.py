@@ -15,7 +15,7 @@ from app.strategy.monitor import MonitorRuleEngine
 def _rule(source="first_board", **overrides):
     return monitor_rules.normalize({
         "id": "mode_rule", "name": "模式提醒", "type": source,
-        "scope": "all", "mode_events": ["buy_candidate"],
+        "scope": "all", "mode_events": ["buy_candidate" if source == "first_board" else "a0_confirmed"],
         "cooldown_seconds": 60, **overrides,
     })
 
@@ -33,6 +33,10 @@ def test_mode_rule_defaults_validation_and_non_mode_cleanup():
     assert first["scope"] == "all"
     assert first["mode_events"] == ["buy_candidate", "broken", "exit_candidate"]
     monitor_rules.validate(first)
+    huichun = monitor_rules.normalize({"id": "h", "name": "回春", "type": "huichun"})
+    assert huichun["scope"] == "all"
+    assert huichun["mode_events"] == ["a0_confirmed"]
+    monitor_rules.validate(huichun)
     assert "mode_events" not in monitor_rules.normalize({"type": "price", "mode_events": ["buy_candidate"]})
     for overrides, message in [
         ({"mode_events": []}, "至少选择"),
@@ -212,7 +216,9 @@ def test_mode_api_options_and_empty_rule_list(tmp_path):
     assert monitor_rules_api.list_rules(request) == {"rules": []}
     options = monitor_rules_api.get_options(request)
     assert {"key": "first_board", "label": "首板模式"} in options["types"]
-    assert set(options["mode_events"]) == {"first_board"}
+    assert {"key": "huichun", "label": "回春模式"} in options["types"]
+    assert set(options["mode_events"]) == {"first_board", "huichun"}
+    assert {"key": "pending_cross", "label": "待金叉观察"} in options["mode_events"]["huichun"]
     assert {"key": "buy_candidate", "label": "临近涨停买入候选"} in options["mode_events"]["first_board"]
     saved = monitor_rules_api.save_rule(
         monitor_rules_api.RuleModel(id="mode_default", name="首板提醒", type="first_board"), request,
@@ -237,6 +243,45 @@ def test_mode_api_runtime_warnings(tmp_path, service, expected):
     rules = {rule["id"]: rule for rule in monitor_rules_api.list_rules(request)["rules"]}
     if expected:
         assert expected in rules["mode_rule"]["runtime_warning"]
+    else:
+        assert "runtime_warning" not in rules["mode_rule"]
+    assert "runtime_warning" not in rules["disabled"]
+
+
+def test_huichun_rule_save_reload_and_pending_cross_selection(tmp_path):
+    engine = MonitorRuleEngine()
+    repo = SimpleNamespace(store=SimpleNamespace(data_dir=tmp_path))
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(repo=repo, monitor_engine=engine)))
+    result = monitor_rules_api.save_rule(
+        monitor_rules_api.RuleModel(**_rule("huichun", mode_events=["pending_cross"])), request,
+    )
+    assert result["rule"]["mode_events"] == ["pending_cross"]
+    assert monitor_rules.load_one(tmp_path, "mode_rule")["type"] == "huichun"
+    events = engine.evaluate_mode_events("huichun", [
+        _event("confirmed", source="huichun", type="a0_confirmed"),
+        _event("pending", source="huichun", type="pending_cross"),
+        _event("wrong_source", source="first_board", type="pending_cross"),
+    ])
+    assert len(events) == 1
+    assert events[0]["source_event_id"] == "pending"
+    assert events[0]["source"] == "huichun"
+    with pytest.raises(HTTPException) as exc:
+        monitor_rules_api.save_rule(
+            monitor_rules_api.RuleModel(**_rule("huichun", mode_events=["buy_candidate"])), request,
+        )
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.parametrize("service", [None, SimpleNamespace()])
+def test_huichun_service_warning_is_independent_of_first_board(tmp_path, service):
+    monitor_rules.save_one(tmp_path, _rule("huichun"))
+    monitor_rules.save_one(tmp_path, _rule("huichun", id="disabled", enabled=False))
+    repo = SimpleNamespace(store=SimpleNamespace(data_dir=tmp_path))
+    state = SimpleNamespace(repo=repo, huichun_mode_service=service)
+    request = SimpleNamespace(app=SimpleNamespace(state=state))
+    rules = {rule["id"]: rule for rule in monitor_rules_api.list_rules(request)["rules"]}
+    if service is None:
+        assert "回春模式服务未就绪" in rules["mode_rule"]["runtime_warning"]
     else:
         assert "runtime_warning" not in rules["mode_rule"]
     assert "runtime_warning" not in rules["disabled"]

@@ -64,6 +64,9 @@ export const storage = {
   /** 策略结果列表列配置 */
   screenerResultColumns: kv<unknown[]>('screener_result_columns'),
 
+  /** 回春候选和观察池共用的个股关注、置顶标记 */
+  huichunStockMarks: kv<Record<string, { focused: boolean; pinned: boolean }>>('huichun-stock-marks'),
+
   /** 自选列表视图模式 table | card (分组卡片为临时模式, 不持久化) */
   watchlistView:        kv<string>('watchlist_view'),
 

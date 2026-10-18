@@ -30,7 +30,7 @@ import { IconMonitor } from '@/components/BrandIcons'
 const TYPE_LABEL: Record<string, string> = {
   signal: '信号', price: '价格/涨跌', market: '市场异动', strategy: '策略监控', sector: '板块监控',
   abnormal: '异动监控', volume_delta: '轮询放量', date: '日期提醒',
-  first_board: '首板模式',
+  first_board: '首板模式', huichun: '回春模式',
 }
 
 /** 严重级别 → 左侧色条 + 图标 */
@@ -49,6 +49,7 @@ const SOURCE_BADGE_STYLE: Record<string, string> = {
   volume_delta: 'bg-rose-500/10 text-rose-400 border-rose-500/20 dark:text-rose-300',
   date:     'bg-violet-500/10 text-violet-500 border-violet-500/20 dark:text-violet-300',
   first_board: 'bg-accent/10 text-accent border-accent/20',
+  huichun: 'bg-emerald-400/10 text-emerald-500 border-emerald-400/20',
 }
 
 /**
@@ -140,14 +141,14 @@ export function Monitor() {
       setSearchParams({}, { replace: true })
     } else if (isModeMonitorType(kind ?? undefined)) {
       setEditingRule(null)
-      setEditorPreset({ type: kind as 'first_board', asset_type: 'stock', scope: 'all' })
+      setEditorPreset({ type: kind as 'first_board' | 'huichun', asset_type: 'stock', scope: 'all' })
       setEditorOpen(true)
       setSearchParams({}, { replace: true })
     }
   }, [searchParams, setSearchParams])
 
   // 触发记录: 过滤 + 统计 (提升到主组件, 供 header 行使用)
-  const [filter, setFilter] = useState<'all' | 'strategy' | 'signal' | 'price' | 'market' | 'sector' | 'abnormal' | 'volume_delta' | 'date' | 'first_board'>('all')
+  const [filter, setFilter] = useState<'all' | 'strategy' | 'signal' | 'price' | 'market' | 'sector' | 'abnormal' | 'volume_delta' | 'date' | 'first_board' | 'huichun'>('all')
   const [confirmClear, setConfirmClear] = useState(false)
   const [confirmClearRules, setConfirmClearRules] = useState(false)
 
@@ -234,7 +235,7 @@ export function Monitor() {
               <SectionHeader icon={BellRing} title="触发记录" />
               {/* 过滤标签 — 单行横向滚动, 不折行 (缩放/窄窗口下保持一行) */}
               <div className="flex min-w-0 flex-nowrap items-center gap-0.5 overflow-x-auto [&>button]:shrink-0">
-                {(['all', 'strategy', 'first_board', 'signal', 'price', 'market', 'sector', 'abnormal', 'volume_delta', 'date'] as const).map(f => (
+                {(['all', 'strategy', 'first_board', 'huichun', 'signal', 'price', 'market', 'sector', 'abnormal', 'volume_delta', 'date'] as const).map(f => (
                   <button
                     key={f}
                     onClick={() => setFilter(f)}
@@ -1002,10 +1003,10 @@ function RulesList({ rulesQuery, onEdit }: {
                 <div className="mt-1 flex flex-wrap items-center gap-1 pl-0.5">
                   {(r.mode_events ?? DEFAULT_MODE_EVENTS[r.type]).map(event => (
                     <span key={event} className="rounded bg-elevated px-1.5 py-0.5 text-[9px] text-secondary">
-                      {modeEventLabel(r.type as 'first_board', event)}
+                      {modeEventLabel(r.type as 'first_board' | 'huichun', event)}
                     </span>
                   ))}
-                  <span className="text-[9px] text-muted">盘中自动盯盘事件</span>
+                  <span className="text-[9px] text-muted">{r.type === 'huichun' ? '日线扫描后确认' : '盘中自动盯盘事件'}</span>
                 </div>
               ) : r.type === 'strategy' && r.strategy_id ? (
                 <div className="mt-1 flex flex-wrap items-center gap-1 pl-0.5">

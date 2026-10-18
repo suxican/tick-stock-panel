@@ -449,6 +449,8 @@ export interface MarketSnapshotRow {
   symbol: string
   name?: string | null
   close?: number | null
+  raw_close?: number | null
+  date?: string | null
   change_pct?: number | null
   amount?: number | null
   volume?: number | null
@@ -1032,7 +1034,7 @@ export interface MonitorRule {
   id: string
   name: string
   enabled: boolean
-  type: 'strategy' | 'signal' | 'price' | 'market' | 'ladder' | 'sector' | 'abnormal' | 'volume_delta' | 'date' | 'first_board'
+  type: 'strategy' | 'signal' | 'price' | 'market' | 'ladder' | 'sector' | 'abnormal' | 'volume_delta' | 'date' | 'first_board' | 'huichun'
   asset_type?: 'stock' | 'etf' | 'index'
   scope: 'symbols' | 'all' | 'sector' | 'watchlist_group'
   symbols: string[]
@@ -1283,7 +1285,7 @@ export interface MonitorRuleOptions {
   custom_signals: { key: string; label: string }[]
   operators: string[]
   types: { key: string; label: string }[]
-  mode_events?: Record<'first_board', { key: string; label: string }[]>
+  mode_events?: Record<'first_board' | 'huichun', { key: string; label: string }[]>
   scopes: { key: string; label: string }[]
   logics: { key: string; label: string }[]
   severities: { key: string; label: string }[]
@@ -2323,6 +2325,22 @@ export interface UpgradeGuardStatus {
 
 // ===== API surface =====
 export const api = {
+  huichunConfig: () => request<HuichunConfig>('/api/huichun/config', { quiet: true }),
+  huichunSaveConfig: (body: { rules: HuichunRules; expected_revision: number }) => request<HuichunConfig>('/api/huichun/config', {
+    method: 'PUT', body: JSON.stringify(body), quiet: true,
+  }),
+  huichunSnapshot: () => request<HuichunSnapshot>('/api/huichun/snapshot', { quiet: true }),
+  huichunScan: (body: { start_date?: string | null; end_date?: string | null }) => request<HuichunSnapshot>('/api/huichun/scan', {
+    method: 'POST', body: JSON.stringify(body), quiet: true,
+  }),
+  huichunTracking: () => request<HuichunTracking>('/api/huichun/tracking', { quiet: true }),
+  huichunAddTracking: (body: { scan_id: string; candidate_ids: string[] }) => request<HuichunTracking>('/api/huichun/tracking', {
+    method: 'POST', body: JSON.stringify(body), quiet: true,
+  }),
+  huichunRefreshTracking: () => request<HuichunSnapshot>('/api/huichun/tracking/refresh', { method: 'POST', quiet: true }),
+  huichunRemoveTracking: (id: string) => request<HuichunTracking>(`/api/huichun/tracking/${encodeURIComponent(id)}`, {
+    method: 'DELETE', quiet: true,
+  }),
   firstBoardConfig: () => request<FirstBoardConfig>('/api/first-board/config'),
   firstBoardSaveConfig: (body: FirstBoardConfig) => request<FirstBoardConfig>('/api/first-board/config', {
     method: 'PUT', body: JSON.stringify(body), quiet: true,
@@ -3052,6 +3070,8 @@ export const api = {
     ),
   marketSnapshot: () =>
     request<{ as_of: string | null; rows: MarketSnapshotRow[] }>('/api/screener/market-snapshot'),
+  marketSnapshotForSymbols: (symbols: string[]) =>
+    request<{ as_of: string | null; rows: MarketSnapshotRow[] }>(`/api/screener/market-snapshot?symbols=${encodeURIComponent(symbols.join(','))}`, { quiet: true }),
   overviewMarket: (asOf?: string) => request<OverviewMarket>(`/api/overview/market${asOf ? `?as_of=${asOf}` : ''}`),
 
   // 概念涨幅轮动矩阵: 每列(日期)各自把所有概念按当天涨幅从高到低排序
@@ -4759,4 +4779,109 @@ export interface FirstBoardResearchRun {
   created_at: string
   kind: 'research' | 'compare'
   result: FirstBoardResearch | FirstBoardComparison
+}
+
+/** 回春 A0 的比例字段均为小数制；日线观察收益按信号日收盘价计算。 */
+export interface HuichunRules {
+  warmup_bars: number
+  rally_threshold: number
+  zero_threshold: number
+  ma_window: number
+  slope_lag: number
+}
+export interface HuichunConfig {
+  schema_version: 1
+  revision: number
+  updated_at: string | null
+  rules: HuichunRules
+}
+export interface HuichunCandidate {
+  id: string
+  symbol: string
+  name: string
+  signal_date: string
+  g_date: string
+  d_date: string
+  rally_return: number
+  zero_distance: number
+  close_above_ma_pct: number
+  ma_slope_pct: number
+  raw_close: number
+  adjusted_close: number
+  eligibility_status: 'unknown'
+  rule_revision: number
+}
+export interface HuichunCoverage {
+  universe?: 'sh_sz_a_shares'
+  st_filter?: 'current_instrument_name'
+  st_excluded_count?: number
+  symbol_count: number
+  candidate_count: number
+  factor_excluded_count: number
+  gap_symbol_count: number
+  latest_daily_date: string | null
+  calendar_source: 'official_exchange_calendar' | 'observed_market_daily_dates'
+}
+export interface HuichunObservation extends Omit<HuichunCandidate, 'signal_date'> {
+  observation_date: string
+  gap_distance: number
+  previous_gap_distance: number
+  dif: number
+  dea: number
+  q: number
+  previous_q: number
+}
+export interface HuichunSnapshot {
+  job: {
+    id: string | null
+    kind: 'scan' | 'tracking' | null
+    status: 'idle' | 'running' | 'completed' | 'failed'
+    started_at: string | null
+    finished_at: string | null
+    processed_symbols: number
+    total_symbols: number
+    error: string | null
+  }
+  scan: {
+    id: string
+    start_date: string
+    end_date: string
+    created_at: string
+    rule_revision: number
+    rules: HuichunRules
+    candidates: HuichunCandidate[]
+    observation_date?: string
+    observations?: HuichunObservation[]
+    coverage: HuichunCoverage
+    limitations: string[]
+  } | null
+  config_revision: number
+}
+export interface HuichunReturn {
+  horizon: number
+  target_date: string | null
+  status: 'ok' | 'pending' | 'unknown_gap' | 'invalid_factor' | 'baseline_changed'
+  return_pct: number | null
+}
+export interface HuichunTrackingRecord {
+  id: string
+  symbol: string
+  name: string
+  signal_date: string
+  rule_revision: number
+  rules: HuichunRules
+  added_at: string
+  base_close: number
+  base_adjusted_close: number
+  current_basis?: {
+    quote_date: string | null
+    status: 'ok' | 'no_quote' | 'unknown_gap' | 'invalid_factor' | 'baseline_changed'
+    factor_multiplier: number | null
+  }
+  returns: HuichunReturn[]
+  updated_at: string | null
+}
+export interface HuichunTracking {
+  records: HuichunTrackingRecord[]
+  updated_at: string | null
 }

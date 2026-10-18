@@ -15,6 +15,9 @@ vi.mock('@/lib/api', () => ({
     monitorRulesList: async () => ({ rules: [{
       id: 'mode-rule', name: '首板通知', type: 'first_board', enabled: true,
       scope: 'all', asset_type: 'stock', symbols: [], conditions: [], mode_events: ['broken'],
+    }, {
+      id: 'huichun-rule', name: '回春扫描通知', type: 'huichun', enabled: true,
+      scope: 'all', asset_type: 'stock', symbols: [], conditions: [], mode_events: ['pending_cross'],
     }] }),
     instrumentNames: async () => ({ names: {} }),
     watchlistGroups: async () => ({ groups: [] }),
@@ -42,6 +45,7 @@ beforeEach(() => {
     const alerts = [
       { ts: 1, source: 'first_board', type: 'sealed', symbol: '600000.SH', name: '首板样本', message: '涨停价观察事件' },
       { ts: 2, source: 'price', type: 'price', symbol: '600001.SH', name: '价格样本', message: '价格事件' },
+      { ts: 3, source: 'huichun', type: 'a0_confirmed', symbol: '600002.SH', name: '回春样本', message: '扫描确认事件' },
     ].filter(event => !source || source === event.source)
     return { alerts, total: alerts.length }
   })
@@ -67,13 +71,17 @@ async function render(path = '/monitor') {
   await settle()
 }
 
-it('filters first-board alerts and presents the configured event summary', async () => {
+it('filters first-board and huichun alerts and presents their configured event summaries', async () => {
   await render()
   expect(host.textContent).toContain('涨停价观察')
   expect(host.textContent).toContain('开板观察')
   expect(host.textContent).toContain('盘中自动盯盘事件')
+  expect(host.textContent).toContain('A0 确认')
+  expect(host.textContent).toContain('待金叉观察')
+  expect(host.textContent).toContain('日线扫描后确认')
   for (const [label, source, visible, hidden] of [
     ['首板模式', 'first_board', '首板样本', '价格样本'],
+    ['回春模式', 'huichun', '回春样本', '首板样本'],
   ]) {
     const button = Array.from(host.querySelectorAll('button')).find(item => item.textContent === label)
     expect(button).toBeDefined()
@@ -85,7 +93,7 @@ it('filters first-board alerts and presents the configured event summary', async
   }
 })
 
-it.each(['first_board'])('opens the %s rule editor from its deep link', async type => {
+it.each(['first_board', 'huichun'])('opens the %s rule editor from its deep link', async type => {
   await render(`/monitor?new=${type}`)
   expect(host.querySelector('[data-editor]')?.textContent).toBe(type)
 })

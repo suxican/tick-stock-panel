@@ -167,6 +167,11 @@ datas += [(str(ROOT / "frontend" / "package.json"), ".")]
 datas += [(RESEARCH_TEMPLATE, "app/strategy/research")]
 # 策略种子 → app/strategy/seeds/ (启动时按路径读取种入 custom, 不进 PYZ)
 datas += [(str(ROOT / "backend" / "app" / "strategy" / "seeds"), "app/strategy/seeds")]
+# 回春交易日历 → 服务旁只读资源; 用户覆盖仍保存在 data/user_data/huichun。
+datas += [(
+    str(ROOT / "backend" / "app" / "services" / "huichun_resources"),
+    "app/services/huichun_resources",
+)]
 
 # ── 排除不需要的重型依赖 (主包不含 vectorbt 回测链) ──────────────────
 excludes = [
