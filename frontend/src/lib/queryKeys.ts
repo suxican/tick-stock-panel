@@ -7,12 +7,15 @@
 
 // ===== Query Key 工厂 =====
 
+import type { HuichunChartRequest } from './api'
+
 export const QK = {
   // 回春扫描和收益快照独立刷新；现价仍复用市场行情缓存。
   huichun: ['huichun'] as const,
   huichunConfig: ['huichun', 'config'] as const,
   huichunSnapshot: ['huichun', 'snapshot'] as const,
   huichunTracking: ['huichun', 'tracking'] as const,
+  huichunChart: (body: HuichunChartRequest) => ['huichun', 'chart', body] as const,
   // 首板工作台独立轮询快照，复用行情缓存。
   firstBoard: ['first-board'] as const,
   firstBoardConfig: ['first-board', 'config'] as const,
@@ -105,8 +108,9 @@ export const QK = {
                              ['kline-minute-range', symbol, days] as const,
   indexDaily:           (symbol: string, start: string, end: string) =>
                              ['index-daily', symbol, start, end] as const,
-  indexMinute:          (symbol: string, date: string) =>
-                             ['index-minute', symbol, date] as const,
+  indexMinute:          (symbol: string, date: string, provider?: string) =>
+                             provider === undefined ? ['index-minute', symbol, date] as const
+                               : ['index-minute', symbol, date, provider] as const,
 
   // Schema
   extDataSchemaAll:     ['ext-data-schema-all'] as const,
@@ -143,6 +147,20 @@ export const QK = {
 
   // AI 大盘复盘
   reviewReports:        ['review-reports'] as const,
+
+  // 冻结报告按唯一 ID 隔离，行情 SSE 不改写历史决策。
+  marketGameReports:    ['market-game-reports'] as const,
+  marketGameReport:     (id: string) => ['market-game-report', id] as const,
+  marketGameExplanation: (id: string) => ['market-game-explanation', id] as const,
+  marketGameEvaluation: (id: string) => ['market-game-evaluation', id] as const,
+  marketGameCapital:    (id: string) => ['market-game-capital', id] as const,
+  marketGameCapitalRefresh: (id: string) => ['market-game-capital-refresh', id] as const,
+  marketGameModel:      (id: string) => ['market-game-model', id] as const,
+  marketGameEvaluateModel: (id: string) => ['market-game-evaluate-model', id] as const,
+
+  // 市场情绪：日期与名单类型隔离，实时快照不进入持久化缓存。
+  kaipanlaMarketEmotion: (date?: string) => ['kaipanla-market-emotion', date ?? 'latest'] as const,
+  kaipanlaStocks:        (kind: 'limit_up' | 'broken_limits', date: string) => ['kaipanla-stocks', kind, date] as const,
 
   // 概念涨幅轮动矩阵
   rpsRotation:          (days: number) => ['rps-rotation', days] as const,

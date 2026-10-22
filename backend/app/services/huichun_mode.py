@@ -34,6 +34,7 @@ from app.services.fs_utils import atomic_write_text
 from app.services.huichun_audit import (
     FACTOR_SCHEMA,
     RAW_COLUMNS,
+    PreparedBatch,
     _main_board,
     _table_exists,
     prepare_batch,
@@ -44,13 +45,15 @@ from app.strategy.huichun_watch import pending_crosses
 
 logger = logging.getLogger(__name__)
 _WRITE_LOCK = threading.RLock()
+DATA_POLICY_VERSION = 2
 _LIMITATIONS = [
     "A0 日线收盘形态筛选，MACD 参数固定为 10/20/9；不包含 A1/B1 分钟信号。",
     "待金叉观察池只表示截至所选交易日差值收敛，尚未确认金叉，不作为买入或收益跟踪信号。",
-    "按当前证券简称排除 ST/*ST；历史风险警示、退市状态及复权事件完整性未核实，资格仍待核验。",
+    "当前证券简称只提示当前风险警示，不用于剔除历史形态；历史风险警示及退市状态未核实，资格仍待核验。",
     "收益以信号日复权收盘为基准，不含费用、滑点及成交限制，不代表可成交收益。",
     "按独立交易日历计数；缺口不填补，未来收益待观察。无可用独立日历时收益保持未知。",
-    "复权事件与价格连续性冲突的股票被排除；该检查不能证明数据完全正确。",
+    "有日期的复权异常从异常日起隔离，保留此前形态；无日期异常整股排除，修复数据前不恢复受影响区间。",
+    "收益状态只表示能否计算；复权事件完整性未核验，有事件或无事件记录都不等于收益已验证。",
 ]
 
 
@@ -75,6 +78,11 @@ def _screening_stock(symbol: str) -> bool:
     ) or (
         symbol.endswith(".SH") and symbol.startswith(("688", "689"))
     )
+
+
+def _factor_status(events: pl.DataFrame) -> str:
+    """Presence is observable; corporate-action completeness is not established."""
+    return "events_present_unverified" if events.height else "no_events_unverified"
 
 
 class HuichunRules(BaseModel):
@@ -212,6 +220,11 @@ class HuichunModeService:
         with self._lock, _WRITE_LOCK:
             data = self._read("tracking.json", {"records": [], "updated_at": None})
             data["records"] = [r for r in data["records"] if not r.get("removed_at")]
+            for record in data["records"]:
+                for observation in record.get("returns", []):
+                    observation.setdefault("factor_status", "unknown")
+                if record.get("current_basis") is not None:
+                    record["current_basis"].setdefault("factor_status", "unknown")
             return data
 
     def add_tracking(self, scan_id: str, candidate_ids: list[str]) -> dict:
@@ -235,6 +248,8 @@ class HuichunModeService:
                     "symbol": candidate["symbol"],
                     "name": candidate["name"],
                     "signal_date": candidate["signal_date"],
+                    "g_date": candidate.get("g_date"),
+                    "d_date": candidate.get("d_date"),
                     "rule_revision": scan["rule_revision"],
                     "rules": scan["rules"],
                     "added_at": _now().isoformat(),
@@ -272,7 +287,10 @@ class HuichunModeService:
     @staticmethod
     def _empty_returns(status="pending") -> list[dict]:
         return [
-            {"horizon": n, "target_date": None, "status": status, "return_pct": None}
+            {
+                "horizon": n, "target_date": None, "status": status,
+                "return_pct": None, "factor_status": "unknown",
+            }
             for n in range(1, 6)
         ]
 
@@ -480,22 +498,28 @@ class HuichunModeService:
         return pl.DataFrame(rows, schema=schema, orient="row")
 
     @staticmethod
-    def _invalid_factors(raw, factors, calendar) -> set[str]:
+    def _factor_failure_dates(raw, factors, calendar) -> dict[str, date | None]:
         """Reject implausible adjusted jumps; this is a data-quality heuristic.
 
         Board limits plus a two-point/tick margin retain the existing main-board
         gate. These do not establish historical trading eligibility or model IPO
         sessions without price limits.
         """
-        bad = set(
-            factors.filter(
-                pl.col("trade_date").is_null()
-                | pl.col("ex_factor").is_null()
-                | ~pl.col("ex_factor").is_finite()
-                | (pl.col("ex_factor") <= 0)
-                | pl.struct("symbol", "trade_date").is_duplicated()
-            )["symbol"].to_list()
+        bad: dict[str, date | None] = {}
+
+        def mark(symbol, day):
+            if symbol not in bad or day is None or (bad[symbol] is not None and day < bad[symbol]):
+                bad[symbol] = day
+
+        malformed = factors.filter(
+            pl.col("trade_date").is_null()
+            | pl.col("ex_factor").is_null()
+            | ~pl.col("ex_factor").is_finite()
+            | (pl.col("ex_factor") <= 0)
+            | pl.struct("symbol", "trade_date").is_duplicated()
         )
+        for symbol, day in malformed.select("symbol", "trade_date").iter_rows():
+            mark(symbol, day)
         if factors.is_empty() or raw.is_empty():
             return bad
         previous = {calendar[i]: calendar[i - 1] for i in range(1, len(calendar))}
@@ -505,13 +529,15 @@ class HuichunModeService:
             for (s,), group in raw.partition_by("symbol", as_dict=True).items()
         }
         for symbol, day, factor in factors.iter_rows():
-            if symbol in bad or factor == 1:
+            if day is None or (symbol in bad and (bad[symbol] is None or day >= bad[symbol])):
+                continue
+            if factor == 1:
                 continue
             old, current = prices.get((symbol, previous.get(day))), prices.get((symbol, day))
             if day <= first_dates.get(symbol, day):
                 continue  # Events before the available price history only change its common scale.
             if not old or not current or not math.isfinite(old) or not math.isfinite(current):
-                bad.add(symbol)
+                mark(symbol, day)
                 continue
             limit = price_limit_pct(symbol, day)
             # The shared helper supplies current board limits. GEM's historical
@@ -519,8 +545,48 @@ class HuichunModeService:
             if symbol.startswith(("300", "301")) and day < GEM_REGISTRATION_DATE:
                 limit = MAIN_BOARD_LIMIT
             if abs(current * factor / old - 1) > limit + 0.02 + 0.01 / old:
-                bad.add(symbol)
+                mark(symbol, day)
         return bad
+
+    @classmethod
+    def _invalid_factors(cls, raw, factors, calendar) -> set[str]:
+        return set(cls._factor_failure_dates(raw, factors, calendar))
+
+    def _prepare_scan_batch(
+        self, raw, factors, *, calendar, end, listings, expected_symbols,
+        calendar_verified: bool | None = None,
+    ) -> tuple[PreparedBatch, dict[str, date | None]]:
+        """Quarantine from the first dated factor failure, preserving prior signals.
+
+        An undated event cannot be assigned to a safe prefix. Dated failures
+        remain quarantined until the source is corrected; restarting indicators
+        after a bad corporate action would silently invent a valid price basis.
+        """
+        raw = raw.filter(pl.col("date") <= end)
+        factors = factors.filter(pl.col("trade_date").is_null() | (pl.col("trade_date") <= end))
+        issues = self._factor_failure_dates(raw, factors, calendar)
+        undated = [symbol for symbol, day in issues.items() if day is None]
+        raw = raw.filter(~pl.col("symbol").is_in(undated))
+        factors = factors.filter(~pl.col("symbol").is_in(undated))
+        dated = [(symbol, day) for symbol, day in issues.items() if day is not None]
+        if dated:
+            cutoffs = pl.DataFrame(
+                dated, schema={"symbol": pl.String, "_invalid_from": pl.Date}, orient="row",
+            )
+            raw = raw.join(cutoffs, on="symbol", how="left").filter(
+                pl.col("_invalid_from").is_null() | (pl.col("date") < pl.col("_invalid_from"))
+            ).drop("_invalid_from")
+            factors = factors.join(cutoffs, on="symbol", how="left").filter(
+                pl.col("_invalid_from").is_null()
+                | (pl.col("trade_date") < pl.col("_invalid_from"))
+            ).drop("_invalid_from")
+        prepared = prepare_batch(
+            raw, factors, market_dates=calendar, end=end, listing_dates=listings,
+            expected_symbols=[s for s in expected_symbols if s not in undated],
+            calendar_verified=(self._calendar_source == "official_exchange_calendar")
+            if calendar_verified is None else calendar_verified,
+        )
+        return prepared, issues
 
     @staticmethod
     def _baseline(raw, factors, symbol, signal_date) -> str:
@@ -560,9 +626,7 @@ class HuichunModeService:
                 names[symbol] = name or symbol
                 with suppress(ValueError, TypeError):
                     listings[symbol] = date.fromisoformat(str(listing)[:10])
-        st_symbols = {symbol for symbol in symbols if is_risk_warning_name(names.get(symbol))}
-        symbols = [symbol for symbol in symbols if symbol not in st_symbols]
-        candidates, observations, factor_excluded, gaps = [], [], set(), 0
+        candidates, observations, factor_issues, gaps = [], [], {}, 0
         params = A0Params(**config.rules.model_dump())
         with self._lock:
             self._snapshot["job"]["total_symbols"] = len(symbols)
@@ -570,17 +634,11 @@ class HuichunModeService:
             self._check_stop()
             batch = symbols[offset : offset + 128]
             raw, factors = self._raw(batch, end), self._factors(batch, end)
-            bad = self._invalid_factors(raw, factors, calendar)
-            factor_excluded.update(bad)
-            safe = [s for s in batch if s not in bad]
-            prepared = prepare_batch(
-                raw.filter(~pl.col("symbol").is_in(bad)),
-                factors.filter(~pl.col("symbol").is_in(bad)),
-                market_dates=calendar,
-                end=end,
-                listing_dates=listings,
-                expected_symbols=safe,
+            prepared, issues = self._prepare_scan_batch(
+                raw, factors, calendar=calendar, end=end,
+                listings=listings, expected_symbols=batch,
             )
+            factor_issues.update(issues)
             if not prepared.coverage.is_empty():
                 gaps += prepared.coverage.filter(pl.col("missing_observed_days") > 0).height
             if not prepared.frame.is_empty():
@@ -614,6 +672,10 @@ class HuichunModeService:
                             "raw_close": raw_prices[symbol, day],
                             "adjusted_close": row["r_close"],
                             "eligibility_status": "unknown",
+                            "current_risk_warning": is_risk_warning_name(names.get(symbol)),
+                            "factor_status": _factor_status(factors.filter(
+                                (pl.col("symbol") == symbol) & (pl.col("trade_date") <= day)
+                            )),
                             "rule_revision": config.revision,
                             "baseline_fingerprint": self._baseline(raw, factors, symbol, day),
                         }
@@ -634,6 +696,10 @@ class HuichunModeService:
                             "d_date": str(row["d_date"]),
                             "raw_close": raw_prices[symbol, day],
                             "eligibility_status": "unknown",
+                            "current_risk_warning": is_risk_warning_name(names.get(symbol)),
+                            "factor_status": _factor_status(factors.filter(
+                                (pl.col("symbol") == symbol) & (pl.col("trade_date") <= day)
+                            )),
                             "rule_revision": config.revision,
                         }
                     )
@@ -641,6 +707,7 @@ class HuichunModeService:
                 self._snapshot["job"]["processed_symbols"] = min(offset + 128, len(symbols))
         return {
             "id": job_id,
+            "data_policy_version": DATA_POLICY_VERSION,
             "start_date": str(start),
             "end_date": str(end),
             "observation_date": str(calendar[-1]),
@@ -653,11 +720,16 @@ class HuichunModeService:
             "observations": sorted(observations, key=lambda r: (r["gap_distance"], r["symbol"])),
             "coverage": {
                 "universe": "sh_sz_a_shares",
-                "st_filter": "current_instrument_name",
-                "st_excluded_count": len(st_symbols),
+                "st_filter": "not_applied_historical_status_unknown",
+                "st_excluded_count": 0,
                 "symbol_count": len(symbols),
                 "candidate_count": len(candidates),
-                "factor_excluded_count": len(factor_excluded),
+                "factor_excluded_count": sum(day is None for day in factor_issues.values()),
+                "factor_quarantined_count": sum(day is not None for day in factor_issues.values()),
+                "factor_issues": [
+                    {"symbol": symbol, "invalid_from": str(day) if day else None}
+                    for symbol, day in sorted(factor_issues.items())
+                ],
                 "gap_symbol_count": gaps,
                 "latest_daily_date": str(calendar[-1]),
                 "calendar_source": self._calendar_source,
@@ -698,13 +770,23 @@ class HuichunModeService:
     def _current_basis(self, record, quote, raw, factors, calendar, *, changed, undated) -> dict:
         """Validate a same-date multiplier without storing or freezing live price."""
         day = date.fromisoformat(record["signal_date"])
-        result = {"quote_date": None, "status": "no_quote", "factor_multiplier": None}
+        result = {
+            "quote_date": None, "status": "no_quote", "factor_multiplier": None,
+            "factor_status": "unknown",
+        }
         if quote is None or quote[0] < day:
             return result
         target, current_price = quote
         result["quote_date"] = str(target)
+        events = factors.filter(
+            (pl.col("symbol") == record["symbol"])
+            & (pl.col("trade_date") > day)
+            & (pl.col("trade_date") <= target)
+        )
+        result["factor_status"] = _factor_status(events)
         if undated:
             result["status"] = "invalid_factor"
+            result["factor_status"] = "invalid"
         elif changed:
             result["status"] = "baseline_changed"
         elif self._calendar_source != "official_exchange_calendar" or day not in calendar or target not in calendar:
@@ -726,21 +808,18 @@ class HuichunModeService:
             elif base != record.get("base_close"):
                 result["status"] = "baseline_changed"
             else:
-                events = factors.filter(
-                    (pl.col("symbol") == symbol)
-                    & (pl.col("trade_date") > day)
-                    & (pl.col("trade_date") <= target)
-                )
                 event_prices = pl.DataFrame(
                     [(symbol, d, prices[d]) for d in window[:-1]] + [(symbol, target, current_price)],
                     schema={"symbol": pl.String, "date": pl.Date, "close": pl.Float64}, orient="row",
                 )
                 if symbol in self._invalid_factors(event_prices, events, calendar):
                     result["status"] = "invalid_factor"
+                    result["factor_status"] = "invalid"
                 else:
                     multiplier = math.prod(events["ex_factor"].to_list())
                     if not math.isfinite(multiplier) or multiplier <= 0:
                         result["status"] = "invalid_factor"
+                        result["factor_status"] = "invalid"
                     else:
                         result.update(status="ok", factor_multiplier=multiplier)
         return result
@@ -803,8 +882,11 @@ class HuichunModeService:
                     else None
                 )
                 status, value = "pending", None
+                events = scoped_factors.filter(pl.col("trade_date") <= target) if target else None
+                factor_status = _factor_status(events) if events is not None else "unknown"
                 if undated_factor:
                     status = "invalid_factor"
+                    factor_status = "invalid"
                 elif (
                     self._calendar_source != "official_exchange_calendar"
                     or base is None
@@ -814,13 +896,13 @@ class HuichunModeService:
                 elif changed:
                     status = "baseline_changed"
                 elif target is not None:
-                    events = scoped_factors.filter(pl.col("trade_date") <= target)
                     bad = self._invalid_factors(
                         scoped_raw.filter(pl.col("date") <= target), events, calendar
                     )
                     path = [prices.get(d) for d in calendar[index + 1 : target_index + 1]]
                     if symbol in bad:
                         status = "invalid_factor"
+                        factor_status = "invalid"
                     elif (
                         any(p is None for p in path)
                         or self._calendar_source != "official_exchange_calendar"
@@ -835,6 +917,7 @@ class HuichunModeService:
                         "target_date": str(target) if target else None,
                         "status": status,
                         "return_pct": value,
+                        "factor_status": factor_status,
                     }
                 )
             updates[record["id"]] = {

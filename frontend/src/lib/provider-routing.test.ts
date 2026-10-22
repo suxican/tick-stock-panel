@@ -11,6 +11,7 @@ const CAPS: Pick<CapabilityRoute, 'id' | 'field'>[] = [
   { id: 'depth5', field: 'depth5_data_provider' },
   { id: 'financial', field: 'financial_data_provider' },
   { id: 'full_minute', field: 'full_minute_data_provider' },
+  { id: 'overseas', field: 'overseas_data_provider' },
 ]
 
 const ALL_FIELDS: ProviderField[] = [
@@ -21,6 +22,7 @@ const ALL_FIELDS: ProviderField[] = [
   'depth5_data_provider',
   'financial_data_provider',
   'full_minute_data_provider',
+  'overseas_data_provider',
 ]
 
 const DEMO = 'demo_source'
@@ -47,6 +49,7 @@ describe('buildProviderRouting', () => {
     )
     expect(routing.adj_factor_provider).toBe('tickflow')
     expect(routing.financial_data_provider).toBe('tickflow')
+    expect(routing.overseas_data_provider).toBe('yahoo_overseas')
   })
 
   it('每个可路由字段都被覆盖 (防止再漏能力)', () => {
@@ -81,8 +84,18 @@ describe('buildProviderRouting', () => {
     expect(Object.keys(routing).sort()).toEqual([...ALL_FIELDS].sort())
   })
 
-  it('默认路由覆盖全部字段且均为 tickflow', () => {
+  it('外围数据源仅接管海外能力, 其余能力使用默认源', () => {
+    const routing = buildProviderRouting(DEMO, ['overseas'], CAPS)
+    expect(routing.overseas_data_provider).toBe(DEMO)
+    expect(routing.daily_data_provider).toBe('tickflow')
+    expect(routing.realtime_data_provider).toBe('tickflow')
+  })
+
+  it('默认路由覆盖全部字段, 海外能力有独立默认源', () => {
     expect(Object.keys(DEFAULT_ROUTING).sort()).toEqual([...ALL_FIELDS].sort())
-    expect(new Set(Object.values(DEFAULT_ROUTING))).toEqual(new Set(['tickflow']))
+    expect(DEFAULT_ROUTING.overseas_data_provider).toBe('yahoo_overseas')
+    for (const field of ALL_FIELDS.filter(field => field !== 'overseas_data_provider')) {
+      expect(DEFAULT_ROUTING[field]).toBe('tickflow')
+    }
   })
 })

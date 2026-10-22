@@ -21,12 +21,15 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.market_time import CN_TZ
+from app.services.first_board_attention import RULE_VERSION, AttentionEvaluator
+from app.services.first_board_attention_data import AttentionData
 from app.services.first_board_context import (
     SECTOR_PROXY_NOTE,
     evaluate_sectors,
     load_environment,
     load_sector_members,
 )
+from app.services.first_board_observations import FirstBoardObservationStore
 from app.services.first_board_portfolio import (
     buy_budget,
     exit_candidates,
@@ -156,6 +159,13 @@ class FirstBoardService:
         self._environment: dict = {}
         self._latest_prices: dict[str, float] = {}
         self._latest_quote_times: dict[str, str] = {}
+        self._attention_data = AttentionData(repo)
+        self._attention_evaluator = AttentionEvaluator()
+        self._attention_input: dict = {}
+        self._observation_store = FirstBoardObservationStore(self.root / "observations")
+        self._attention_sampling = {"status": "paused", "last_sample_at": None, "sample_count": 0}
+        self._sampling_key: tuple | None = None
+        self._sampled_anchor: tuple | None = None
         self._state_day: date | None = None
         self._state_signature: tuple[int, int] | None = None
         self._day_state: dict = {}
@@ -184,6 +194,7 @@ class FirstBoardService:
             "message": "等待有效行情; 可先配置规则或运行历史观察研究。",
             "as_of": None, "observed_at": None, "revision": self._config.revision,
             "rows": [], "environment": {},
+            "attention_sampling": {"status": "paused", "last_sample_at": None, "sample_count": 0},
             "coverage": {"candidate_count": 0, "symbol_count": 0, "quote_count": 0, "fresh_count": 0},
             "limitations": list(_LIMITATIONS),
             "paper": {"initialized": False, "account_id": self._config.paper_account_id},
@@ -360,6 +371,7 @@ class FirstBoardService:
         if not validation["allowed"]:
             environment.update(allowed=False, reason=validation["reason"])
         sectors = load_sector_members(self.repo)
+        self._attention_data.prepare(universe=config.rules.universe)
         self._candidates, self._environment, self._sectors = candidates, environment, sectors
         self._prepared_key, self._prepared_at = key, time.monotonic()
 
@@ -540,6 +552,100 @@ class FirstBoardService:
         timestamps = {key: value for key, value in timestamps.items() if counts[key] == 1}
         return current.filter(pl.col("symbol").is_in(list(timestamps))), timestamps
 
+    @staticmethod
+    def _expire_attention(context: dict, reason: str) -> None:
+        """Retain last observed evidence, but never present it as a current match."""
+        context.update(status="stale", strong_sector=None, leader_follow=None,
+                       intraday_rising=None, priority=None, group=None)
+        for group in context.get("groups", []):
+            group.update(strong=None, follow=None)
+            if group.get("leader"):
+                group["leader"]["at_limit"] = None
+        if reason not in context["reasons"]:
+            context["reasons"].append(reason)
+
+    def _attention(self, rows: list[dict], fresh: pl.DataFrame, now: datetime, live: bool) -> dict:
+        symbols = sorted({row["symbol"] for row in rows})
+        self._attention_input = {"minute_price_basis": "unknown", "minute_reason": "分钟输入尚未确认"}
+        try:
+            minute, raw, reason = (self._attention_data.minutes(set(symbols), now=now)
+                                   if live and symbols else (pl.DataFrame(), False, "当前未启用有效盘中观察"))
+            self._attention_input = {"minute_price_basis": "raw" if raw else "unknown",
+                                     "minute_reason": reason, "minute_rows": minute.height,
+                                     "minute_volume_unit": "lot", "minute_amount_unit": "yuan"}
+            contexts = self._attention_evaluator.evaluate(
+                fresh if live else fresh.head(0), self._attention_data.groups, symbols, minute,
+                now=now, membership_version=self._attention_data.version,
+                minute_basis_raw=raw, minute_reason=reason,
+            )
+            if self._attention_data.reason:
+                for context in contexts.values():
+                    context["reasons"].append(self._attention_data.reason)
+            return contexts
+        except Exception:  # noqa: BLE001 - 可选观察证据不得阻断原有交易门槛
+            logger.warning("首板板块联动计算失败, 已降级为未知", exc_info=True)
+            return AttentionEvaluator().evaluate(
+                pl.DataFrame(), [], symbols, pl.DataFrame(), now=now, membership_version=None,
+                minute_reason="板块联动计算暂不可用, 等待下一次有效观测",
+            )
+
+    def _record_attention(self, rows: list[dict], *, now: datetime, config: FirstBoardConfig,
+                          live: bool, snapshot: dict) -> None:
+        """Research IO runs in the existing worker, outside the API snapshot lock."""
+        key = (now.date(), config.revision)
+        if self._sampling_key != key:
+            self._sampling_key, self._sampled_anchor = key, None
+            self._attention_sampling = {"status": "paused", "last_sample_at": None, "sample_count": 0}
+        if self._stop.is_set() or self._config.revision != config.revision:
+            return
+        sampled_at = _beijing(_now())
+        same_minute = sampled_at.replace(second=0, microsecond=0) == now.replace(second=0, microsecond=0)
+        if not live:
+            sampling = {**self._attention_sampling, "status": "paused", "reason": "有效盘中盯盘恢复后继续采样"}
+        elif not same_minute:
+            sampling = {**self._attention_sampling, "status": "not_due", "reason": "计算跨过采样分钟, 已跳过旧时点, 等待下一次行情"}
+        elif not _continuous(sampled_at) or self._realtime_block_reason():
+            sampling = {**self._attention_sampling, "status": "paused", "reason": "有效盘中盯盘恢复后继续采样"}
+        else:
+            try:
+                anchor = (*key, now.hour, now.minute)
+                if anchor == self._sampled_anchor:
+                    sampling = {**self._attention_sampling, "status": "already_recorded"}
+                else:
+                    version = self._attention_data.version
+                    if now.minute % 5 == 0 and version:
+                        self._observation_store.write_membership(self._attention_data.groups, version, sampled_at)
+                    if self._stop.is_set() or self._config.revision != config.revision:
+                        return
+                    sample_rows = copy.deepcopy(rows) if now.minute % 5 == 0 else rows
+                    for row in sample_rows if now.minute % 5 == 0 else []:
+                        if not 0 <= _quote_age(row.get("quote_time"), sampled_at) <= config.max_quote_age_seconds:
+                            self._expire_attention(row["attention_context"], "采样时个股行情已过期")
+                            row.update(can_buy=False, event_id=None, suggested_amount=None)
+                            row["blocked_reasons"].append("采样时个股行情已过期")
+                    coverage = {**snapshot["coverage"], "fresh_count": sum(
+                        0 <= _quote_age(stamp, sampled_at) <= config.max_quote_age_seconds
+                        for stamp in self._latest_quote_times.values()
+                    )}
+                    sampling = self._observation_store.record(
+                        sample_rows, now=sampled_at, rule_revision=config.revision, membership_version=version,
+                        metadata={"attention_rule_version": RULE_VERSION,
+                                  "evaluated_at": now.isoformat(),
+                                  **self._attention_input,
+                                  "config": config.model_dump(mode="json"),
+                                  "coverage": coverage, "environment": snapshot["environment"],
+                                  "membership_reason": self._attention_data.reason},
+                    )
+                    if sampling["status"] in {"recorded", "already_recorded"}:
+                        self._sampled_anchor = anchor
+            except Exception:  # noqa: BLE001 - 采样失败不得改变原有状态/通知/模拟权限
+                logger.warning("首板研究采样失败, 原有盯盘继续", exc_info=True)
+                sampling = {**self._attention_sampling, "status": "error", "reason": "研究采样写入失败, 请检查数据目录及服务日志"}
+        self._attention_sampling = sampling
+        with self._lock:
+            if self._snapshot is snapshot and self._config.revision == config.revision and not self._stop.is_set():
+                snapshot["attention_sampling"] = dict(sampling)
+
     def process_snapshot(self, current: pl.DataFrame, as_of: date, *, now: datetime | None = None) -> None:
         with self._process_lock:
             if self._stop.is_set():
@@ -557,6 +663,7 @@ class FirstBoardService:
             realtime_blocked = self._realtime_block_reason()
             live = config.enabled and not realtime_blocked and as_of == now.date() and _continuous(now)
             rows = evaluate_candidates(self._candidates, current, config.rules, as_of=as_of)
+            attention = self._attention(rows, fresh, now, live)
             messages: list[dict] = []
             with self._lock:
                 if self._stop.is_set() or config.revision != self._config.revision:
@@ -568,6 +675,10 @@ class FirstBoardService:
                     symbol = row["symbol"]
                     row.update(quote_time=times.get(symbol), sector=self._sectors.get(symbol), event_id=None,
                                suggested_amount=None, can_buy=False, blocked_reasons=[])
+                    context = copy.deepcopy(attention[symbol])
+                    if not live or symbol not in times:
+                        self._expire_attention(context, "个股行情已过期或当前未启用有效盘中观察")
+                    row["attention_context"] = context
                     blocked = row["blocked_reasons"]
                     if realtime_blocked:
                         blocked.append(realtime_blocked)
@@ -651,7 +762,11 @@ class FirstBoardService:
                     "limitations": list(_LIMITATIONS),
                     "paper": portfolio_snapshot(self.repo.store.data_dir, config.paper_account_id, prices),
                 }
-            self._publish_pending(as_of)
+                snapshot = self._snapshot
+            try:
+                self._publish_pending(as_of)
+            finally:
+                self._record_attention(rows, now=now, config=config, live=live, snapshot=snapshot)
 
     @staticmethod
     def _event(row: dict, event_type: str, config: FirstBoardConfig, now: datetime) -> dict:
@@ -659,13 +774,16 @@ class FirstBoardService:
                  "sealed": "涨停价观察", "broken": "开板观察", "watch": "条件失效",
                  "invalid": "数据或条件失效", "exit_candidate": "次日退出提示"}.get(event_type, event_type)
         reasons = [*row.get("reasons", []), *row.get("blocked_reasons", [])]
+        evidence = copy.deepcopy(row.get("evidence", {}))
+        if "attention_context" in row:
+            evidence["attention_context"] = copy.deepcopy(row["attention_context"])
         return {
             "id": uuid.uuid4().hex, "ts": int(now.timestamp() * 1000), "date": now.date().isoformat(),
             "source": "first_board", "type": event_type, "event_type": event_type,
             "symbol": row["symbol"], "name": row["name"], "pattern": row["pattern"],
             "pattern_label": row["pattern_label"], "state": row["state"], "price": row.get("price"),
             "change_pct": row.get("change_pct"), "revision": config.revision,
-            "rules": config.rules.model_dump(mode="json"), "evidence": copy.deepcopy(row.get("evidence", {})),
+            "rules": config.rules.model_dump(mode="json"), "evidence": evidence,
             "blocked_reasons": row.get("blocked_reasons", []), "quote_time": row.get("quote_time"),
             "signals": [], "severity": "warn" if event_type == "exit_candidate" else "info",
             "message": f"首板·{row['pattern_label']} {row['name']}: {label}。{'; '.join(reasons)}",
@@ -701,6 +819,11 @@ class FirstBoardService:
                 row["can_buy"], row["event_id"] = False, None
                 row["suggested_amount"] = None
                 row["blocked_reasons"].append(realtime_blocked or "行情已过期或当前不在连续竞价时段")
+                if row.get("attention_context"):
+                    self._expire_attention(row["attention_context"], "行情已过期或当前不在有效观察时段")
+        if not usable or result["status"] == "error":
+            result["attention_sampling"] = {**result.get("attention_sampling", self._attention_sampling),
+                                            "status": "paused", "reason": "有效盘中盯盘恢复后继续采样"}
         return result
 
     def events(self, day: date | None = None) -> list[dict]:

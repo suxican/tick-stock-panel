@@ -107,6 +107,7 @@ def test_returns_use_raw_baseline_post_signal_factors_and_five_trading_sessions(
     )
     assert record["current_basis"] == {
         "quote_date": "2026-10-20", "status": "ok", "factor_multiplier": 2.0,
+        "factor_status": "events_present_unverified",
     }
     disk = json.loads((env.service.root / "tracking.json").read_text(encoding="utf-8"))
     assert disk["records"] == [record]
@@ -125,6 +126,76 @@ def test_missing_session_does_not_shift_horizons_or_invent_zero_returns(observat
     ]
     assert all(item["return_pct"] is None for item in record["returns"][2:])
     assert record["current_basis"]["status"] == "unknown_gap"
+
+
+def test_factor_completeness_is_separate_from_computable_returns(observations):
+    record = add_observation(observations)
+    assert record["returns"][0]["status"] == "ok"
+    assert record["returns"][0]["factor_status"] == "no_events_unverified"
+    assert record["returns"][1]["status"] == "ok"
+    assert record["returns"][1]["factor_status"] == "events_present_unverified"
+    assert record["current_basis"]["factor_status"] == "events_present_unverified"
+
+
+def test_empty_factors_do_not_certify_price_return(observations):
+    env = observations
+    factor_path = env.store.data_dir / "adj_factor/fixture.parquet"
+    pl.read_parquet(factor_path).head(0).write_parquet(factor_path)
+    scan_path = env.service.root / f"scan-{env.scan_id}.json"
+    scan = json.loads(scan_path.read_text(encoding="utf-8"))
+    scan["candidates"][0]["baseline_fingerprint"] = env.service._baseline(
+        env.raw, pl.DataFrame(schema=module.FACTOR_SCHEMA), "600001.SH", env.days[0],
+    )
+    write_json(scan_path, scan)
+    record = add_observation(env)
+    assert record["returns"][1]["status"] == "ok"
+    assert record["returns"][1]["return_pct"] == pytest.approx(-0.45)
+    assert all(item["factor_status"] == "no_events_unverified" for item in record["returns"])
+
+
+def test_legacy_factor_status_is_unknown_without_rewriting_saved_records(observations):
+    env = observations
+    record = add_observation(env)
+    for item in record["returns"]:
+        item.pop("factor_status", None)
+    record["current_basis"].pop("factor_status", None)
+    path = env.service.root / "tracking.json"
+    write_json(path, {"records": [record], "updated_at": None})
+    original = path.read_bytes()
+    loaded = env.service.get_tracking()["records"][0]
+    assert all(item["factor_status"] == "unknown" for item in loaded["returns"])
+    assert loaded["current_basis"]["factor_status"] == "unknown"
+    assert path.read_bytes() == original
+
+
+def test_tracking_freezes_cycle_dates_from_selected_scan(observations):
+    env = observations
+    scan_path = env.service.root / f"scan-{env.scan_id}.json"
+    saved_scan = json.loads(scan_path.read_text(encoding="utf-8"))
+    saved_scan["candidates"][0].update(g_date="2026-08-03", d_date="2026-09-10")
+    write_json(scan_path, saved_scan)
+    record = add_observation(env)
+    assert (record["g_date"], record["d_date"]) == ("2026-08-03", "2026-09-10")
+    saved_scan["candidates"][0].update(g_date="2026-08-04", d_date="2026-09-11")
+    write_json(scan_path, saved_scan)
+    refreshed = refresh(env.service)
+    assert (refreshed["g_date"], refreshed["d_date"]) == ("2026-08-03", "2026-09-10")
+
+
+def test_later_invalid_factor_does_not_change_prior_horizon_status(observations):
+    env = observations
+    original = add_observation(env)
+    factor_path = env.store.data_dir / "adj_factor/fixture.parquet"
+    factors = pl.read_parquet(factor_path)
+    factors.with_columns(
+        pl.when(pl.col("trade_date") == env.days[2])
+        .then(10.0).otherwise(pl.col("ex_factor")).alias("ex_factor")
+    ).write_parquet(factor_path)
+    record = refresh(env.service)
+    assert record["returns"][0] == original["returns"][0]
+    assert all(item["status"] == "invalid_factor" for item in record["returns"][1:])
+    assert all(item["factor_status"] == "invalid" for item in record["returns"][1:])
+    assert record["current_basis"]["factor_status"] == "invalid"
 
 
 def test_missing_calendar_withholds_all_returns_but_keeps_the_record(observations, tmp_path):

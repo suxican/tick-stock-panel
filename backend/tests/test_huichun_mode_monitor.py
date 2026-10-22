@@ -106,6 +106,58 @@ def replace_factors(svc, factors):
     factors.write_parquet(svc.repo.store.data_dir / "adj_factor/test.parquet")
 
 
+@pytest.mark.parametrize("factor_values", [[10.0], [None], [1.0, 1.0]])
+def test_later_invalid_factor_preserves_earlier_candidates(watch_environment, factor_values):
+    svc, _, factors, days, _ = watch_environment
+    before = scan(svc, days[:381])
+    assert len(before["candidates"]) == 1
+    event_day = days[390]
+    later = pl.DataFrame({
+        "symbol": ["600001.SH"] * len(factor_values),
+        "trade_date": [event_day] * len(factor_values),
+        "ex_factor": pl.Series(factor_values, dtype=pl.Float64),
+    })
+    replace_factors(svc, pl.concat([factors, later]))
+    after = scan(svc, days)
+    assert after["candidates"] == before["candidates"]
+    assert after["observations"] == []
+    assert after["coverage"]["factor_excluded_count"] == 0
+    assert after["coverage"]["factor_quarantined_count"] == 1
+    assert after["coverage"]["factor_issues"] == [
+        {"symbol": "600001.SH", "invalid_from": str(event_day)},
+    ]
+
+
+def test_undated_factor_fails_closed_with_explicit_coverage(watch_environment):
+    svc, _, factors, days, _ = watch_environment
+    replace_factors(svc, factors.with_columns(pl.lit(None, dtype=pl.Date).alias("trade_date")))
+    result = scan(svc, days)
+    assert result["candidates"] == []
+    assert result["coverage"]["factor_excluded_count"] == 1
+    assert result["coverage"]["factor_issues"] == [
+        {"symbol": "600001.SH", "invalid_from": None},
+    ]
+
+
+def test_current_st_name_does_not_rewrite_historical_candidates(watch_environment):
+    svc, _, _, days, _ = watch_environment
+    before = scan(svc, days[:381])
+    instruments = svc.repo.store.data_dir / "instruments/test.parquet"
+    pl.read_parquet(instruments).with_columns(
+        pl.when(pl.col("symbol") == "600001.SH")
+        .then(pl.lit("*ST 候选")).otherwise(pl.col("name")).alias("name")
+    ).write_parquet(instruments)
+    after = scan(svc, days[:381])
+    assert [r["id"] for r in after["candidates"]] == [r["id"] for r in before["candidates"]]
+    candidate = after["candidates"][0]
+    assert candidate["eligibility_status"] == "unknown"
+    assert candidate["current_risk_warning"] is True
+    assert candidate["factor_status"] == "events_present_unverified"
+    assert after["coverage"]["st_excluded_count"] == 0
+    assert after["coverage"]["st_filter"] == "not_applied_historical_status_unknown"
+    assert after["data_policy_version"] == 2
+
+
 @pytest.mark.parametrize("cutoff_index,event_type,pool", [
     (348, "pending_cross", "observations"),
     (349, "a0_confirmed", "candidates"),

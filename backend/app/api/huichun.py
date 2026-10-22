@@ -1,11 +1,13 @@
 """回春模式 HTTP 契约, 筛选与收益计算由后台服务完成。"""
 import logging
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
+from app.services.huichun_chart import HuichunChartRequest, build_huichun_chart
 from app.services.huichun_mode import (
     HuichunModeService,
     HuichunRules,
@@ -50,12 +52,12 @@ class ConfigRequest(BaseModel):
     expected_revision: int = Field(ge=0, strict=True)
 
 
-def _call(request: Request, method: str, *args, **kwargs):
+def _call(request: Request, method: str | Callable, *args, **kwargs):
     service = getattr(request.app.state, "huichun_mode_service", None)
     if service is None:
         raise HTTPException(503, "回春服务未就绪, 请检查后端启动状态")
     try:
-        return getattr(service, method)(*args, **kwargs)
+        return method(service, *args, **kwargs) if callable(method) else getattr(service, method)(*args, **kwargs)
     except ValueError as exc:
         raise HTTPException(409 if "版本已变化" in str(exc) else 400, str(exc)) from exc
     except (OSError, RuntimeError) as exc:
@@ -83,6 +85,11 @@ def snapshot(request: Request):
 @router.post("/scan", status_code=202)
 def scan(request: Request, body: HuichunScanRequest):
     return _call(request, "start_scan", start_date=body.start_date, end_date=body.end_date)
+
+
+@router.post("/chart")
+def chart(request: Request, body: HuichunChartRequest):
+    return _call(request, build_huichun_chart, body)
 
 
 @router.get("/tracking")

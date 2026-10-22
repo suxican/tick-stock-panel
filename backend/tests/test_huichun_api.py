@@ -1,7 +1,9 @@
 """Exercise Huichun HTTP contracts against its real persisted service."""
 
 import json
+from datetime import date
 
+import polars as pl
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -48,6 +50,8 @@ def test_config_success_conflict_and_empty_reads(huichun_client):
     ("put", "/config", {"rules": {"unknown_rule": 1}, "expected_revision": 0}),
     ("post", "/scan", {"start_date": "2026-10-20", "end_date": "2026-10-12"}),
     ("post", "/scan", {"end_date": "not-a-date"}),
+    ("post", "/chart", {"symbol": "600000.SH", "as_of": "2026-10-12", "rules": {}, "rule_revision": -1}),
+    ("post", "/chart", {"symbol": "../outside", "as_of": "2026-10-12", "rules": {}, "rule_revision": 0}),
     ("post", "/tracking", {"scan_id": "../outside", "candidate_ids": ["x"]}),
     ("post", "/tracking", {"scan_id": "a" * 32, "candidate_ids": []}),
 ])
@@ -148,3 +152,74 @@ def test_storage_failure_returns_sanitized_503(huichun_client, monkeypatch):
     assert "暂时不可用" in response.json()["detail"]
     assert "secret-token" not in response.text
     assert "private storage" not in response.text
+
+
+def test_chart_is_read_only_and_does_not_fall_back_without_data(huichun_client):
+    client, service = huichun_client
+    response = client.post("/api/huichun/chart", json={
+        "symbol": "600000.SH", "as_of": "2026-10-12", "rules": {}, "rule_revision": 0,
+    })
+    assert response.status_code == 200
+    chart = response.json()
+    assert chart["source"] == "huichun_a0"
+    assert chart["rows"] == []
+    assert chart["huichun"]["macd"] == [10, 20, 9]
+    assert chart["huichun"]["as_of"] == "2026-10-12"
+    assert chart["huichun"]["data_status"] == "no_valid_data"
+    assert client.get("/api/huichun/snapshot").json()["scan"] is None
+    assert not service.root.exists()
+
+
+def test_chart_maps_future_cutoff_and_storage_errors(huichun_client, monkeypatch):
+    client, service = huichun_client
+    body = {"symbol": "600000.SH", "as_of": "2999-01-01", "rules": {}, "rule_revision": 0}
+    response = client.post("/api/huichun/chart", json=body)
+    assert response.status_code == 400
+    assert "已收盘" in response.json()["detail"]
+
+    def unavailable():
+        raise OSError("private path / secret-token")
+
+    monkeypatch.setattr(service, "_input_signature", unavailable)
+    body["as_of"] = "2026-10-12"
+    response = client.post("/api/huichun/chart", json=body)
+    assert response.status_code == 503
+    assert "secret-token" not in response.text
+
+
+def test_chart_serializes_real_a0_indicators_and_frozen_custom_rules(huichun_client):
+    client, service = huichun_client
+    days = [date(2026, 10, day) for day in (12, 13, 14)]
+    raw = pl.DataFrame({
+        "symbol": ["600000.SH"] * 3, "date": days,
+        "open": [10.0, 11.0, 12.0], "close": [10.0, 11.0, 12.0],
+        "high": [10.1, 11.1, 12.1], "low": [9.9, 10.9, 11.9],
+        "volume": [1000.0] * 3, "amount": [10000.0] * 3,
+    })
+    store = client.app.state.datastore
+    raw.write_parquet(store.data_dir / "kline_daily/chart.parquet")
+    store._register_views()
+    response = client.post("/api/huichun/chart", json={
+        "symbol": "600000.SH", "as_of": "2026-10-14",
+        "rules": {"ma_window": 90}, "rule_revision": 7,
+    })
+    assert response.status_code == 200
+    result = response.json()
+    assert [row["date"] for row in result["rows"]] == [str(day) for day in days]
+    assert result["rows"][1]["macd_dif"] == pytest.approx(2 / 11 - 2 / 21)
+    assert result["rows"][1]["macd_hist"] == pytest.approx(2 * (2 / 11 - 2 / 21) * .8)
+    assert result["huichun"]["rules"]["ma_window"] == 90
+    assert result["huichun"]["rule_revision"] == 7
+    assert service.get_config()["rules"]["ma_window"] == 60
+    assert not service.root.exists()
+
+
+def test_chart_reports_unready_service():
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        response = client.post("/api/huichun/chart", json={
+            "symbol": "600000.SH", "as_of": "2026-10-12", "rules": {}, "rule_revision": 0,
+        })
+        assert response.status_code == 503
+        assert "服务未就绪" in response.json()["detail"]

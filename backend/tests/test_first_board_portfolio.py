@@ -83,11 +83,11 @@ def test_unlinked_manual_purchase_has_no_first_board_exit(tmp_path, monkeypatch)
                            now=datetime(2026, 10, 16, 14, 0, tzinfo=CN_TZ)) == []
 
 
-def _fill_order(tmp_path, side, qty, source="manual"):
+def _fill_order(tmp_path, side, qty, source="manual", price=10.0):
     order, error = paper.create_order(tmp_path, SYMBOL, side, qty=qty,
-                                      ref_price=10.0, source=source)
+                                      ref_price=price, source=source)
     assert error is None
-    assert len(paper.evaluate_intraday(tmp_path, {SYMBOL: 10.0})) == 1
+    assert len(paper.evaluate_intraday(tmp_path, {SYMBOL: price})) == 1
     assert paper.get_order(tmp_path, order["id"])["status"] == "filled"
 
 
@@ -155,3 +155,160 @@ def test_exit_stops_before_later_mixed_source_fifo_lots(
         assert error is None
     candidates = exit_candidates(tmp_path, "default", {SYMBOL: 10.0}, now=tomorrow)
     assert sum(item["qty"] for item in candidates) == expected_qty
+
+
+@pytest.mark.parametrize("manual_price,current_price,expected_qty", [
+    (12.0, 10.5, 0),  # 后续高价手工仓不能把盈利的首板批次变成止损。
+    (8.0, 9.5, 200),  # 后续低价手工仓也不能掩盖首板批次的亏损。
+])
+def test_stop_loss_uses_first_board_cost_not_mixed_account_average(
+    tmp_path, monkeypatch, manual_price, current_price, expected_qty,
+):
+    paper.create_account(tmp_path, 100_000, slippage_bps=0)
+    monkeypatch.setattr(paper, "cn_today", lambda: date(2026, 10, 14))
+    _fill_order(tmp_path, "buy", 200, "first_board:entry", price=10.0)
+    monkeypatch.setattr(paper, "cn_today", lambda: DAY)
+    _fill_order(tmp_path, "buy", 200, price=manual_price)
+    now = datetime(2026, 10, 16, 9, 45, tzinfo=CN_TZ)
+    candidates = exit_candidates(tmp_path, "default", {SYMBOL: current_price}, now=now)
+    assert sum(item["qty"] for item in candidates) == expected_qty
+    if candidates:
+        assert "止损" in candidates[0]["reason"]
+
+
+@pytest.mark.parametrize("sold_qty,pending_qty,price,expected_qty", [
+    (100, 0, 10.8, 300),
+    (100, 100, 11.0, 200),
+    (0, 200, 11.0, 200),
+    (100, 300, 9.0, 0),
+])
+def test_stop_loss_cost_excludes_sold_and_reserved_fifo_batches(
+    tmp_path, monkeypatch, sold_qty, pending_qty, price, expected_qty,
+):
+    paper.create_account(tmp_path, 100_000, slippage_bps=0)
+    monkeypatch.setattr(paper, "cn_today", lambda: date(2026, 10, 14))
+    _fill_order(tmp_path, "buy", 200, "first_board:earlier", price=10.0)
+    monkeypatch.setattr(paper, "cn_today", lambda: DAY)
+    _fill_order(tmp_path, "buy", 200, "first_board:later", price=12.0)
+    now = datetime(2026, 10, 16, 9, 45, tzinfo=CN_TZ)
+    monkeypatch.setattr(paper, "cn_today", lambda: now.date())
+    if sold_qty:
+        _fill_order(tmp_path, "sell", sold_qty)
+    if pending_qty:
+        _, error = paper.create_order(tmp_path, SYMBOL, "sell", qty=pending_qty)
+        assert error is None
+    candidates = exit_candidates(tmp_path, "default", {SYMBOL: price}, now=now)
+    assert sum(item["qty"] for item in candidates) == expected_qty
+
+
+@pytest.mark.parametrize("field,value", [
+    ("price", None), ("price", float("nan")), ("fee", -1), ("fee", float("inf")),
+    ("qty", 100), ("date", "not-a-date"), ("kind", "unknown"), ("order_id", None),
+])
+def test_unknown_batch_cost_or_source_fails_closed_even_at_exit_time(
+    tmp_path, monkeypatch, field, value,
+):
+    paper.create_account(tmp_path, 100_000)
+    monkeypatch.setattr(paper, "cn_today", lambda: DAY)
+    _fill_order(tmp_path, "buy", 200, "first_board:entry")
+    fills = paper.load_fills(tmp_path)
+    fills[0][field] = value
+    monkeypatch.setattr(paper, "load_fills", lambda *args: fills)
+    assert exit_candidates(tmp_path, "default", {SYMBOL: 9.0},
+                           now=datetime(2026, 10, 16, 10, 31, tzinfo=CN_TZ)) == []
+
+
+def test_legacy_fills_without_kind_or_fee_use_existing_paper_contract(tmp_path, monkeypatch):
+    paper.create_account(tmp_path, 100_000, slippage_bps=0)
+    monkeypatch.setattr(paper, "cn_today", lambda: DAY)
+    _fill_order(tmp_path, "buy", 200, "first_board:entry")
+    fills = paper.load_fills(tmp_path)
+    for key in ("kind", "fee", "seq", "ts"):
+        fills[0].pop(key)
+    positions, _ = paper.replay_positions(tmp_path, fills=fills)
+    monkeypatch.setattr(paper, "load_fills", lambda *args: fills)
+    monkeypatch.setattr(paper, "load_positions", lambda *args: positions)
+    now = datetime(2026, 10, 16, 9, 45, tzinfo=CN_TZ)
+    assert exit_candidates(tmp_path, "default", {SYMBOL: 9.71}, now=now) == []
+    candidates = exit_candidates(tmp_path, "default", {SYMBOL: 9.69}, now=now)
+    assert candidates[0]["qty"] == 200
+
+
+def test_batch_cost_tracks_corporate_action_without_changing_purchase_day(tmp_path, monkeypatch):
+    paper.create_account(tmp_path, 100_000, slippage_bps=0)
+    monkeypatch.setattr(paper, "cn_today", lambda: DAY)
+    _fill_order(tmp_path, "buy", 200, "first_board:entry")
+    fills = paper.load_fills(tmp_path)
+    fills.append({"kind": "corp_action", "symbol": SYMBOL, "date": "2026-10-16", "factor": 2.0})
+    positions, _ = paper.replay_positions(tmp_path, fills=fills)
+    monkeypatch.setattr(paper, "load_fills", lambda *args: fills)
+    monkeypatch.setattr(paper, "load_positions", lambda *args: positions)
+    now = datetime(2026, 10, 16, 9, 45, tzinfo=CN_TZ)
+    assert exit_candidates(tmp_path, "default", {SYMBOL: 5.0}, now=now) == []
+    candidates = exit_candidates(tmp_path, "default", {SYMBOL: 4.8}, now=now)
+    assert candidates[0]["qty"] == 400
+
+
+def test_batch_stop_loss_includes_actual_buy_fee(tmp_path, monkeypatch):
+    paper.create_account(tmp_path, 100_000, slippage_bps=0, commission_pct=0)
+    monkeypatch.setattr(paper, "cn_today", lambda: DAY)
+    _fill_order(tmp_path, "buy", 200, "first_board:entry")
+    # 200 股 * 10 元 + 最低佣金 5 元, 单位成本 10.025, 3% 阈值 9.72425。
+    now = datetime(2026, 10, 16, 9, 45, tzinfo=CN_TZ)
+    assert exit_candidates(tmp_path, "default", {SYMBOL: 9.73}, now=now) == []
+    assert exit_candidates(tmp_path, "default", {SYMBOL: 9.72}, now=now)[0]["qty"] == 200
+
+
+def test_buy_order_symbol_must_match_fill_for_attribution(tmp_path, monkeypatch):
+    paper.create_account(tmp_path, 100_000)
+    monkeypatch.setattr(paper, "cn_today", lambda: DAY)
+    _fill_order(tmp_path, "buy", 200, "first_board:entry")
+    orders = paper.load_orders(tmp_path)
+    orders[0]["symbol"] = "600001.SH"
+    monkeypatch.setattr(paper, "load_orders", lambda *args: orders)
+    assert exit_candidates(tmp_path, "default", {SYMBOL: 9.0},
+                           now=datetime(2026, 10, 16, 10, 31, tzinfo=CN_TZ)) == []
+
+
+@pytest.mark.parametrize("factor", [None, 0, -1, float("inf")])
+def test_invalid_corporate_action_cost_fails_closed(tmp_path, monkeypatch, factor):
+    paper.create_account(tmp_path, 100_000)
+    monkeypatch.setattr(paper, "cn_today", lambda: DAY)
+    _fill_order(tmp_path, "buy", 200, "first_board:entry")
+    fills = paper.load_fills(tmp_path)
+    fills.append({"kind": "corp_action", "symbol": SYMBOL, "date": "2026-10-16", "factor": factor})
+    monkeypatch.setattr(paper, "load_fills", lambda *args: fills)
+    assert exit_candidates(tmp_path, "default", {SYMBOL: 9.0},
+                           now=datetime(2026, 10, 16, 10, 31, tzinfo=CN_TZ)) == []
+
+
+@pytest.mark.parametrize("factor,total_qty,lot_qty", [
+    (1.000000004, 2000.000008, 2000.0),
+    (1.013654321, 2027.308642, 2027.30864),
+])
+@pytest.mark.parametrize("sold_qty", [0, 100])
+def test_corporate_action_total_and_lots_keep_paper_rounding_contract(
+    tmp_path, monkeypatch, factor, total_qty, lot_qty, sold_qty,
+):
+    paper.create_account(tmp_path, 100_000, slippage_bps=0)
+    monkeypatch.setattr(paper, "cn_today", lambda: DAY)
+    for index in range(20):
+        _fill_order(tmp_path, "buy", 100, f"first_board:entry{index}")
+    fills = paper.load_fills(tmp_path)
+    fills.append({"kind": "corp_action", "symbol": SYMBOL, "date": "2026-10-16",
+                  "factor": factor})
+    if sold_qty:
+        fills.append({"symbol": SYMBOL, "side": "sell", "date": "2026-10-16",
+                      "qty": sold_qty, "price": 10.0, "fee": 5.0})
+    positions, _ = paper.replay_positions(tmp_path, fills=fills)
+    assert positions[SYMBOL]["qty"] == pytest.approx(total_qty - sold_qty, rel=0, abs=1e-9)
+    assert sum(lot["qty"] for lot in positions[SYMBOL]["lots"]) == pytest.approx(
+        lot_qty - sold_qty, rel=0, abs=1e-9)
+    monkeypatch.setattr(paper, "load_fills", lambda *args: fills)
+    monkeypatch.setattr(paper, "load_positions", lambda *args: positions)
+    now = datetime(2026, 10, 16, 9, 45, tzinfo=CN_TZ)
+    candidates = exit_candidates(tmp_path, "default", {SYMBOL: 9.0}, now=now)
+    available = paper._available_of(positions[SYMBOL], now.date().isoformat())
+    assert candidates[0]["qty"] == available == int(lot_qty - sold_qty)
+    time_exits = exit_candidates(tmp_path, "default", {SYMBOL: 10.0}, now=now.replace(hour=10, minute=31))
+    assert time_exits[0]["qty"] == available

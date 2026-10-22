@@ -342,6 +342,10 @@ interface Props {
   volumeCompare?: VolumeCompareConfig
   /** 加入自选日 (北京时间 YYYY-MM-DD); 有值且落在当前区间内时, 主图画一条「自选」竖虚线 */
   addedDate?: string | null
+  /** 已由后端计算的专用 MACD 参数；仅改变图例，不在图表重算指标。 */
+  macdParameters?: readonly [number, number, number]
+  /** ma60 契约列在专用策略中可承载可配置的趋势均线。 */
+  trendMaPeriod?: number
 }
 
 // 序列颜色 (双主题通用); 画布轴/网格/文字等主题相关色走 CT() 动态取
@@ -377,6 +381,7 @@ function buildSubInfoGraphics(
   activeIndicators: string[],
   subStartTop: number,
   volumeCompare: VolumeCompareConfig,
+  macdParameters?: readonly [number, number, number],
 ): any[] {
   const d = infoIdx >= 0 && infoIdx < data.length ? data[infoIdx] : null
   const graphics: any[] = []
@@ -420,7 +425,7 @@ function buildSubInfoGraphics(
       id: `sub-label-${key}`,
       type: 'text',
       style: {
-        text: def.label,
+        text: key === 'macd' && macdParameters ? `MACD(${macdParameters.join('/')})` : def.label,
         x: 4, y: curTop + 4,
         fill: '#8E8E96',
         fontSize: 10, fontFamily: 'JetBrains Mono, monospace',
@@ -480,6 +485,8 @@ function buildOption(
   linkedPrice: number | null | undefined,
   volumeCompare: VolumeCompareConfig,
   addedDate: string | null | undefined,
+  trendMaPeriod: number,
+  macdParameters?: readonly [number, number, number],
 ): EChartsOption {
   const candleData = data.map(d => [d.open, d.close, d.low, d.high])
 
@@ -697,7 +704,7 @@ function buildOption(
     series.push(maLine('ma5', THEME.ma5, 'MA5'))
     series.push(maLine('ma10', THEME.ma10, 'MA10'))
     series.push(maLine('ma20', THEME.ma20, 'MA20'))
-    series.push(maLine('ma60', THEME.ma60, 'MA60'))
+    series.push(maLine('ma60', THEME.ma60, `MA${trendMaPeriod}`))
   }
 
   // 加入自选日标注: 蓝色竖虚线从该根K线的下沿连到主图底端的「自选」标签。
@@ -828,7 +835,7 @@ function buildOption(
 
   // 子图信息栏 graphic
   const subStartTop = topPad + candleAvail + candleBottomPad
-  const infoGraphics = buildSubInfoGraphics(data, infoIdx, activeIndicators, subStartTop, volumeCompare)
+  const infoGraphics = buildSubInfoGraphics(data, infoIdx, activeIndicators, subStartTop, volumeCompare, macdParameters)
 
   return {
     animation: false,
@@ -887,7 +894,10 @@ export function EChartsCandlestick({
   activeIndicators = [],
   volumeCompare = { enabled: true, days: 1 },
   addedDate,
+  macdParameters,
+  trendMaPeriod: configuredTrendMaPeriod = 60,
 }: Props) {
+  const trendMaPeriod = Number.isInteger(configuredTrendMaPeriod) && configuredTrendMaPeriod > 0 ? configuredTrendMaPeriod : 60
   const hoverSurfaceRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<ECharts | null>(null)
@@ -916,6 +926,8 @@ export function EChartsCandlestick({
   activeIndicatorsRef.current = activeIndicators
   const volumeCompareRef = useRef(volumeCompare)
   volumeCompareRef.current = volumeCompare
+  const macdParametersRef = useRef(macdParameters)
+  macdParametersRef.current = macdParameters
   const chartHeightRef = useRef(300)
   const subTotalHRef = useRef(0)
   const getInfoBarHTMLRef = useRef<() => string>(() => '')
@@ -936,6 +948,7 @@ export function EChartsCandlestick({
       activeIndicatorsRef.current,
       subStartTop,
       volumeCompareRef.current,
+      macdParametersRef.current,
     )
     if (infoGraphics.length > 0) {
       chart.setOption({ graphic: infoGraphics }, { lazyUpdate: true })
@@ -1032,7 +1045,7 @@ export function EChartsCandlestick({
       if (d.ma5 != null) html += `<span style="color:${THEME.ma5}">MA5:${Number(d.ma5).toFixed(2)}</span>`
       if (d.ma10 != null) html += `<span style="color:${THEME.ma10}">MA10:${Number(d.ma10).toFixed(2)}</span>`
       if (d.ma20 != null) html += `<span style="color:${THEME.ma20}">MA20:${Number(d.ma20).toFixed(2)}</span>`
-      if (d.ma60 != null) html += `<span style="color:${THEME.ma60}">MA60:${Number(d.ma60).toFixed(2)}</span>`
+      if (d.ma60 != null) html += `<span style="color:${THEME.ma60}">MA${trendMaPeriod}:${Number(d.ma60).toFixed(2)}</span>`
       if (d.boll_upper != null && activeIndicators.includes('boll')) {
         html += `<span style="color:#E879F9">BOLL:${Number(d.boll_upper).toFixed(2)}/${Number(d.ma20).toFixed(2)}/${Number(d.boll_lower).toFixed(2)}</span>`
       }
@@ -1040,7 +1053,7 @@ export function EChartsCandlestick({
     }
 
     return html
-  }, [data, stockInfo, showMA, activeIndicators])
+  }, [data, stockInfo, showMA, activeIndicators, trendMaPeriod])
   getInfoBarHTMLRef.current = getInfoBarHTML
 
   // data/symbol 变化时重置 infoIdx:
@@ -1255,6 +1268,8 @@ export function EChartsCandlestick({
       linkedPrice,
       volumeCompare,
       addedDate,
+      trendMaPeriod,
+      macdParameters,
     )
 
     chart.setOption(option, true)
@@ -1272,7 +1287,7 @@ export function EChartsCandlestick({
     if (infoEl) {
       infoEl.innerHTML = getInfoBarHTML()
     }
-  }, [data, markers, ranges, priceLines, linkedPrice, showMA, showMarkersProp, activeIndicators, volumeCompare, addedDate, chartHeight, dates, dateIndexMap, initialZoom, getInfoBarHTML, theme])
+  }, [data, markers, ranges, priceLines, linkedPrice, showMA, showMarkersProp, activeIndicators, volumeCompare, addedDate, chartHeight, dates, dateIndexMap, initialZoom, getInfoBarHTML, theme, trendMaPeriod, macdParameters])
 
   // 渲染信息栏容器 (内容由 JS 直接写入)
   const initialHTML = useMemo(() => {
@@ -1308,7 +1323,7 @@ export function EChartsCandlestick({
       if (d.ma5 != null) html += `<span style="color:${THEME.ma5}">MA5:${Number(d.ma5).toFixed(2)}</span>`
       if (d.ma10 != null) html += `<span style="color:${THEME.ma10}">MA10:${Number(d.ma10).toFixed(2)}</span>`
       if (d.ma20 != null) html += `<span style="color:${THEME.ma20}">MA20:${Number(d.ma20).toFixed(2)}</span>`
-      if (d.ma60 != null) html += `<span style="color:${THEME.ma60}">MA60:${Number(d.ma60).toFixed(2)}</span>`
+      if (d.ma60 != null) html += `<span style="color:${THEME.ma60}">MA${trendMaPeriod}:${Number(d.ma60).toFixed(2)}</span>`
       if (d.boll_upper != null && activeIndicators.includes('boll')) {
         html += `<span style="color:#E879F9">BOLL:${Number(d.boll_upper).toFixed(2)}/${Number(d.ma20).toFixed(2)}/${Number(d.boll_lower).toFixed(2)}</span>`
       }

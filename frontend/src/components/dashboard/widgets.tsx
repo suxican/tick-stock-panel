@@ -31,23 +31,27 @@ export function rankNav(rank?: OverviewMarket['concept_rank']): NavItem[] {
 }
 
 // ===== 指数行情条 =====
-export function IndexTicker({ item }: { item: OverviewMarket['indices'][number] }) {
+export function IndexTicker({ item, linked = true }: { item: OverviewMarket['indices'][number]; linked?: boolean }) {
   const pct = item.change_pct
   const isUp = (pct ?? 0) >= 0
-  return (
-    <Link
-      to={`/indices?symbol=${encodeURIComponent(item.symbol)}`}
-      className="grid min-w-0 grid-cols-[1fr_auto] items-center gap-x-2 gap-y-0.5 rounded-lg border border-border bg-elevated/45 px-1.5 py-1 shadow-[0_1px_1px_hsl(var(--border)/0.3)] backdrop-blur-sm transition-all hover:border-accent/40 hover:bg-elevated hover:shadow-[0_2px_6px_hsl(var(--accent)/0.15)]"
-    >
+  const className = cn(
+    'grid min-w-0 grid-cols-[1fr_auto] items-center gap-x-2 gap-y-0.5 rounded-lg border border-border bg-elevated/45 px-1.5 py-1 shadow-[0_1px_1px_hsl(var(--border)/0.3)] backdrop-blur-sm transition-all',
+    linked ? 'hover:border-accent/40 hover:bg-elevated hover:shadow-[0_2px_6px_hsl(var(--accent)/0.15)]' : 'h-full',
+  )
+  const content = (
+    <>
       <div className="truncate text-xs font-medium text-foreground">{item.name || item.symbol}</div>
       <div className={`font-mono text-xs font-semibold ${pctClass(pct)}`}>{fmtIndexPct(pct)}</div>
       <div className="font-mono text-[10px] text-muted">{item.symbol}</div>
       <div className={`flex items-center gap-1 font-mono text-[11px] ${pctClass(pct)}`}>
-        {isUp ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
+        {(linked || (pct != null && pct !== 0)) && (isUp ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />)}
         {fmtPrice(item.last_price)}
       </div>
-    </Link>
+    </>
   )
+  return linked
+    ? <Link to={`/indices?symbol=${encodeURIComponent(item.symbol)}`} className={className}>{content}</Link>
+    : <div className={className}>{content}</div>
 }
 
 // ===== 涨跌广度 =====

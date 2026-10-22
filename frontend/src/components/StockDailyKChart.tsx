@@ -1,7 +1,7 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { type KlineRow } from '@/lib/api'
-import { klineDailyQueryOptions } from '@/lib/kline'
+import { type HuichunChartResponse, type KlineRow } from '@/lib/api'
+import { huichunChartMarkers, stockChartQueryOptions, type HuichunChartContext } from '@/lib/huichun-chart'
 import { storage } from '@/lib/storage'
 import {
   EChartsCandlestick,
@@ -17,6 +17,7 @@ import {
 const SUB_INFO_H = 16
 const SUB_GAP = 4
 const DEFAULT_VOLUME_COMPARE: VolumeCompareConfig = { enabled: true, days: 1 }
+const HUICHUN_MACD = [10, 20, 9] as const
 
 function normalizeVolumeCompare(config: VolumeCompareConfig): VolumeCompareConfig {
   return {
@@ -47,6 +48,8 @@ interface Props {
   extColumns?: string
   /** 加入自选日 (北京时间 YYYY-MM-DD); 有值时日K主图绘制「自选」竖虚线 */
   addedDate?: string | null
+  /** 回春日线使用所选形态日与规则的专用指标序列。 */
+  huichunChart?: HuichunChartContext
 }
 
 function isValidRow(r: any): boolean {
@@ -147,8 +150,9 @@ export function StockDailyKChart({
   onPriceDoubleClick,
   extColumns,
   addedDate,
+  huichunChart,
 }: Props) {
-  const [activeIndicators, setActiveIndicators] = useState<string[]>(['vol'])
+  const [activeIndicators, setActiveIndicators] = useState<string[]>(() => huichunChart ? ['vol', 'macd'] : ['vol'])
   const [showMarkers, setShowMarkers] = useState(true)
   // 加入自选日标注（与「异动」标记相互独立）
   const [showAddedMark, setShowAddedMark] = useState(true)
@@ -156,17 +160,27 @@ export function StockDailyKChart({
     normalizeVolumeCompare(storage.stockVolumeCompare.get(DEFAULT_VOLUME_COMPARE)),
   )
   const dateRange = externalDateRange ?? getDefaultRange()
+  const huichunMode = !!huichunChart
+  const contextMismatch = !!huichunChart && huichunChart.symbol !== symbol
+  const rangeAfterSignal = !!huichunChart && dateRange.start > huichunChart.as_of
+  useEffect(() => {
+    if (huichunMode) setActiveIndicators(previous => previous.includes('macd') ? previous : [...previous, 'macd'])
+  }, [huichunMode])
 
-  // 查询配置统一来自 klineDailyQueryOptions, 与 StockPanel 信息条/邻近预取共享同一 cache key (只发一次请求)
-  const kline = useQuery({ ...klineDailyQueryOptions(symbol, dateRange, extColumns), enabled: !!symbol })
+  // 与 StockPanel 信息条共享同一查询；专用序列不使用普通日K缓存或实时快照。
+  const kline = useQuery(stockChartQueryOptions(symbol, dateRange, extColumns, huichunChart))
+  const huichunData = huichunChart && !contextMismatch && kline.data?.source === 'huichun_a0'
+    ? (kline.data as HuichunChartResponse).huichun : undefined
 
-  const rows = useMemo(() => toOHLC(kline.data?.rows ?? []), [kline.data?.rows])
+  const sourceRows = contextMismatch || rangeAfterSignal ? undefined : kline.data?.rows
+  const rows = useMemo(() => toOHLC(sourceRows ?? []), [sourceRows])
   const stockInfo = kline.data?.stock_info
-  const limitMarkers = useMemo(() => buildLimitUpMarkers(kline.data?.rows ?? []), [kline.data?.rows])
+  const limitMarkers = useMemo(() => buildLimitUpMarkers(sourceRows ?? []), [sourceRows])
   const allMarkers = useMemo(() => [
     ...(markers ?? []),
+    ...(huichunChart && !contextMismatch ? huichunChartMarkers(huichunChart) : []),
     ...(showLimitMarkers ? limitMarkers : []),
-  ], [limitMarkers, markers, showLimitMarkers])
+  ], [limitMarkers, markers, showLimitMarkers, huichunChart, contextMismatch])
 
   const toggleIndicator = useCallback((key: string) => {
     setActiveIndicators(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key])
@@ -192,13 +206,25 @@ export function StockDailyKChart({
 
   return (
     <div className={className} style={{ minHeight: chartHeight }}>
+      {huichunChart && <div className="mb-2 rounded border border-border bg-surface px-3 py-2 text-xs leading-relaxed text-secondary">
+        <p className="font-medium text-foreground">回春 A0 · MACD 10 / 20 / 9 · 规则版本 {huichunChart.rule_revision}</p>
+        <p>形态日期 {huichunChart.as_of} · 趋势均线 MA{huichunChart.rules.ma_window}；按已存有效历史计算。</p>
+        {huichunData?.price_basis_date && <p>价格与指标统一使用 {huichunData.price_basis_date} 的复权基准。</p>}
+        <p>G 前轮金叉 · D 前轮死叉 · R 回春确认；标记为形态日期，非成交点。</p>
+        {huichunData?.latest_valid_date && huichunData.latest_valid_date < huichunChart.as_of && <p role="status">有效日线仅到 {huichunData.latest_valid_date}，形态日期的数据尚不完整。</p>}
+        {huichunData?.invalid_from && <p role="status">{huichunData.invalid_from} 起复权数据异常，该区间不绘制指标。</p>}
+        {huichunData?.factor_status === 'invalid_undated' && <p role="status">复权异常尚无法确定生效日期，暂无可用的指标序列。</p>}
+        {huichunData && huichunData.missing_observed_days != null && huichunData.missing_observed_days > 0 && <p role="status">历史含 {huichunData.missing_observed_days} 个缺失或不可用交易日；指标在有效日线段内分别计算{huichunData.segment_count != null ? `（${huichunData.segment_count} 段）` : ''}。</p>}
+        {huichunData && huichunData.missing_observed_days == null && <p>历史缺口覆盖暂无法核验。</p>}
+        {huichunData && ['events_present_unverified', 'no_events_unverified'].includes(huichunData.factor_status) && <p>复权事件完整性尚未核验。</p>}
+      </div>}
       {showIndicatorControls && rows.length > 0 && (
-        <div className="flex items-center gap-1.5 px-1 pb-0.5">
+        <div className="flex flex-wrap items-center gap-1.5 px-1 pb-0.5">
           {SUB_CHARTS.map(ind => (
             <ChartPill
               key={ind.key}
               active={activeIndicators.includes(ind.key)}
-              label={ind.label}
+              label={ind.key === 'macd' && huichunChart ? 'MACD 10 / 20 / 9' : ind.label}
               activeClass="bg-accent/20 text-accent"
               onClick={() => toggleIndicator(ind.key)}
             />
@@ -266,9 +292,12 @@ export function StockDailyKChart({
           </div>
         </div>
       )}
-      {kline.isLoading && <div className="text-sm text-muted py-4">加载中…</div>}
-      {kline.isError && <div className="text-sm text-danger py-2">日K加载失败</div>}
-      {!kline.isLoading && !kline.isError && (kline.data?.rows?.length ?? 0) > 0 && rows.length === 0 && (
+      {contextMismatch && <div role="alert" className="text-sm text-danger py-2">回春形态与当前股票不匹配，请重新选择候选。</div>}
+      {rangeAfterSignal && <div role="status" className="text-sm text-muted py-2">所选日期范围晚于形态日期，请调整开始日期。</div>}
+      {kline.isLoading && !contextMismatch && !rangeAfterSignal && <div className="text-sm text-muted py-4">加载中…</div>}
+      {kline.isError && <div role="alert" className="text-sm text-danger py-2">{huichunChart ? `回春日K加载失败：${kline.error.message}` : '日K加载失败'}</div>}
+      {huichunChart && !contextMismatch && !rangeAfterSignal && kline.isSuccess && rows.length === 0 && <div role="status" className="text-sm text-muted py-2">该范围暂无可用的回春日线数据。</div>}
+      {!kline.isLoading && !kline.isError && (sourceRows?.length ?? 0) > 0 && rows.length === 0 && (
         <div className="text-sm text-danger py-2">数据格式异常，请刷新页面</div>
       )}
       {rows.length > 0 && (
@@ -290,6 +319,8 @@ export function StockDailyKChart({
           activeIndicators={activeIndicators}
           volumeCompare={volumeCompare}
           addedDate={showAddedMark ? addedDate : null}
+          macdParameters={huichunChart ? HUICHUN_MACD : undefined}
+          trendMaPeriod={huichunChart?.rules.ma_window}
         />
       )}
     </div>

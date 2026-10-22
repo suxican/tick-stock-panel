@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 # 为空, K 线接口逐请求现算指标。仅 warmup 线程用, 同步/懒加载路径单次。
 _ENRICHED_WARMUP_MAX_ATTEMPTS = 3
 _ENRICHED_WARMUP_PUBLISH_WAIT_SECONDS = 5.0
+_MINUTE_REQUIRED_COLUMNS = ["symbol", "datetime", "open", "high", "low", "close", "volume"]
 
 
 def replace_with_retry(src: Path, dst: Path, *, attempts: int = 10, delay_s: float = 0.5) -> None:
@@ -1710,9 +1711,20 @@ class KlineRepository:
 
     def _minute_partition_path(self, asset_type: str, trade_date: date) -> str | None:
         """单日分钟K分区文件路径; 不存在 (含存量未迁移的旧 symbol= 分区) 返回 None。"""
-        base = self._minute_glob_for(asset_type).rsplit("/", 2)[0]
-        p = f"{base}/date={trade_date.isoformat()}/part.parquet"
-        return p if Path(p).exists() else None
+        base = self.store.data_dir / ("kline_etf_minute" if asset_type == "etf" else "kline_minute")
+        path = base / f"date={trade_date.isoformat()}" / "part.parquet"
+        return str(path) if path.exists() else None
+
+    def _minute_scan(self, part: str | None, asset_type: str) -> pl.LazyFrame:
+        if part is not None:
+            return pl.scan_parquet(part)
+        source = self._minute_glob_for(asset_type)
+        # Cold legacy-layout fallback: inspect only the first schema, adding
+        # known optional columns so later files retain their evidence. Nulls
+        # stay unknown; callers also reject missing basic OHLC/quantity fields.
+        schema = dict(pl.scan_parquet(source).collect_schema())
+        schema.update({"minute_price_basis": pl.String, "minute_time_grid": pl.String})
+        return pl.scan_parquet(source, schema=schema, missing_columns="insert", extra_columns="ignore")
 
     def get_minute(
         self,
@@ -1727,13 +1739,14 @@ class KlineRepository:
         """
         try:
             part = self._minute_partition_path(asset_type, trade_date)
-            source = part if part is not None else self._minute_glob_for(asset_type)
             df = guarded_collect(
-                pl.scan_parquet(source).filter(
+                self._minute_scan(part, asset_type).filter(
                     (pl.col("symbol") == symbol)
                     & (pl.col("datetime").dt.date() == trade_date)
                 ).sort("datetime")
             )
+            if part is None and any(df.select(_MINUTE_REQUIRED_COLUMNS).null_count().row(0)):
+                raise ValueError("legacy minute data contains missing basic fields")
             return self._maybe_adjust_minute(df, asset_type)
         except Exception as e:  # noqa: BLE001
             logger.warning("分钟K查询失败: %s", e)
@@ -1754,13 +1767,14 @@ class KlineRepository:
             return pl.DataFrame()
         try:
             part = self._minute_partition_path(asset_type, trade_date)
-            source = part if part is not None else self._minute_glob_for(asset_type)
             df = guarded_collect(
-                pl.scan_parquet(source).filter(
+                self._minute_scan(part, asset_type).filter(
                     pl.col("symbol").is_in(symbols)
                     & (pl.col("datetime").dt.date() == trade_date)
                 ).sort(["symbol", "datetime"])
             )
+            if part is None and any(df.select(_MINUTE_REQUIRED_COLUMNS).null_count().row(0)):
+                raise ValueError("legacy minute data contains missing basic fields")
             return self._maybe_adjust_minute(df, asset_type)
         except Exception as e:  # noqa: BLE001
             logger.warning("批量分钟K查询失败: %s", e)
@@ -1781,7 +1795,9 @@ class KlineRepository:
         if not symbols:
             return pl.DataFrame()
         try:
-            lf = pl.scan_parquet(self._minute_glob_for(asset_type))
+            # This API projects the original eight price/quantity columns.
+            # New optional evidence must not make old partitions unreadable.
+            lf = pl.scan_parquet(self._minute_glob_for(asset_type), extra_columns="ignore")
             available = set(lf.collect_schema().names())
             select_cols = [c for c in ["symbol", "datetime", "open", "high", "low", "close", "volume", "amount"] if c in available]
             df = guarded_collect(
@@ -1813,23 +1829,26 @@ class KlineRepository:
         只随触发日数量增长。
 
         缺失的日期分区直接跳过 (该日无分钟K数据)。
-        返回列: symbol, datetime, open, high, low, close, volume, amount。
+        返回基础八列, 并保留存在的 minute_price_basis / minute_time_grid。
         """
         if not symbols or not dates:
             return pl.DataFrame()
-        base = self._etf_minute_glob.rsplit("/", 2)[0] if asset_type == "etf" else self._minute_glob.rsplit("/", 2)[0]
+        base = self.store.data_dir / ("kline_etf_minute" if asset_type == "etf" else "kline_minute")
         # 收集存在的分区文件路径, 避免对不存在的文件 scan 报错
         parts: list[str] = []
         for d in dates:
-            p = f"{base}/date={d.isoformat()}/part.parquet"
-            if Path(p).exists():
-                parts.append(p)
+            p = base / f"date={d.isoformat()}" / "part.parquet"
+            if p.exists():
+                parts.append(str(p))
         if not parts:
             return pl.DataFrame()
         try:
-            lf = pl.scan_parquet(parts)
+            # Old partitions have no row-level evidence. Preserve nulls instead
+            # of borrowing a newer partition's raw-price/grid declaration.
+            lf = pl.concat([pl.scan_parquet(part) for part in parts], how="diagonal_relaxed")
             available = set(lf.collect_schema().names())
-            select_cols = [c for c in ["symbol", "datetime", "open", "high", "low", "close", "volume", "amount"] if c in available]
+            select_cols = [c for c in ["symbol", "datetime", "open", "high", "low", "close", "volume", "amount",
+                                       "minute_price_basis", "minute_time_grid"] if c in available]
             df = guarded_collect(
                 lf.select(select_cols)
                 .filter(pl.col("symbol").is_in(symbols))

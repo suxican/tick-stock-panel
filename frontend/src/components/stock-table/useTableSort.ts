@@ -12,8 +12,8 @@ export interface SortState {
   dir: 'asc' | 'desc'
 }
 
-export function useTableSort<T>(getSortValue: (r: T, col: ColumnConfig) => any = defaultGetSortValue) {
-  const [sort, setSort] = useState<SortState | null>(null)
+export function useTableSort<T>(getSortValue: (r: T, col: ColumnConfig) => any = defaultGetSortValue, initialSort: SortState | null = null) {
+  const [sort, setSort] = useState<SortState | null>(initialSort)
 
   /** 点击表头：同列轮换 asc→desc→清除；不同列重置为 asc */
   const toggle = useCallback((colId: string) => {

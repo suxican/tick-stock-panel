@@ -23,6 +23,7 @@ import { storage } from '@/lib/storage'
 import { navItemKey, type NavItem } from '@/lib/listNav'
 import { useListNav } from '@/lib/useListNav'
 import { DEFAULT_INTRADAY_DAYS } from '@/lib/kline'
+import { huichunChartRange, stockChartQueryOptions, type HuichunChartContext } from '@/lib/huichun-chart'
 import { ExtensionSlot } from '@/extensions/ExtensionSlot'
 
 export interface Props {
@@ -41,6 +42,8 @@ export interface Props {
   navList?: NavItem[]
   /** 切股回调: 收到目标 symbol/name, 由调用方更新预览状态 */
   onNavigate?: (symbol: string, name?: string) => void
+  /** 回春候选/跟踪记录的形态上下文；普通入口不传。 */
+  huichunChart?: HuichunChartContext
 }
 
 // ===== 板块标识（与 Screener 列表一致）=====
@@ -89,16 +92,19 @@ function fmtAbnormalCalcTime(asofSec: number): string {
 }
 
 
-export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, navList: navListSource, onNavigate }: Props) {
+export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, navList: navListSource, onNavigate, huichunChart }: Props) {
   const [view, setView] = useState<PreviewView>('daily')
   const [intradayDays, setIntradayDays] = useState<number | null>(loadIntradayDays)
-  const [dateRange, setDateRange] = useState(getDefaultRange)
+  const [dateRange, setDateRange] = useState(() => huichunChart ? huichunChartRange(huichunChart) : getDefaultRange())
   const [showMonitorEditor, setShowMonitorEditor] = useState(false)
   const customNames = useCustomSignalNames()
   const [priceAlertDraft, setPriceAlertDraft] = useState<PriceAlertDraft | null>(null)
   const [maximized, setMaximized] = useState(false)
   const qc = useQueryClient()
   const backdrop = useDialogBackdrop(onClose)
+  useEffect(() => {
+    if (huichunChart && huichunChart.symbol === symbol) setDateRange(huichunChartRange(huichunChart))
+  }, [symbol, huichunChart?.symbol, huichunChart?.as_of, huichunChart?.g_date])
 
   const watchlist = useQuery({
     queryKey: QK.watchlist,
@@ -199,10 +205,10 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
   // 让对话框日K最后一根蜡烛随实时价变化 (后端只读内存, 不调 TickFlow)。
   // 关闭/切股时清除, 避免无谓刷新。
   useEffect(() => {
-    if (!symbol) return
+    if (!symbol || (huichunChart && view === 'daily')) return
     setFocusSymbol(symbol)
     return () => clearFocusSymbol()
-  }, [symbol])
+  }, [symbol, huichunChart, view])
 
   // 分时图实时轮询: 详情打开即独立轮询, 不再依赖自选列表的「分时刷新」开关
   // 与实时行情运行状态 (打开详情就是要看实时分时); 间隔沿用偏好, 默认 6s。
@@ -228,7 +234,9 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
   const handleRefresh = () => {
     if (!symbol) return
     if (view === 'daily') {
-      qc.invalidateQueries({ queryKey: ['kline', symbol] })
+      qc.invalidateQueries({ queryKey: huichunChart
+        ? stockChartQueryOptions(symbol, dateRange, undefined, huichunChart).queryKey
+        : ['kline', symbol] })
     } else {
       qc.invalidateQueries({ queryKey: ['kline-minute-range', symbol] })
       qc.invalidateQueries({ queryKey: ['kline-minute', symbol!] })
@@ -323,19 +331,17 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
                   <div className="inline-flex items-center gap-2">
                     <div className="inline-flex items-center rounded border border-border/60 bg-base/60 p-0.5">
                     {PRESETS.map(p => {
-                      const now = new Date()
+                      const now = huichunChart ? new Date(`${huichunChart.as_of}T00:00:00Z`) : new Date()
                       const s = new Date(now)
-                      s.setMonth(s.getMonth() - p.months)
+                      if (huichunChart) s.setUTCMonth(s.getUTCMonth() - p.months)
+                      else s.setMonth(s.getMonth() - p.months)
                       const expected = s.toISOString().slice(0, 10)
                       const isActive = dateRange.start === expected
                       return (
                         <button
                           key={p.label}
                           onClick={() => {
-                            const end = new Date().toISOString().slice(0, 10)
-                            const ns = new Date()
-                            ns.setMonth(ns.getMonth() - p.months)
-                            setDateRange({ start: ns.toISOString().slice(0, 10), end })
+                            setDateRange({ start: expected, end: now.toISOString().slice(0, 10) })
                           }}
                           className={`h-6 rounded px-2.5 text-[11px] transition-colors cursor-pointer
                             ${isActive
@@ -358,6 +364,7 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
                       value={dateRange.end}
                       onChange={(v) => setDateRange(prev => ({ ...prev, end: v }))}
                       min={dateRange.start}
+                      max={huichunChart?.as_of}
                     />
                   </div>
                 ) : (
@@ -536,21 +543,24 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
                 <StockPanel
                   symbol={symbol}
                   height={420}
-                  showIntraday
+                  showIntraday={!huichunChart}
                   dateRange={dateRange}
-                  priceLines={monitorPriceLines}
-                  onPriceDoubleClick={openPriceAlert}
+                  priceLines={huichunChart ? undefined : monitorPriceLines}
+                  onPriceDoubleClick={huichunChart ? undefined : openPriceAlert}
                   refetchIntervalMs={intradayRefetchMs}
                   prefetchSymbols={prefetchSymbols}
                   intradayDays={effectiveIntradayDays}
                   dailyKlineFlex="flex-[1.4]"
                   addedDate={addedDate}
+                  huichunChart={huichunChart}
+                  visibleBars={huichunChart ? 'all' : undefined}
                 />
               ) : (
                 <div className="flex flex-col gap-3">
+                {huichunChart && <p className="text-xs leading-relaxed text-secondary">此处为普通分时行情，使用当前分时周期；回春历史形态与 MACD 10 / 20 / 9 请查看“日 K”。</p>}
                 <StockPanel
                   symbol={symbol}
-                  dateRange={dateRange}
+                  dateRange={huichunChart ? getDefaultRange() : dateRange}
                   infoBarOnly
                   prefetchSymbols={prefetchSymbols}
                   intradayDays={effectiveIntradayDays}

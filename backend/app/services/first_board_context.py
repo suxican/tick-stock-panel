@@ -6,6 +6,8 @@ pure sector reducer; it never reads historical files or contacts a provider.
 from __future__ import annotations
 
 import logging
+import re
+from collections import Counter, defaultdict
 from datetime import date
 from pathlib import Path
 
@@ -15,10 +17,13 @@ from app.services.regime_builder import STATE_LABELS, load_regime_history
 from app.services.rps_rotation import _load_concept_map_df
 
 logger = logging.getLogger(__name__)
+SECTOR_MIN_QUOTE_COVERAGE = 0.8
+_FULL_SYMBOL = re.compile(r"^\d{6}\.(SH|SZ|BJ)$")
 
 SECTOR_PROXY_NOTE = (
     "采用当前行业二级归属的联动代理, 不等于课程中的精确题材主线; "
-    "至少 3 只有效行情、2 只涨幅达到 5%、行业平均涨幅达到 1% 为工程实验门槛。"
+    "完整行业成员行情覆盖至少 80%、至少 3 只有效行情、2 只涨幅达到 5%、"
+    "行业平均涨幅达到 1% 为工程实验门槛。"
 )
 
 
@@ -92,6 +97,7 @@ def load_sector_members(repo) -> dict[str, str]:
         sector = _industry_level_two(value)
         if sector:
             paths.setdefault(symbol.strip().upper(), set()).add(sector)
+    aliases: dict[str, set[str]] = defaultdict(set)
     get_instruments = getattr(repo, "get_instruments", None)
     if callable(get_instruments):
         try:
@@ -99,12 +105,24 @@ def load_sector_members(repo) -> dict[str, str]:
             if instruments is not None and "symbol" in instruments.columns:
                 for symbol in instruments["symbol"].drop_nulls().to_list():
                     key = str(symbol).strip().upper()
-                    values = paths.get(key, set()) | paths.get(key.split(".", 1)[0], set())
-                    if values:
-                        paths[key] = values
+                    if _FULL_SYMBOL.fullmatch(key):
+                        aliases[key.split(".", 1)[0]].add(key)
         except Exception as exc:  # noqa: BLE001 - 缺少股票映射时仅保留已确认的标的
             logger.warning("first-board industry symbol resolution unavailable (%s)", type(exc).__name__)
-    return {symbol: sorted(values)[0] for symbol, values in sorted(paths.items())}
+    resolved: dict[str, set[str]] = defaultdict(set)
+    unresolved_sectors = set()
+    for symbol, values in paths.items():
+        if _FULL_SYMBOL.fullmatch(symbol):
+            resolved[symbol].update(values)
+        elif len(aliases.get(symbol, set())) == 1:
+            resolved[next(iter(aliases[symbol]))].update(values)
+        else:
+            # Dropping only the unknown member would artificially improve coverage.
+            unresolved_sectors.update(values)
+    if unresolved_sectors:
+        logger.warning("first-board industry mapping excluded %d unresolved sectors", len(unresolved_sectors))
+    primary = {symbol: sorted(values)[0] for symbol, values in sorted(resolved.items()) if values}
+    return {symbol: sector for symbol, sector in primary.items() if sector not in unresolved_sectors}
 
 
 def evaluate_sectors(current: pl.DataFrame, members: dict[str, str]) -> dict[str, dict]:
@@ -115,10 +133,13 @@ def evaluate_sectors(current: pl.DataFrame, members: dict[str, str]) -> dict[str
     """
     normalized = {str(symbol).strip().upper(): sector for symbol, sector in members.items()
                   if isinstance(sector, str) and sector.strip()}
+    member_counts = Counter(normalized.values())
     sectors = sorted(set(normalized.values()))
     output = {sector: {
         "sector": sector, "count": 0, "up_count": 0, "strong_count": 0,
-        "mean_change_pct": None, "confirmed": False, "reason": "缺少有效的当时行业行情",
+        "member_count": member_counts[sector], "coverage": 0.0,
+        "mean_change_pct": None, "confirmed": False,
+        "reason": f"行业有效行情 0/{member_counts[sector]}，覆盖率不足 80%",
         "proxy_note": SECTOR_PROXY_NOTE,
     } for sector in sectors}
     if not output or current.is_empty() or not {"symbol", "change_pct"}.issubset(current.columns):
@@ -144,9 +165,15 @@ def evaluate_sectors(current: pl.DataFrame, members: dict[str, str]) -> dict[str
     except pl.exceptions.PolarsError:
         return output
     for row in stats.to_dicts():
-        confirmed = row["count"] >= 3 and row["strong_count"] >= 2 and row["mean_change_pct"] >= 0.01
+        member_count = member_counts[row["sector"]]
+        coverage = row["count"] / member_count
+        covered = coverage >= SECTOR_MIN_QUOTE_COVERAGE
+        confirmed = covered and row["count"] >= 3 and row["strong_count"] >= 2 and row["mean_change_pct"] >= 0.01
+        detail = f"有效行情 {row['count']}/{member_count}，覆盖率 {coverage:.1%}"
+        reason = (f"行业联动代理达到实验门槛（{detail}）" if confirmed else
+                  f"行业行情覆盖率不足 80%（{detail}）" if not covered else
+                  f"行业有效样本数、强势家数或平均涨幅未达到实验门槛（{detail}）")
         output[row["sector"]].update(
-            **row, confirmed=confirmed,
-            reason="行业联动代理达到实验门槛" if confirmed else "行业有效样本数、强势家数或平均涨幅未达到实验门槛",
+            **row, confirmed=confirmed, coverage=coverage, reason=reason,
         )
     return output

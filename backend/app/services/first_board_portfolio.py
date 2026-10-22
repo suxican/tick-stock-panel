@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import math
-from collections import defaultdict
-from datetime import datetime, time
+from collections import defaultdict, deque
+from datetime import date, datetime, time
 from pathlib import Path
 
 from app.market_time import CN_TZ
@@ -189,11 +189,79 @@ def buy_budget(
             return denied("关联模拟账户数据不可用, 暂停买入预算")
 
 
+def _remaining_cost_lots(fills: list[dict], position: dict, day: str) -> list[dict] | None:
+    """补齐 paper 日期/数量批次的成本, 不修改账本或账户平均成本。
+
+    台账顺序、FIFO 与公司行动数量舍入沿用 paper.replay_positions 的契约;
+    最终必须与物化持仓逐批核对, 不能从缺失台账或账户均价猜成本。
+    """
+    lots: deque[dict] = deque()
+    aggregate_qty = 0.0
+    last_day = ""
+    for fill in fills:
+        fill_day = fill.get("date")
+        if (not isinstance(fill_day, str) or date.fromisoformat(fill_day).isoformat() != fill_day
+                or not last_day <= fill_day <= day):
+            return None
+        last_day = fill_day
+        kind = fill.get("kind", "fill")
+        if kind == "corp_action":
+            factor = _number(fill.get("factor"), positive=True)
+            if factor is None:
+                return None
+            for lot in lots:
+                quantity = round(lot["qty"] * factor, 6)
+                if not math.isfinite(quantity) or quantity <= 0:
+                    return None
+                lot["unit_cost"] *= lot["qty"] / quantity
+                lot["qty"] = quantity
+            # paper 对总数量单独舍入, 不能用逐批舍入后的数量之和替代。
+            aggregate_qty = round(aggregate_qty * factor, 6)
+            continue
+        quantity = _number(fill.get("qty"), positive=True)
+        if kind != "fill" or quantity is None or quantity % 1:
+            return None
+        if fill.get("side") == "buy":
+            price = _number(fill.get("price"), positive=True)
+            # paper 历史成交缺少 fee 时使用零费用, 显式无效值不能按零处理。
+            fee = _number(fill.get("fee", 0))
+            if price is None or fee is None or fee < 0:
+                return None
+            unit_cost = price + fee / quantity
+            if not math.isfinite(unit_cost):
+                return None
+            lots.append({"date": fill_day, "qty": quantity, "unit_cost": unit_cost})
+            aggregate_qty += quantity
+        elif fill.get("side") == "sell":
+            aggregate_qty = max(0, aggregate_qty - quantity)
+            while quantity > 1e-9 and lots:
+                take = min(quantity, lots[0]["qty"])
+                lots[0]["qty"] -= take
+                quantity -= take
+                if lots[0]["qty"] <= 1e-9:
+                    lots.popleft()
+            if quantity > 1e-9:
+                return None
+        else:
+            return None
+    stored_lots = position.get("lots", [])
+    total = _number(position.get("qty"), positive=True)
+    if (total is None or len(stored_lots) != len(lots)
+            or not math.isclose(aggregate_qty, total, rel_tol=0, abs_tol=1e-6)):
+        return None
+    for lot, stored in zip(lots, stored_lots, strict=True):
+        quantity = _number(stored.get("qty"), positive=True)
+        if (quantity is None or lot["date"] != stored.get("date")
+                or not math.isclose(lot["qty"], quantity, rel_tol=0, abs_tol=1e-6)):
+            return None
+    return list(lots)
+
+
 def exit_candidates(
     data_dir: Path, account_id: str | None, prices: dict[str, float], *, now: datetime,
     exit_time: str = "10:30", exit_loss_pct: float = 0.03,
 ) -> list[dict]:
-    """仅提示与首板买单关联且 T+1 可卖的持仓, 不下单。"""
+    """仅提示与首板买单关联且 T+1 可卖的持仓; 止损按未被待卖占用的批次成本。"""
     if not account_id:
         return []
     local_now = now.astimezone(CN_TZ) if now.tzinfo else now.replace(tzinfo=CN_TZ)
@@ -211,41 +279,55 @@ def exit_candidates(
                 return []
             orders = paper.load_orders(data_dir, account_id)
             positions = paper.load_positions(data_dir, account_id)
-            source_ids = {order["id"] for order in orders if order.get("side") == "buy"
-                          and order.get("status") == "filled"
-                          and str(order.get("source") or "").startswith("first_board:")}
+            source_symbols = {order["id"]: order["symbol"] for order in orders
+                              if isinstance(order.get("id"), str) and order["id"]
+                              and order.get("side") == "buy" and order.get("status") == "filled"
+                              and str(order.get("source") or "").startswith("first_board:")}
             # lots 仅保留日期, 不保留买单来源。同股同日有其他来源买入时,
             # 即使后来部分卖出也无法精确归属剩余批次, 不生成该日的退出提示。
             source_days = defaultdict(set)
             other_days = defaultdict(set)
+            symbol_fills = defaultdict(list)
             for fill in paper.load_fills(data_dir, account_id):
+                symbol_fills[fill["symbol"]].append(fill)
                 if fill.get("side") == "buy":
-                    days = source_days if fill.get("order_id") in source_ids else other_days
+                    days = (source_days if source_symbols.get(fill.get("order_id")) == fill["symbol"]
+                            else other_days)
                     days[fill["symbol"]].add(fill["date"])
             pending_sells = defaultdict(int)
             for order in orders:
                 if order.get("status") == "pending" and order.get("side") == "sell":
-                    pending_sells[order["symbol"]] += int(order["qty"])
+                    quantity = _number(order.get("qty"), positive=True)
+                    if quantity is None or quantity % 1:
+                        return []
+                    pending_sells[order["symbol"]] += int(quantity)
             result = []
             for symbol, position in positions.items():
                 if not source_days[symbol]:
                     continue
                 price = _number(prices.get(symbol), positive=True)
-                average = _number(position.get("avg_cost"), positive=True)
-                if price is None or average is None:
+                lots = _remaining_cost_lots(symbol_fills[symbol], position, day)
+                if price is None or lots is None:
                     continue
-                linked = 0.0
+                linked = cost = 0.0
+                reserved = pending_sells[symbol]
                 # paper 按 FIFO 卖出。只能提示队首连续的纯首板可卖批次,
                 # 不能跳过较早手工/混合批次后把较晚首板数量当作可退出数量。
                 attributable_days = source_days[symbol] - other_days[symbol]
-                for lot in position.get("lots", []):
-                    quantity = _number(lot.get("qty"), positive=True)
-                    if (quantity is None or lot.get("date") not in attributable_days
-                            or lot["date"] >= day):
+                for lot in lots:
+                    if lot["date"] not in attributable_days or lot["date"] >= day:
                         break
+                    # 已挂卖单先占 FIFO 头部; 不把它们的成本分摊给新提示。
+                    occupied = min(reserved, lot["qty"])
+                    reserved -= occupied
+                    quantity = lot["qty"] - occupied
                     linked += quantity
-                available = min(paper._available_of(position, day), int(linked)) - pending_sells[symbol]
+                    cost += quantity * lot["unit_cost"]
+                available = min(int(linked), paper._available_of(position, day) - pending_sells[symbol])
                 if available <= 0:
+                    continue
+                average = cost / linked
+                if not math.isfinite(average) or average <= 0:
                     continue
                 loss = price <= average * (1 - loss_limit) + 1e-9
                 if not loss and local_now.time() < deadline:

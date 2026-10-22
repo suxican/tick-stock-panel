@@ -407,6 +407,8 @@ def delete_config(name: str) -> bool:
 
 def _sanitize_for_yaml(config: dict) -> dict:
     """剔除前端可能塞进来的空值/未启用数据集, 保证写入的 yaml 干净。"""
+    if "overseas" in (config.get("datasets") or {}):
+        raise ValueError("外围行情需使用实现 get_overseas_quotes 的 Python 插件, 暂不支持通用 YAML 映射")
     out: dict = {
         "name": str(config.get("name", "")).lower(),
         "display_name": str(config.get("display_name") or config.get("name", "")),

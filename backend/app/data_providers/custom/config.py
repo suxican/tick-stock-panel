@@ -103,6 +103,8 @@ def _dataset_from_dict(raw: dict[str, Any]) -> DatasetConfig:
 
 
 def config_from_dict(raw: dict[str, Any], path: Path | None = None) -> CustomSourceConfig:
+    if "overseas" in (raw.get("datasets") or {}):
+        raise ValueError("外围行情需使用实现 get_overseas_quotes 的 Python 插件, 暂不支持通用 YAML 映射")
     datasets = {
         name: _dataset_from_dict(cfg)
         for name, cfg in (raw.get("datasets") or {}).items()

@@ -20,6 +20,17 @@
 (`get_intraday_latest`)是 Python 插件契约,见
 [plugin-development.md](./plugin-development.md)。
 
+### 市场情绪补充数据
+
+市场情绪菜单的开盘啦客户端位于 `backend/app/data_providers/kaipanla.py`，
+通过 `app.custom.kaipanla` 扩展提供只读 API。它只服务该菜单，不注册为
+`get_provider()` 的行情源，也不参与上述 YAML 配置、行情能力路由或后台落盘。
+直播分时和个股详情仍使用系统已配置的行情源。
+
+请求日期、返回数据日期及采集时间分别保留；百分比使用百分数值，市场量能
+使用万元，缺失或失败不填零。数据集、输出字段、日期归属、单位、缓存与部分
+可用状态见[市场情绪数据契约](./market-emotion.md)。
+
 ## 配置位置
 
 把 YAML 放到运行数据目录下:
@@ -383,8 +394,12 @@ cp docs/examples/custom-data-source/mock_source.yaml data/data_sources/mock_sour
   # 入口守卫会自动纠偏 UTC 特征帧, 但契约仍要求源头写对
   datetime = 北京时间墙钟 (YYYY-MM-DD HH:MM:SS)
   open / high / low / close = OHLC
-  volume = 成交量
-  amount = 成交额 (可缺省: 无法提供可靠成交额时不要映射, 前端均价线降级显示 —)
+  volume = 成交量 (手, 1手=100股)
+  amount = 成交额 (元; 可缺省: 无法提供可靠成交额时不要映射, 前端均价线降级显示 —)
+  # 下列逐行字符串可选, 仅在源接口有明确保证时映射; 缺省保持未知, 不按路由推测
+  minute_price_basis = raw (原价) / forward (前复权)
+  minute_time_grid = auction_end (独立09:30开盘点 + 09:31–11:30、13:01–15:00, 共241点)
+  # 未声明网格仍兼容一致的240根标签; 原价和时间网格声明不替代完整性/量额检查
 
 === 我的 API 文档 ===
 [把你的接口文档贴这里: URL / 请求方式 / 参数 / 返回字段说明]

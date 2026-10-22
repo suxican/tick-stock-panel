@@ -5,6 +5,7 @@ import hashlib
 import math
 import re
 from collections import deque
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ import polars as pl
 from app.services import preferences
 from app.services.ext_data import ExtConfig, ExtConfigStore
 from app.services.index_const import CORE_INDEX_NAMES as CORE_INDICES
+
 SECTOR_KINDS = {"index", "concept", "industry"}
 _VALUE_SEP = re.compile(r"[\u3001,\uff0c;\uff1b|]+")
 _NULL_VALUES = {"nan", "none", "null", "<na>", "n/a", "-"}
@@ -53,6 +55,7 @@ class SectorMonitorService:
         self._repo = repo
         self._data_dir: Path = repo.store.data_dir
         self._catalog_signature: tuple[tuple[str, int, int], ...] | None = None
+        self._catalog_read_failed = False
         self._catalog: dict[str, list[dict]] = {kind: [] for kind in SECTOR_KINDS}
         self._targets_by_key: dict[str, dict] = {}
         self._members_by_key: dict[str, set[str]] = {}
@@ -62,6 +65,23 @@ class SectorMonitorService:
     def list_targets(self) -> dict[str, list[dict]]:
         self._ensure_catalog()
         return {kind: [dict(item) for item in self._catalog[kind]] for kind in self._catalog}
+
+    def membership_snapshot(self) -> list[dict]:
+        """Detached industry/concept catalog for background consumers.
+
+        Membership is complete and independent of current quote coverage.
+        Source identity and industry hierarchy remain in every target.
+        """
+        self._ensure_catalog()
+        if self._catalog_read_failed:
+            # A partial source catalog is unsafe for cross-sector rankings.
+            # Retry it at the next background refresh even if its stat is stable.
+            self._catalog_signature = None
+            raise RuntimeError("板块成员数据读取失败")
+        return [
+            {**deepcopy(target), "members": sorted(self._members_by_key.get(target["key"], set()))}
+            for kind in ("industry", "concept") for target in self._catalog[kind]
+        ]
 
     def missing_target_keys(self, targets: list[dict]) -> list[str]:
         self._ensure_catalog()
@@ -124,6 +144,7 @@ class SectorMonitorService:
         signature = self._data_signature()
         if signature == self._catalog_signature:
             return
+        self._catalog_read_failed = False
         catalog = {kind: [] for kind in SECTOR_KINDS}
         targets_by_key: dict[str, dict] = {}
         members_by_key: dict[str, set[str]] = {}
@@ -156,15 +177,25 @@ class SectorMonitorService:
         catalog["index"].sort(key=lambda item: (not item["available"], item["symbol"]))
 
         for config in ExtConfigStore(self._data_dir).load_all():
+            # Market reports may mention concepts or selected stocks, but their
+            # rows are not a complete stock-to-sector membership denominator.
+            if config.market_level:
+                continue
+            dimension_fields = [field for field in config.fields
+                                if _dimension_kind(field.name, field.label) is not None]
+            if not dimension_fields:
+                continue
             df = self._read_ext_dataframe(config)
             if df.is_empty():
                 continue
             symbol_col = self._symbol_column(config, df)
             if not symbol_col:
+                self._catalog_read_failed = True
                 continue
-            for field in config.fields:
+            for field in dimension_fields:
                 kind = _dimension_kind(field.name, field.label)
-                if kind is None or field.name not in df.columns:
+                if field.name not in df.columns:
+                    self._catalog_read_failed = True
                     continue
                 for row in df.select([symbol_col, field.name]).iter_rows(named=True):
                     symbol = str(row.get(symbol_col) or "").strip().upper()
@@ -205,7 +236,7 @@ class SectorMonitorService:
         base = self._data_dir / "ext_data"
         paths: list[Path] = []
         for config in ExtConfigStore(self._data_dir).load_all():
-            if not any(_dimension_kind(field.name, field.label) for field in config.fields):
+            if config.market_level or not any(_dimension_kind(field.name, field.label) for field in config.fields):
                 continue
             config_dir = base / config.id
             paths.extend(config_dir.rglob("config.json"))
@@ -229,6 +260,7 @@ class SectorMonitorService:
         try:
             return pl.read_parquet(files)
         except Exception:
+            self._catalog_read_failed = True
             return pl.DataFrame()
 
     @staticmethod

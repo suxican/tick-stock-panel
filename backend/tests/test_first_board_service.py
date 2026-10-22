@@ -344,3 +344,45 @@ def test_research_rejects_concurrent_run(service):
             service.research(start=date(2026, 1, 1), end=date(2026, 1, 2))
     finally:
         service._research_lock.release()
+
+
+def test_insufficient_industry_coverage_blocks_live_buy_until_recovered(service, monkeypatch):
+    service.save_config({**service.get_config(), "require_sector_confirmation": True})
+    original = service._prepare
+    symbols = [f"{600000 + i}.SH" for i in range(100)]
+
+    def prepare(*args):
+        original(*args)
+        service._sectors = dict.fromkeys(symbols, "金融-银行")
+
+    monkeypatch.setattr(service, "_prepare", prepare)
+    for fresh_count, expected in [(3, False), (80, True), (3, False)]:
+        frame = pl.concat([quotes(symbol=symbol) for symbol in symbols[:fresh_count]])
+        service.process_snapshot(frame, NOW.date(), now=NOW)
+        row = service.snapshot()["rows"][0]
+        assert row["can_buy"] is expected
+        assert row["sector_confirmation"]["coverage"] == fresh_count / 100
+        assert row["sector_confirmation"]["member_count"] == 100
+        if not expected:
+            assert any("覆盖率" in reason for reason in row["blocked_reasons"])
+
+
+@pytest.mark.parametrize("manual_price,current_price,should_exit", [(12., 10.5, False), (8., 9.5, True)])
+def test_live_exit_and_order_use_first_board_batch_cost(service, monkeypatch, manual_price, current_price, should_exit):
+    data_dir = service.repo.store.data_dir
+    paper.create_account(data_dir, 100_000, slippage_bps=0)
+    service.save_config({**service.get_config(), "paper_account_id": "default"})
+    for day, price, source in [(date(2026, 10, 14), 10., "first_board:entry"),
+                               (date(2026, 10, 15), manual_price, "manual")]:
+        monkeypatch.setattr(paper, "cn_today", lambda day=day: day)
+        _, error = paper.create_order(data_dir, SYMBOL, "buy", qty=200, ref_price=price, source=source)
+        assert error is None
+        assert len(paper.evaluate_intraday(data_dir, {SYMBOL: price})) == 1
+    monkeypatch.setattr(paper, "cn_today", lambda: NOW.date())
+    service.process_snapshot(quotes(raw_close=current_price, close=current_price), NOW.date(), now=NOW)
+    exits = [event for event in service.events(NOW.date()) if event["event_type"] == "exit_candidate"]
+    assert bool(exits) is should_exit
+    if should_exit:
+        assert exits[0]["evidence"]["qty"] == 200
+        order = service.place_order(exits[0]["id"], "sell", now=NOW)
+        assert order["qty"] == 200 and order["status"] == "pending"

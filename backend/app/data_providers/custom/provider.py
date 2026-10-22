@@ -109,6 +109,9 @@ class GenericHTTPProvider:
     def validate(self) -> list[str]:
         errors: list[str] = []
         for dataset, cfg in self.config.datasets.items():
+            if dataset == "overseas":
+                errors.append("外围行情需使用实现 get_overseas_quotes 的 Python 插件, 暂不支持通用 YAML 映射")
+                continue
             if not cfg.url:
                 errors.append(f"{dataset}: url is required")
             required = _REQUIRED.get(dataset)
@@ -410,7 +413,8 @@ class GenericHTTPProvider:
         for col in ("open", "high", "low", "close", "volume", "amount"):
             if col in df.columns:
                 df = df.with_columns(pl.col(col).cast(pl.Float64, strict=False))
-        keep = [c for c in ("symbol", "datetime", "open", "high", "low", "close", "volume", "amount") if c in df.columns]
+        keep = [c for c in ("symbol", "datetime", "open", "high", "low", "close", "volume", "amount",
+                            "minute_price_basis", "minute_time_grid") if c in df.columns]
         return df.select(keep) if keep else pl.DataFrame()
 
     _DATETIME_STR_FORMATS = (

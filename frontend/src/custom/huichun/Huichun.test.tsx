@@ -17,7 +17,7 @@ const calls = vi.hoisted(() => ({
   extDataList: vi.fn(), extDataRows: vi.fn(),
 }))
 vi.mock('@/lib/api', () => ({ api: calls }))
-vi.mock('@/components/StockPreviewDialog', () => ({ StockPreviewDialog: ({ symbol, onClose, navList }: { symbol: string | null; onClose: () => void; navList?: { symbol: string }[] }) => symbol ? <div role="dialog" data-symbol={symbol} data-nav-symbols={navList?.map(row => row.symbol).join(',')}><button onClick={onClose}>关闭股票</button></div> : null }))
+vi.mock('@/components/StockPreviewDialog', () => ({ StockPreviewDialog: ({ symbol, onClose, navList, huichunChart, onNavigate }: { symbol: string | null; onClose: () => void; navList?: { symbol: string; name?: string }[]; huichunChart?: unknown; onNavigate?: (symbol: string, name?: string) => void }) => symbol ? <div role="dialog" data-symbol={symbol} data-nav-symbols={navList?.map(row => row.symbol).join(',')} data-chart-context={JSON.stringify(huichunChart)}><button onClick={onClose}>关闭股票</button><button onClick={() => { const next = navList?.find(row => row.symbol !== symbol); if (next) onNavigate?.(next.symbol, next.name) }}>下一只股票</button></div> : null }))
 
 function config(): HuichunConfig {
   return { schema_version: 1, revision: 1, updated_at: '2026-09-30T17:00:00+08:00',
@@ -101,6 +101,83 @@ function trackingCell(row: HTMLTableRowElement, label: string) {
   expect(index, `缺少${label}列`).toBeGreaterThanOrEqual(0)
   return row.querySelectorAll('td')[index]
 }
+function previewContext() {
+  return JSON.parse(host.querySelector('[role="dialog"]')?.getAttribute('data-chart-context') ?? 'null')
+}
+
+it('keeps current ST warnings separate from historical eligibility and explains factor isolation', async () => {
+  const state = snapshot()
+  Object.assign(state.scan!, { data_policy_version: 2 })
+  Object.assign(state.scan!.coverage, { st_filter: 'not_applied_historical_status_unknown', factor_quarantined_count: 1 })
+  Object.assign(state.scan!.candidates[0], { current_risk_warning: true, factor_status: 'no_events_unverified' })
+  calls.huichunSnapshot.mockResolvedValue(state)
+  await render()
+  expect(candidateRows()).toHaveLength(1)
+  expect(candidateRows()[0].textContent).toContain('当前风险警示')
+  expect(candidateRows()[0].textContent).toContain('复权未核验')
+  expect(host.textContent).toContain('异常日起隔离 1 只')
+  expect(host.textContent).not.toContain('旧版数据口径，请重新筛选')
+  expect(host.textContent).not.toContain('按当前名称排除 ST')
+})
+
+it('labels both legacy and event-backed computable returns as unverified', async () => {
+  const state = tracking()
+  Object.assign(state.records[0].returns[0], { factor_status: 'events_present_unverified' })
+  state.records[0].current_basis = { quote_date: '2026-10-09', status: 'ok', factor_multiplier: 1 }
+  calls.huichunTracking.mockResolvedValue(state)
+  calls.marketSnapshotForSymbols.mockResolvedValue({ as_of: '2026-10-09', rows: [{ symbol: '600000.SH', date: '2026-10-09', raw_close: 11 }] })
+  await render('tracking')
+  const row = trackingRows()[0]
+  expect(trackingCell(row, 'T+1').textContent).toContain('+2.50%')
+  expect(trackingCell(row, 'T+1').textContent).toContain('复权未核验')
+  expect(trackingCell(row, 'T+1').title).toContain('事件完整性未核验')
+  expect(trackingCell(row, '信号日至今收益率').textContent).toContain('+10.00%')
+  expect(trackingCell(row, '信号日至今收益率').textContent).toContain('复权未核验')
+})
+
+it('opens the exact candidate snapshot and changes the chart context when navigating', async () => {
+  const state = snapshot()
+  state.scan!.candidates.push({ ...state.scan!.candidates[0], id: 'candidate2', symbol: '600001.SH', name: '第二只股票', signal_date: '2026-09-29' })
+  calls.huichunSnapshot.mockResolvedValue(state)
+  calls.huichunConfig.mockResolvedValue({ ...config(), revision: 9, rules: { ...config().rules, ma_window: 20 } })
+  await render()
+  await click('测试股票')
+  expect(previewContext()).toMatchObject({ symbol: '600000.SH', as_of: '2026-09-30', signal_date: '2026-09-30', g_date: '2026-04-20', d_date: '2026-05-20', rule_revision: 1, rules: config().rules })
+  await click('下一只股票')
+  expect(previewContext()).toMatchObject({ symbol: '600001.SH', as_of: '2026-09-29', signal_date: '2026-09-29', rule_revision: 1 })
+})
+
+it('withholds returns when factor trust reports invalid even if an older calculation status is ok', async () => {
+  const state = tracking()
+  state.records[0].returns[0].factor_status = 'invalid'
+  state.records[0].current_basis = { quote_date: '2026-10-09', status: 'ok', factor_multiplier: 1, factor_status: 'invalid' }
+  calls.huichunTracking.mockResolvedValue(state)
+  calls.marketSnapshotForSymbols.mockResolvedValue({ as_of: '2026-10-09', rows: [{ symbol: '600000.SH', date: '2026-10-09', raw_close: 11 }] })
+  await render('tracking')
+  const row = trackingRows()[0]
+  expect(trackingCell(row, 'T+1').textContent).toContain('复权异常')
+  expect(trackingCell(row, 'T+1').textContent).not.toContain('+2.50%')
+  expect(trackingCell(row, '信号日至今收益率').textContent).toBe('复权异常')
+})
+
+it('uses the selected observation cutoff without inventing a confirmed cross', async () => {
+  calls.huichunSnapshot.mockResolvedValue(observationSnapshot())
+  await render('watch')
+  await click('待金叉股票')
+  expect(previewContext()).toMatchObject({ symbol: '301373.SZ', as_of: '2026-09-30', rules: config().rules })
+  expect(previewContext().signal_date).toBeUndefined()
+})
+
+it('opens a legacy tracked signal with its frozen rules without requiring a current scan', async () => {
+  const state = tracking()
+  state.records[0].rules = { ...config().rules, ma_window: 45 }
+  calls.huichunTracking.mockResolvedValue(state)
+  calls.huichunSnapshot.mockResolvedValue({ ...snapshot(), scan: null })
+  await render('tracking')
+  await click('测试股票')
+  expect(previewContext()).toMatchObject({ as_of: '2026-09-30', signal_date: '2026-09-30', rule_revision: 1, rules: { ma_window: 45 } })
+  expect(previewContext().g_date).toBeUndefined()
+})
 async function sortBy(label: string) {
   const header = host.querySelector<HTMLButtonElement>(`button[aria-label="按${label}排序"]`)
   expect(header, `缺少${label}排序按钮`).not.toBeNull()
@@ -226,7 +303,7 @@ it('retries failed tracking quotes without losing records or recomputing their r
   calls.marketSnapshotForSymbols.mockResolvedValue({ as_of: '2026-10-09', rows: [{ symbol: '600000.SH', raw_close: 11, date: '2026-10-09' }] })
   await click('重试')
   expect(trackingCell(trackingRows()[0], '现价（元）').textContent).toBe('11.002026-10-09')
-  expect(trackingCell(trackingRows()[0], '信号日至今收益率').textContent).toBe('+10.00%')
+  expect(trackingCell(trackingRows()[0], '信号日至今收益率').querySelector('span')!.textContent).toBe('+10.00%')
   expect(host.textContent).not.toContain('跟踪行情读取失败')
   expect(calls.huichunTracking).toHaveBeenCalledTimes(1)
   expect(calls.huichunRefreshTracking).not.toHaveBeenCalled()
@@ -286,7 +363,8 @@ it('calculates adjusted current returns from raw quotes and factor ratios includ
   await render('tracking')
   for (const [index, row] of trackingRows().entries()) {
     const cell = trackingCell(row, '信号日至今收益率')
-    expect(cell.textContent).toBe(cases[index].expected)
+    expect(cell.querySelector('span')!.textContent).toBe(cases[index].expected)
+    expect(cell.textContent).toContain('复权未核验')
     expect(cell.querySelector(`.${cases[index].color}`)).not.toBeNull()
     expect(trackingCell(row, '基准收盘（元）').textContent).toBe('10.00')
     expect(trackingCell(row, 'T+1').textContent).toContain('+2.50%')
@@ -355,11 +433,11 @@ it('refreshes same-day adjusted current returns but waits for a verified new-day
   calls.huichunTracking.mockResolvedValue(state)
   calls.marketSnapshotForSymbols.mockResolvedValue({ as_of: '2026-10-09', rows: [{ symbol: '600000.SH', raw_close: 10.5, date: '2026-10-09' }] })
   await render('tracking')
-  expect(trackingCell(trackingRows()[0], '信号日至今收益率').textContent).toBe('+5.00%')
+  expect(trackingCell(trackingRows()[0], '信号日至今收益率').querySelector('span')!.textContent).toBe('+5.00%')
   calls.marketSnapshotForSymbols.mockResolvedValue({ as_of: '2026-10-09', rows: [{ symbol: '600000.SH', raw_close: 11, date: '2026-10-09' }] })
   await act(async () => { await client.invalidateQueries({ queryKey: QK.marketSnapshot }) })
   await settle()
-  expect(trackingCell(trackingRows()[0], '信号日至今收益率').textContent).toBe('+10.00%')
+  expect(trackingCell(trackingRows()[0], '信号日至今收益率').querySelector('span')!.textContent).toBe('+10.00%')
   calls.marketSnapshotForSymbols.mockResolvedValue({ as_of: '2026-10-12', rows: [{ symbol: '600000.SH', raw_close: 5.5, date: '2026-10-12' }] })
   await act(async () => { await client.invalidateQueries({ queryKey: QK.marketSnapshot }) })
   await settle()
@@ -370,7 +448,7 @@ it('refreshes same-day adjusted current returns but waits for a verified new-day
   await click('刷新收益')
   await act(async () => { client.setQueryData(QK.huichunSnapshot, { ...snapshot(), job: { ...snapshot().job, id: 'refresh1', kind: 'tracking', status: 'completed' } }) })
   await settle()
-  expect(trackingCell(trackingRows()[0], '信号日至今收益率').textContent).toBe('+10.00%')
+  expect(trackingCell(trackingRows()[0], '信号日至今收益率').querySelector('span')!.textContent).toBe('+10.00%')
   expect(calls.huichunTracking).toHaveBeenCalledTimes(2)
   expect(calls.huichunScan).not.toHaveBeenCalled()
 })
@@ -421,19 +499,19 @@ it('reports API failure while preserving previous candidates', async () => {
   expect(button('开始筛选').disabled).toBe(true)
 })
 
-it('identifies legacy scans that have not excluded current ST stocks', async () => {
+it('identifies legacy scans without pretending their historical data policy is current', async () => {
   await render()
-  expect(host.textContent).toContain('本次结果尚未排除 ST、*ST，请重新筛选。')
+  expect(host.textContent).toContain('旧版数据口径，请重新筛选')
   expect(host.textContent).not.toContain('已按当前名称排除 ST、*ST：')
 })
 
-it('reports current-name ST exclusions without claiming historical eligibility', async () => {
+it('warns that legacy current-name ST exclusions cannot establish historical eligibility', async () => {
   const state = snapshot()
   Object.assign(state.scan!.coverage, { st_filter: 'current_instrument_name', st_excluded_count: 6 })
   calls.huichunSnapshot.mockResolvedValue(state)
   await render()
-  expect(host.textContent).toContain('已按当前名称排除 ST、*ST：6 只')
-  expect(host.textContent).not.toContain('本次结果尚未排除 ST、*ST')
+  expect(host.textContent).toContain('旧版数据口径，请重新筛选')
+  expect(host.textContent).not.toContain('已按当前名称排除 ST、*ST：6 只')
   expect(host.textContent).toContain('历史 ST、停牌及可成交条件尚未全部核验')
 })
 

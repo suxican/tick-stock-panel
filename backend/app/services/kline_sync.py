@@ -938,16 +938,22 @@ def _write_minute_partition(df: pl.DataFrame, minute_dir) -> int:
             existing = pl.read_parquet(out)
             if "datetime" in existing.columns:
                 existing = existing.filter(pl.col("datetime").is_not_null())
+            if "minute_price_basis" not in existing.columns and minute_adjust.minute_basis_is_raw(minute_dir.parent):
+                # Preserve an existing migration's evidence before schema union.
+                # Never certify incoming unknown rows or fill already-null claims.
+                existing = existing.with_columns(pl.lit("raw").alias("minute_price_basis"))
             new_rows = day_df.drop("_trade_date")
             # 只对本次触及的 symbol 合并去重, 未触及行原样保留: 单股补齐时避免
             # 为合并几行数据把全市场分区整体 unique 的写放大 (issue #305)。
             touched = new_rows["symbol"].unique().to_list()
             same = existing.filter(pl.col("symbol").is_in(touched))
             other = existing.filter(~pl.col("symbol").is_in(touched))
-            merged = pl.concat([same, new_rows]).unique(
+            # Optional per-row minute evidence travels with the new OHLC row.
+            # A legacy writer replacing a key must clear, not inherit, its claim.
+            merged = pl.concat([same, new_rows], how="diagonal_relaxed").unique(
                 subset=["symbol", "datetime"], keep="last",
             )
-            day_df = pl.concat([other, merged])
+            day_df = pl.concat([other, merged], how="diagonal_relaxed")
         else:
             day_df = day_df.drop("_trade_date")
         day_df = day_df.sort("symbol", "datetime")
@@ -1304,7 +1310,7 @@ def fetch_intraday_full_market_burst(
                 chunk, count=count, as_dataframe=False, show_progress=False,
                 batch_size=len(chunk),
             )
-            seg = _normalize_minute(_compact_klines_to_df(raw))
+            seg = _normalize_intraday_evidence(_compact_klines_to_df(raw))
             return ([seg] if not seg.is_empty() else [], None)
         except Exception as e:
             return ([], e)
@@ -1370,7 +1376,25 @@ def fetch_intraday_universe_increment(
     seg = _compact_klines_to_df(raw)
     if seg.is_empty():
         return (pl.DataFrame(), 0)
-    return (_normalize_minute(seg), 1)
+    return (_normalize_intraday_evidence(seg), 1)
+
+
+def _normalize_intraday_evidence(df: pl.DataFrame) -> pl.DataFrame:
+    """Record the actual current-session endpoint, never infer old file provenance.
+
+    TickFlow intraday has no historical adjustment option. Its A-share grid
+    includes the separate 09:30 opening observation and 09:31..11:30 /
+    13:01..15:00 observations. Consumers still validate every completed row and
+    use a strict earlier-than-current-minute cutoff; the grid is not a claim
+    about precise exchange bar finalization time.
+    """
+    normalized = _normalize_minute(df)
+    if normalized.is_empty():
+        return normalized
+    return normalized.with_columns(
+        pl.lit("raw").alias("minute_price_basis"),
+        pl.lit("auction_end").alias("minute_time_grid"),
+    )
 
 
 def _resolve_full_minute_provider(

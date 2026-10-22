@@ -12,6 +12,7 @@ import {
   Eye,
   EyeOff,
   FileWarning,
+  Globe2,
   KeyRound,
   Landmark,
   ListChecks,
@@ -54,6 +55,7 @@ const DATASET_LABEL: Record<string, string> = {
   depth5: '五档',
   financial: '财务',
   full_minute: '全量分钟',
+  overseas: '海外市场',
 }
 
 /** 能力图标 (纯展示; 能力清单本身由后端注册表驱动) */
@@ -64,6 +66,7 @@ const CAP_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
   full_minute: Zap,
   adj_factor: Scale,
   financial: Landmark,
+  overseas: Globe2,
 }
 
 /** TickFlow 档位要求文本: none → 全档位, 其余 → starter+ 形式 */
@@ -567,7 +570,7 @@ function CapabilityChips({ caps, servingSet, isTickFlow, paid = false }: {
     <div className="flex flex-wrap gap-1">
       {caps.map(cap => {
         const servingNow = servingSet.has(cap.id)
-        const locked = isTickFlow && !cap.tf_available
+        const locked = isTickFlow && cap.tf_tier != null && !cap.tf_available
         const cls = servingNow
           ? 'bg-accent/15 text-accent'
           : locked
@@ -576,7 +579,7 @@ function CapabilityChips({ caps, servingSet, isTickFlow, paid = false }: {
         const title = servingNow
           ? `正在提供「${cap.label}」${paid ? ' · 积分计费' : ''}`
           : locked
-            ? `TickFlow 需 ${tierReqText(cap.tf_tier)} · 当前档位未解锁`
+            ? `TickFlow 需 ${tierReqText(cap.tf_tier!)} · 当前档位未解锁`
             : `已适配「${cap.label}」${paid ? ' · 积分计费' : ''}`
         return (
           <span
@@ -636,6 +639,7 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
     realtime: prefs.data?.realtime_data_provider || 'tickflow',
     depth5: prefs.data?.depth5_data_provider || 'tickflow',
     financial: prefs.data?.financial_data_provider || 'tickflow',
+    overseas: prefs.data?.overseas_data_provider || 'yahoo_overseas',
   }
   const servingDatasets = (name: string) =>
     Object.entries(effProvider).filter(([, v]) => v === name).map(([k]) => k)
@@ -786,9 +790,9 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
             const installing = installMut.isPending && installMut.variables === item.name
             const uninstalling = uninstallMut.isPending && uninstallMut.variables === item.name
             const declared = new Set(item.datasets)
-            // TickFlow 展示注册表全量能力 (含档位锁定态); 其余源按声明过滤
+            // TickFlow 只展示声明了档位的能力; 外围行情由独立插件提供。
             const chipCaps = isTf
-              ? matrixCaps
+              ? matrixCaps.filter(c => c.tf_tier != null)
               : matrixCaps.filter(c => declared.has(c.id))
             return (
               <div
@@ -1124,7 +1128,7 @@ function PluginDetail({ plugin, isActive, matrixCaps, servingSet }: {
 /** TickFlow 详情: 介绍 + 能力档位表 + Key/可用功能左右两栏。
  *  检测档位集群 (档位徽章 + ? 说明 + 重新检测 + 可用功能悬停) 挂在 API Key 标题行右侧。 */
 function TickFlowDetail({ active, matrix }: { active: boolean; matrix?: CapabilityMatrix }) {
-  const caps = matrix?.capabilities ?? []
+  const caps = (matrix?.capabilities ?? []).filter((cap): cap is CapabilityRoute & { tf_tier: string } => cap.tf_tier != null)
   const tier = matrix?.tickflow_tier
   const { data: tfCaps } = useCapabilities()
   const capEntries = tfCaps ? Object.entries(tfCaps.capabilities) : []
@@ -1208,7 +1212,7 @@ function TickFlowDetail({ active, matrix }: { active: boolean; matrix?: Capabili
           </div>
           <p className="text-xs text-secondary mt-1.5 leading-relaxed">
             默认数据源,每个能力所需订阅档位见下表 — 当前档位未解锁的能力不会出现在上方「能力路由」的选项里。
-            未单独设置的能力默认由 TickFlow 提供;也可在数据源区接入插件替换任意能力。
+            下表能力默认由 TickFlow 提供；海外行情由独立数据源提供，可在上方能力路由中查看与切换。
           </p>
         </div>
       </div>

@@ -9,6 +9,7 @@ import { StockIntradayChart } from '@/components/StockIntradayChart'
 import { financialMetricsQueryOptions, useFinancialMetrics } from '@/lib/useFinancials'
 import { useCapabilities } from '@/lib/useSharedQueries'
 import { scheduleNeighborPrefetch } from '@/lib/neighborPrefetch'
+import { stockChartQueryOptions, type HuichunChartContext } from '@/lib/huichun-chart'
 import type { ChartMarker, ChartPriceLine, ChartRange } from '@/components/EChartsCandlestick'
 import {
   loadInfoFields,
@@ -53,6 +54,7 @@ interface Props {
   visibleBars?: number | 'all'
   /** 加入自选日 (北京时间 YYYY-MM-DD); 有值时日K主图绘制「自选」竖虚线 */
   addedDate?: string | null
+  huichunChart?: HuichunChartContext
 }
 
 export { getDefaultRange }
@@ -82,6 +84,7 @@ export function StockPanel({
   dailyKlineFlex = 'flex-1',
   visibleBars,
   addedDate,
+  huichunChart,
 }: Props) {
   const [linkedPrice, setLinkedPrice] = useState<number | null>(null)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
@@ -114,12 +117,13 @@ export function StockPanel({
   // 日K查询由本组件持有 (与 StockDailyKChart 共享同一 cache key/配置, 只发一次请求)。
   // 信息条直接读 query data: 切股到已预取邻股时首帧即有数据, 配合 StockInfoBar 加载态占位,
   // 弹窗整体高度在切换瞬间不塌陷 (不抖动)。
-  const kline = useQuery({ ...klineDailyQueryOptions(symbol, dateRange, extColumns), enabled: !!symbol })
-  const rawRows: KlineRow[] = kline.data?.rows ?? []
+  const kline = useQuery(stockChartQueryOptions(symbol, dateRange, extColumns, huichunChart))
+  const contextUnavailable = !!huichunChart && (huichunChart.symbol !== symbol || dateRange.start > huichunChart.as_of)
+  const rawRows: KlineRow[] = contextUnavailable ? [] : kline.data?.rows ?? []
   // OHLC 视图用于日期选中/昨收价推导 (与图表侧同口径)
   const rows = useMemo(() => toOHLC(rawRows), [rawRows])
-  const stockInfo = kline.data?.stock_info
-  const name = kline.data?.name
+  const stockInfo = contextUnavailable ? undefined : kline.data?.stock_info
+  const name = contextUnavailable ? undefined : kline.data?.name
 
   const handleDateClick = useCallback((date: string) => {
     setSelectedDate(date)
@@ -134,7 +138,8 @@ export function StockPanel({
   const qc = useQueryClient()
   const prefetchKey = prefetchSymbols?.join(',') ?? ''
   useEffect(() => {
-    if (!symbol || !prefetchKey || !kline.isSuccess || kline.isPlaceholderData) return
+    // 邻股尚未选定形态日与规则，不能沿用当前回春上下文预取。
+    if (huichunChart || !symbol || !prefetchKey || !kline.isSuccess || kline.isPlaceholderData) return
     const tasks: Array<() => Promise<unknown>> = []
     for (const s of new Set(prefetchKey.split(',').filter(Boolean))) {
       if (s === symbol) continue
@@ -155,7 +160,7 @@ export function StockPanel({
       tasks.push(() => qc.prefetchQuery({ ...klineMinuteQueryOptions(s, undefined, true), staleTime: 30_000 }))
     }
     return scheduleNeighborPrefetch(qc, symbol, tasks)
-  }, [prefetchKey, symbol, dateRange, extColumns, hasFinanceField, hasFinancialCap, intradayDays, qc, kline.isSuccess, kline.isPlaceholderData])
+  }, [prefetchKey, symbol, dateRange, extColumns, hasFinanceField, hasFinancialCap, intradayDays, qc, kline.isSuccess, kline.isPlaceholderData, huichunChart])
 
   // symbol 变化时重置分时相关状态，避免切股后残留旧日期。
   // 日K信息直接读 query data (切股到已预取邻股首帧即有), 无需清空或门控。
@@ -222,6 +227,7 @@ export function StockPanel({
           visibleBars={visibleBars ?? (showIntraday ? 40 : 60)}
           extColumns={extColumns}
           addedDate={addedDate}
+          huichunChart={huichunChart}
         />
 
         {showIntraday && selectedDate && !intradayDismissed && (

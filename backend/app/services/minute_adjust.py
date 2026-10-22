@@ -157,9 +157,15 @@ def apply_minute_adjustment(
         df.with_columns(pl.col("datetime").dt.date().alias("_d"))
         .join(pairs, on=["symbol", "_d"], how="left")
         .with_columns([pl.col(c) * pl.col("_ratio").fill_null(1.0) for c in cols])
-        .drop(["_d", "_ratio"])
     )
-    return out
+    if "minute_price_basis" in out.columns:
+        # Evidence describes the returned price scale, not only disk provenance.
+        out = out.with_columns(
+            pl.when((pl.col("_ratio") - 1.0).abs() > 1e-12)
+            .then(pl.lit("forward")).otherwise(pl.col("minute_price_basis"))
+            .alias("minute_price_basis")
+        )
+    return out.drop(["_d", "_ratio"])
 
 
 # ================================================================

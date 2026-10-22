@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.api.first_board import router
 from app.services.first_board import FirstBoardService
+from app.services.first_board_context import evaluate_sectors
 
 
 @pytest.fixture
@@ -65,3 +66,23 @@ def test_missing_service_returns_explicit_unavailable():
     response = TestClient(app).get("/api/first-board/config")
     assert response.status_code == 503
     assert "未就绪" in response.json()["detail"]
+
+
+def test_snapshot_exposes_industry_coverage_and_block_reason(client):
+    members = {f"{600000 + i}.SH": "金融-银行" for i in range(100)}
+    quotes = pl.DataFrame({"symbol": list(members)[:3], "change_pct": [.08, .06, .01]})
+    sector = evaluate_sectors(quotes, members)["金融-银行"]
+    service = client.app.state.first_board_service
+    service._snapshot["rows"] = [{
+        "symbol": "600000.SH", "sector_confirmation": sector,
+        "can_buy": False, "event_id": None, "suggested_amount": None,
+        "blocked_reasons": [sector["reason"]],
+    }]
+    response = client.get("/api/first-board/snapshot")
+    assert response.status_code == 200
+    row = response.json()["rows"][0]
+    assert row["sector_confirmation"]["member_count"] == 100
+    assert row["sector_confirmation"]["count"] == 3
+    assert row["sector_confirmation"]["coverage"] == .03
+    assert row["sector_confirmation"]["confirmed"] is False
+    assert "覆盖率" in row["blocked_reasons"][0]

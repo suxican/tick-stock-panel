@@ -39,6 +39,13 @@ def test_spec_declares_builtin_plugin_tdx():
     assert '"plugins" / "tdxquant" / "plugin.yaml"' in SPEC_CODE  # 源路径必须指向现存目录
 
 
+def test_spec_declares_market_game_overseas_plugin():
+    """The default overseas route must remain discoverable in desktop builds."""
+    assert "app.plugins.yahoo_overseas.provider" in SPEC_CODE
+    assert '"plugins" / "yahoo_overseas" / "plugin.yaml"' in SPEC_CODE
+    assert '"app/plugins/yahoo_overseas"' in SPEC_CODE
+
+
 def test_spec_includes_huichun_calendar_resource():
     """收益跟踪必须使用随包日历, 不能依赖开发者未入库的 docs 文件。"""
     assert '"services" / "huichun_resources"' in SPEC_CODE

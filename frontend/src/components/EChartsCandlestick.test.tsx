@@ -113,3 +113,19 @@ it('切股后鼠标未离开图表, 竖虚线重新命中即恢复「至今/周�
   await act(async () => { surface.dispatchEvent(new MouseEvent('mouseleave')) })
   expect(host.textContent).not.toContain('至今')
 })
+
+it('专用指标参数同时用于MACD图例和趋势均线标签，普通参数仍可恢复', async () => {
+  const data = rows(10).map(row => ({ ...row, ma60: 9, macd_dif: .2, macd_dea: .1, macd_hist: .2 }))
+  const dedicated = { macdParameters: [10, 20, 9] as const, trendMaPeriod: 90 }
+  await act(async () => root.render(<EChartsCandlestick data={data} activeIndicators={['macd']} {...dedicated} />))
+  let option = chart.setOption.mock.calls.at(-1)?.[0] as any
+  expect(option.series.some((series: any) => series.name === 'MA90')).toBe(true)
+  expect(option.graphic.find((item: any) => item.id === 'sub-label-macd').style.text).toBe('MACD(10/20/9)')
+  await hoverCandle(30)
+  expect(host.textContent).toContain('MA90:')
+  expect(host.textContent).not.toContain('MA60:')
+  await act(async () => root.render(<EChartsCandlestick data={data} activeIndicators={['macd']} />))
+  option = chart.setOption.mock.calls.at(-1)?.[0] as any
+  expect(option.series.some((series: any) => series.name === 'MA60')).toBe(true)
+  expect(option.graphic.find((item: any) => item.id === 'sub-label-macd').style.text).toBe('MACD')
+})
