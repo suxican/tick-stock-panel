@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type FirstBoardComparison, type FirstBoardConfig, type FirstBoardResearch, type FirstBoardRules, type FirstBoardSummary } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
+import { TradeValidationPanel } from './TradeValidationPanel'
 import { beijingDay, buttonClass, ErrorNotice, inputClass, LoadingRows, money, Notice, panelClass, patternLabels, pct, stamp } from './shared'
 
 function SummaryTable({ rows }: { rows: { label: string; summary: FirstBoardSummary }[] }) {
@@ -12,7 +13,7 @@ function Limitations({ items }: { items: string[] }) {
   return <details className="text-xs text-secondary"><summary className="cursor-pointer py-2">数据覆盖与解释边界</summary><ul className="ml-4 list-disc space-y-2 leading-relaxed">{items.map(item => <li key={item}>{item}</li>)}</ul></details>
 }
 
-export function ResearchPanel({ config, versions, onOpenStock, onLoadRules }: {
+function DailyResearchPanel({ config, versions, onOpenStock, onLoadRules }: {
   config: FirstBoardConfig; versions: FirstBoardConfig[]; onOpenStock: (symbol: string, name: string) => void; onLoadRules: (rules: FirstBoardRules) => void
 }) {
   const client = useQueryClient()
@@ -48,5 +49,16 @@ export function ResearchPanel({ config, versions, onOpenStock, onLoadRules }: {
     </section>}
     {comparison && <section className={`${panelClass} space-y-4`}><h2 className="text-sm font-semibold">训练与留出验证</h2><div className="flex flex-wrap gap-x-8 gap-y-2 text-xs text-secondary"><span>训练：{comparison.train.sessions[0] ?? '—'} 至 {comparison.train.sessions.at(-1) ?? '—'}（{comparison.train.session_count} 日）</span><span>验证：{comparison.validation.sessions[0] ?? '—'} 至 {comparison.validation.sessions.at(-1) ?? '—'}（{comparison.validation.session_count} 日）</span></div><div className="overflow-x-auto"><table className="w-full min-w-[680px] text-left text-xs" aria-label="规则比较"><thead><tr className="text-secondary">{['实验规则', '训练封板率 / 有效样本', '验证封板率 / 有效样本', '选择情况', '操作'].map(label => <th key={label} className="px-3 py-2 font-normal first:pl-0">{label}</th>)}</tr></thead><tbody>{comparison.variants.map(variant => <tr key={variant.id} className="border-t border-border"><th className="py-3 pr-3 font-medium">{variant.label}</th><td className="px-3 py-3 tabular-nums">{pct(variant.train.seal_rate)} / {variant.train.seal_observed}</td><td className="px-3 py-3 tabular-nums">{pct(variant.validation.seal_rate)} / {variant.validation.seal_observed}</td><td className="px-3 py-3">{variant.id === comparison.training_selected_id ? '训练选中' : '未选中'}</td><td className="px-3 py-3"><button className={buttonClass} onClick={() => onLoadRules(variant.rules)}>载入草稿审阅</button></td></tr>)}</tbody></table></div><Notice>{comparison.recommendation_reason}。规则尚未自动应用。</Notice><p className="text-xs text-secondary">最低有效样本：训练 {comparison.minimum_samples.train}，验证 {comparison.minimum_samples.validation}。每次重新试验都会使用验证区间，反复调参仍可能过拟合，应保留后续新数据观察。</p><Limitations items={comparison.limitations} /></section>}
     <section className={panelClass}><h2 className="mb-3 text-sm font-semibold">已保存的研究记录</h2><ErrorNotice error={runs.error} retry={() => void runs.refetch()} />{runs.isLoading ? <LoadingRows /> : runs.data?.runs.length ? <ul className="divide-y divide-border">{runs.data.runs.map(run => <li key={run.id} className="flex flex-wrap items-center justify-between gap-3 py-3 text-xs"><span>{'variants' in run.result ? '规则比较' : '日线观察'} · {stamp(run.created_at)}</span><button className={buttonClass} disabled={busy} onClick={() => { setResult(run.result); research.reset(); compare.reset() }}>查看结果</button></li>)}</ul> : <p className="text-sm text-secondary">研究结果自动保存，这里显示最近 10 次，便于复核。</p>}</section>
+  </div>
+}
+
+export function ResearchPanel(props: Parameters<typeof DailyResearchPanel>[0]) {
+  const [view, setView] = useState<'daily' | 'trade'>('daily')
+  return <div className="min-w-0 space-y-4">
+    <div className="flex flex-wrap gap-2" aria-label="验证证据类型">
+      <button className={`${buttonClass} aria-pressed:border-accent aria-pressed:bg-accent/10 aria-pressed:text-accent`} aria-pressed={view === 'daily'} onClick={() => setView('daily')}>日线形态观察</button>
+      <button className={`${buttonClass} aria-pressed:border-accent aria-pressed:bg-accent/10 aria-pressed:text-accent`} aria-pressed={view === 'trade'} onClick={() => setView('trade')}>交易链验证</button>
+    </div>
+    {view === 'daily' ? <DailyResearchPanel {...props} /> : <TradeValidationPanel config={props.config} versions={props.versions} onOpenStock={props.onOpenStock} />}
   </div>
 }

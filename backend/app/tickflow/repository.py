@@ -1617,6 +1617,78 @@ class KlineRepository:
         # 回退 scan_parquet
         return self._scan_daily_batch(symbols, start, end, columns)
 
+    def get_execution_daily_batch(
+        self, symbols: list[str], start: date, end: date, *,
+        sessions: list[date], name_history: pl.DataFrame,
+    ) -> pl.DataFrame:
+        """Read stable historical execution facts without using live caches.
+
+        Runtime limit columns are not stored in enriched Parquet. Rebuild only
+        those columns from a bounded warmup, dated names and listing facts;
+        today's undated ST status must never be applied to historical rows.
+        This method does not publish caches or write source files.
+        """
+        from datetime import timedelta
+
+        from app.indicators.pipeline import compute_limit_signals
+        from app.price_limits import polars_is_risk_warning_name
+
+        columns = ["symbol", "date", "close", "raw_close"]
+        df = self._scan_daily_batch(symbols, start - timedelta(days=32), end, columns)
+        if df.is_empty():
+            return df
+        if df.select(pl.struct("symbol", "date").is_duplicated().any()).item():
+            raise ValueError("duplicate execution daily rows")
+        instruments = self.get_instruments()
+        if "symbol" not in instruments.columns:
+            instruments = pl.DataFrame(schema={"symbol": pl.String})
+        instruments = instruments.filter(pl.col("symbol").is_in(symbols))
+        names = name_history.select("symbol", "date", "name")
+        # The instrument_sync contract stamps as_of. Older undated dimensions
+        # supply listing dates only; they are not historical name evidence.
+        if {"as_of", "name"}.issubset(instruments.columns):
+            dated = instruments.select("symbol", pl.col("as_of").cast(pl.Date, strict=False).alias("date"), "name")
+            names = pl.concat([names, dated], how="vertical_relaxed")
+        names = names.filter(pl.col("name").is_not_null() & (pl.col("name").str.strip_chars() != ""))
+        names = names.group_by("symbol", "date").agg(
+            pl.when(pl.col("name").n_unique() == 1)
+            .then(polars_is_risk_warning_name(pl.col("name").first()))
+            .otherwise(None).alias("_is_st")
+        )
+        listing = instruments.select(
+            "symbol", pl.col("listing_date").cast(pl.Date, strict=False)
+            if "listing_date" in instruments.columns else pl.lit(None, dtype=pl.Date).alias("listing_date"),
+        )
+        if listing.select(pl.col("symbol").is_duplicated().any()).item():
+            raise ValueError("duplicate execution instrument rows")
+        calendar = pl.DataFrame({"date": sessions, "_expected_previous": [None, *sessions[:-1]]},
+                                schema={"date": pl.Date, "_expected_previous": pl.Date})
+        df = df.with_columns(
+            pl.col("raw_close").shift(1).over("symbol").alias("raw_prev_close"),
+            pl.col("date").shift(1).over("symbol").alias("_previous_date"),
+            (pl.col("close") / pl.col("raw_close")).alias("_factor"),
+        ).with_columns(pl.col("_factor").shift(1).over("symbol").alias("_previous_factor"))
+        df = df.join(calendar, on="date", how="left").join(names, on=["symbol", "date"], how="left")
+        df = df.join(listing, on="symbol", how="left").with_columns(
+            ((pl.col("_previous_date") == pl.col("_expected_previous"))
+             & pl.col("_is_st").is_not_null() & pl.col("listing_date").is_not_null()
+             & (pl.col("listing_date") <= pl.col("date"))
+             & ((pl.col("_factor") - pl.col("_previous_factor")).abs() <= 1e-6))
+            .fill_null(False).alias("_execution_known")
+        ).drop("listing_date")
+        # Row-specific _is_st is retained by the existing pipeline when its
+        # instrument input deliberately contains no latest-name column.
+        df = compute_limit_signals(df, listing, needed={"limit_up_price", "limit_down_price"})
+        df = df.with_columns(
+            *[pl.when(pl.col("_execution_known")).then(pl.col(c)).otherwise(None).alias(c)
+             for c in ("limit_up_price", "limit_down_price")],
+            pl.when(pl.col("_previous_date") == pl.col("_expected_previous"))
+            .then(pl.col("raw_prev_close")).otherwise(None).alias("raw_prev_close"),
+        )
+        return df.filter(pl.col("date").is_between(start, end)).select(
+            *columns, "raw_prev_close", "limit_up_price", "limit_down_price",
+        ).sort(["symbol", "date"])
+
     def get_index_daily(
         self,
         symbol: str,
@@ -1820,6 +1892,8 @@ class KlineRepository:
         symbols: list[str],
         dates: list[date],
         asset_type: str = "stock",
+        *,
+        raw: bool = False,
     ) -> pl.DataFrame:
         """按日期列表精确读取分钟K分区文件 (分钟K精确回测用)。
 
@@ -1830,6 +1904,7 @@ class KlineRepository:
 
         缺失的日期分区直接跳过 (该日无分钟K数据)。
         返回基础八列, 并保留存在的 minute_price_basis / minute_time_grid。
+        raw=True 仅跳过读取时复权投影, 不为未知存量数据声明原价。
         """
         if not symbols or not dates:
             return pl.DataFrame()
@@ -1855,7 +1930,7 @@ class KlineRepository:
                 .sort(["symbol", "datetime"]),
                 streaming=True,
             )
-            return self._maybe_adjust_minute(df, asset_type)
+            return df if raw else self._maybe_adjust_minute(df, asset_type)
         except Exception as e:  # noqa: BLE001
             logger.warning("分钟K按日期查询失败: %s", e)
             return pl.DataFrame()

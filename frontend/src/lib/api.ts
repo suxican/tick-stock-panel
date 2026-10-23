@@ -2770,6 +2770,10 @@ export const api = {
     method: 'POST', body: JSON.stringify(body), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, quiet: true,
   }),
   firstBoardResearchRuns: () => request<{ runs: FirstBoardResearchRun[] }>('/api/first-board/research-runs'),
+  firstBoardTradeValidation: (body: FirstBoardTradeValidationRequest) => request<FirstBoardTradeValidation>('/api/first-board/trade-validation', {
+    method: 'POST', body: JSON.stringify(body), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, quiet: true,
+  }),
+  firstBoardTradeValidationRuns: () => request<{ runs: FirstBoardTradeValidationRun[] }>('/api/first-board/trade-validation-runs'),
   firstBoardPaperOrder: (body: { event_id: string; side: 'buy' | 'sell'; amount?: number; qty?: number }) =>
     request<{ order: PaperOrder }>('/api/first-board/paper-order', { method: 'POST', body: JSON.stringify(body), quiet: true }),
   health: () => request<{ status: string; version: string; mode: string }>('/health'),
@@ -5329,6 +5333,93 @@ export interface FirstBoardResearchRun {
   created_at: string
   kind: 'research' | 'compare'
   result: FirstBoardResearch | FirstBoardComparison
+}
+
+/** 所有比例采用小数制；slippage_bps 采用基点，amount 采用元。 */
+export interface FirstBoardExecutionOptions {
+  amount: number
+  commission_pct: number
+  stamp_tax_pct: number
+  slippage_bps: number
+  participation_rate: number
+  entry_window_minutes: number
+  max_exit_sessions: number
+}
+export interface FirstBoardTradeValidationRequest {
+  mode: 'replay' | 'paper'
+  start: string
+  end: string
+  revision?: number
+  account_id?: string
+  options?: FirstBoardExecutionOptions
+}
+interface FirstBoardValidationBase {
+  id: string
+  created_at: string
+  request: { start: string; end: string; revision: number; account_id: string | null; options: FirstBoardExecutionOptions | null; through: string }
+  limitations: string[]
+}
+export interface FirstBoardPaperValidation extends FirstBoardValidationBase {
+  kind: 'paper'
+  status: 'ready' | 'incomplete' | 'unavailable' | 'error'
+  reason: string
+  account_id: string | null
+  coverage: {
+    signal_count: number; displayed_count: number; detail_limit: number; ledger_order_count: number; ledger_fill_count: number
+    attributable_count: number; unknown_count: number; legacy_fee_default_count: number; truncated: boolean
+  }
+  summary: {
+    submitted_signals: number; filled_signals: number; closed_signals: number; open_signals: number
+    partially_closed_signals: number; unfilled_signals: number; unsubmitted_signals: number; unknown_signals: number
+    realized_net_pnl: number | null; closed_net_pnl: number | null; closed_win_rate: number | null; closed_mean_net_return: number | null
+  }
+  trades: {
+    signal_id: string; symbol: string; signal_at: string | null; revision: number
+    status: 'not_ordered' | 'pending' | 'cancelled' | 'expired' | 'open' | 'partially_closed' | 'closed' | 'evidence_missing'
+    reason: string; orders: Record<string, unknown>[]; fills: Record<string, unknown>[]; exits: Record<string, unknown>[]
+    remaining_qty: number | null; realized_net_pnl: number | null; closed_net_return: number | null
+  }[]
+  fingerprint: string | null
+}
+export interface FirstBoardExecutionSummary {
+  signals: number; closed: number; no_fill: number; unverifiable: number; open_position: number; win_count: number
+  net_return_mean: number | null; gross_return_mean: number | null; win_rate: number | null; net_pnl_sum: number | null
+}
+export interface FirstBoardReplayValidation extends FirstBoardValidationBase {
+  kind: 'replay'
+  schema_version: 1
+  mode: 'recorded_execution'
+  status: 'modelled' | 'insufficient_evidence' | 'no_signals'
+  model: {
+    id: string; label: string; price_proxy: 'later_complete_minute_close'; signal_source: 'recorded_can_buy'
+    options: FirstBoardExecutionOptions
+  }
+  coverage: {
+    sample_count: number; stock_days: number; eligible_stock_days: number; negative_stock_days: number
+    unknown_stock_days: number; signal_count: number; calendar_available: boolean; minute_days_read: number
+  }
+  summary: FirstBoardExecutionSummary
+  by_group: Record<string, FirstBoardExecutionSummary>
+  trades: {
+    signal_id: string; symbol: string; name: string | null; date: string; revision: number; patterns: string[]
+    group: 'S0F0' | 'S1F0' | 'S0F1' | 'S1F1' | 'unknown'
+    signal_at: string; order_at: string | null; entry_at: string | null; exit_signal_at: string | null; exit_order_at: string | null; exit_at: string | null
+    entry_bar_at?: string | null; exit_signal_bar_at?: string | null; exit_bar_at?: string | null
+    qty: number | null; entry_raw_price: number | null; entry_price: number | null; exit_raw_price: number | null; exit_price: number | null
+    buy_fee: number | null; sell_fee: number | null; entry_cost: number | null; exit_proceeds: number | null
+    gross_return: number | null; net_return: number | null; net_pnl: number | null
+    status: 'no_fill' | 'unverifiable' | 'open_position' | 'closed'; reasons: string[]
+  }[]
+  total_trades: number
+  trades_truncated: boolean
+  fingerprint: string
+}
+export type FirstBoardTradeValidation = FirstBoardReplayValidation | FirstBoardPaperValidation
+export interface FirstBoardTradeValidationRun {
+  id: string
+  created_at: string
+  kind: 'replay' | 'paper'
+  result: FirstBoardTradeValidation
 }
 
 /** 回春 A0 的比例字段均为小数制；日线观察收益按信号日收盘价计算。 */

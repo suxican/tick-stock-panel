@@ -276,3 +276,17 @@ class FirstBoardObservationStore:
                 index[path.name] = sample["observed_at"]
             return {"status": status, "last_sample_at": max(index.values(), default=None),
                     "sample_count": len(index)}
+
+    def iter_samples(self, start: date, end: date, revision: int):
+        """Read immutable samples in time order; never populate or repair files."""
+        if (type(start) is not date or type(end) is not date or start > end
+                or (end - start).days >= 92 or type(revision) is not int or revision < 0):
+            raise ValueError("观察读取需要有效规则版本及不超过92个自然日的区间")
+        for offset in range((end - start).days + 1):
+            day = (start + timedelta(days=offset)).isoformat()
+            directory = self._path(day, str(revision))
+            paths = list(islice(directory.glob("*.json.gz"), _MAX_SAMPLES_PER_DAY + 1))
+            if len(paths) > _MAX_SAMPLES_PER_DAY:
+                raise ValueError("首板研究采样目录超出单日锚点数量")
+            for path in sorted(paths):
+                yield self._sample(self._path(day, str(revision), path.name), day, revision)

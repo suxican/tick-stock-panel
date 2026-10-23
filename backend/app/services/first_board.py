@@ -784,6 +784,7 @@ class FirstBoardService:
             "pattern_label": row["pattern_label"], "state": row["state"], "price": row.get("price"),
             "change_pct": row.get("change_pct"), "revision": config.revision,
             "rules": config.rules.model_dump(mode="json"), "evidence": evidence,
+            "config": config.model_dump(mode="json"),
             "blocked_reasons": row.get("blocked_reasons", []), "quote_time": row.get("quote_time"),
             "signals": [], "severity": "warn" if event_type == "exit_candidate" else "info",
             "message": f"首板·{row['pattern_label']} {row['name']}: {label}。{'; '.join(reasons)}",
@@ -961,3 +962,109 @@ class FirstBoardService:
             return runs
         except (ValueError, OSError, TypeError) as exc:
             raise ValueError("首板研究记录损坏, 已保留原文件") from exc
+
+    def _validation_path(self, *parts: str) -> Path:
+        """Fixed service-owned paths; reports must not follow redirected evidence."""
+        from app.services.first_board_observations import _path_identity
+
+        path = self.root.joinpath(*parts)
+        if path.is_symlink() or not _path_identity(path.resolve()).is_relative_to(_path_identity(self.root.resolve())):
+            raise ValueError("交易验证路径超出首板数据目录")
+        return path
+
+    def trade_validation(self, *, mode: str, start: date, end: date, revision: int | None = None,
+                         account_id: str | None = None, options=None) -> dict:
+        """Explicit bounded research, never called by quote callbacks or order execution."""
+        if not self._research_lock.acquire(blocking=False):
+            raise ValueError("首板研究正在运行, 请等待当前任务完成")
+        try:
+            now = _beijing(_now())
+            if mode not in {"replay", "paper"}:
+                raise ValueError("交易验证模式无效")
+            if type(start) is not date or type(end) is not date or start > end or (end - start).days >= 92:
+                raise ValueError("交易验证须为有效日期区间, 每次最多 92 个自然日")
+            completed = now.date() - timedelta(days=1)
+            if end > (completed if mode == "replay" else now.date()):
+                raise ValueError("成交回放只接受已完成日期, 模拟盘验证不能使用未来日期")
+            with self._lock:
+                selected_revision = self._config.revision if revision is None else revision
+                selected = next((copy.deepcopy(item) for item in self._versions
+                                 if item["revision"] == selected_revision), None)
+            if type(selected_revision) is not int or selected is None:
+                raise ValueError("所选首板规则版本不存在")
+            if mode == "replay":
+                from app.backtest.first_board_execution import (
+                    ExecutionOptions,
+                    run_execution_validation,
+                )
+
+                if account_id is not None:
+                    raise ValueError("成交回放不读取指定模拟账户")
+                execution = ExecutionOptions.model_validate(options or {})
+                result = run_execution_validation(self.repo, self._observation_store, start=start, end=end,
+                                                  revision=selected_revision, options=execution, through=completed)
+                account_id, parameters, through = None, execution.model_dump(mode="json"), completed
+            else:
+                from app.services.first_board_trade_audit import build_paper_trade_audit
+
+                if options is not None:
+                    raise ValueError("模拟盘归因使用实际成交费用, 不接受回放参数")
+                account_id = account_id if account_id is not None else selected.get("paper_account_id")
+                if account_id is not None:
+                    paper.validate_account_id(account_id)
+                records = []
+                for offset in range((end - start).days + 1):
+                    day = start + timedelta(days=offset)
+                    path = self._validation_path("events", f"{day}.json")
+                    if path.exists():
+                        records.extend(self._read_day(path, day)["events"])
+                    if len(records) > 100_000:
+                        raise ValueError("交易验证事件超过 100000 条, 请缩小日期区间")
+                result = build_paper_trade_audit(self.repo.store.data_dir, account_id, events=records,
+                                                start=start, end=end, revision=selected_revision)
+                parameters, through = None, end
+            identifier = uuid.uuid4().hex
+            result = {**result, "id": identifier, "created_at": now.isoformat(), "kind": mode,
+                      "request": {"start": str(start), "end": str(end), "revision": selected_revision,
+                                  "account_id": account_id, "options": parameters, "through": str(through)}}
+            run = {"id": identifier, "created_at": now.isoformat(), "kind": mode, "result": result}
+            from app.services.first_board_validation_records import validate_trade_validation_run
+
+            validate_trade_validation_run(run)
+            encoded = json.dumps(run, ensure_ascii=False, allow_nan=False)
+            directory = self._validation_path("trade-validation")
+            directory.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(self._validation_path("trade-validation", f"{identifier}.json"), encoded)
+            return result
+        except OSError as exc:
+            raise ValueError("交易验证读取或保存失败, 原有证据已保留") from exc
+        finally:
+            self._research_lock.release()
+
+    def trade_validation_runs(self) -> list[dict]:
+        """Separate history: older daily research keeps its existing schema."""
+        from app.services.first_board_validation_records import validate_trade_validation_run
+
+        try:
+            directory = self._validation_path("trade-validation")
+            if not directory.exists():
+                return []
+            paths = sorted(directory.glob("*.json"), key=lambda path: path.stat().st_mtime_ns, reverse=True)[:10]
+            runs = []
+            for path in paths:
+                path = self._validation_path("trade-validation", path.name)
+                run = json.loads(path.read_text(encoding="utf-8"))
+                if (not isinstance(run, dict) or run.get("id") != path.stem
+                        or len(path.stem) != 32 or any(c not in "0123456789abcdef" for c in path.stem)
+                        or run.get("kind") not in {"replay", "paper"}
+                        or not isinstance(run.get("created_at"), str)
+                        or not isinstance(run.get("result"), dict)
+                        or run["result"].get("id") != run["id"]
+                        or run["result"].get("kind") != run["kind"]
+                        or not isinstance(run["result"].get("request"), dict)):
+                    raise ValueError("invalid report")
+                validate_trade_validation_run(run)
+                runs.append(run)
+            return runs
+        except (ValueError, OSError, TypeError) as exc:
+            raise ValueError("首板交易验证记录损坏或不可读取, 已保留原文件") from exc

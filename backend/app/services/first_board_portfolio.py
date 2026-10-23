@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import math
-from collections import defaultdict, deque
-from datetime import date, datetime, time
+from collections import defaultdict
+from datetime import datetime, time
 from pathlib import Path
 
 from app.market_time import CN_TZ
+from app.services.first_board_ledger import LedgerError, position_matches, project_fifo
 from app.strategy import paper
 
 _NOTE = "统计覆盖整个关联模拟账户, 并非首板策略独立归因; 退出提示不执行卖出。"
@@ -190,71 +191,19 @@ def buy_budget(
 
 
 def _remaining_cost_lots(fills: list[dict], position: dict, day: str) -> list[dict] | None:
-    """补齐 paper 日期/数量批次的成本, 不修改账本或账户平均成本。
-
-    台账顺序、FIFO 与公司行动数量舍入沿用 paper.replay_positions 的契约;
-    最终必须与物化持仓逐批核对, 不能从缺失台账或账户均价猜成本。
-    """
-    lots: deque[dict] = deque()
-    aggregate_qty = 0.0
-    last_day = ""
-    for fill in fills:
-        fill_day = fill.get("date")
-        if (not isinstance(fill_day, str) or date.fromisoformat(fill_day).isoformat() != fill_day
-                or not last_day <= fill_day <= day):
+    """退出提示与交易归因共用只读 FIFO 投影, 保持原持仓校验。"""
+    try:
+        projected = project_fifo(fills, through_day=day)
+        if len(projected["aggregate_qty"]) != 1:
             return None
-        last_day = fill_day
-        kind = fill.get("kind", "fill")
-        if kind == "corp_action":
-            factor = _number(fill.get("factor"), positive=True)
-            if factor is None:
-                return None
-            for lot in lots:
-                quantity = round(lot["qty"] * factor, 6)
-                if not math.isfinite(quantity) or quantity <= 0:
-                    return None
-                lot["unit_cost"] *= lot["qty"] / quantity
-                lot["qty"] = quantity
-            # paper 对总数量单独舍入, 不能用逐批舍入后的数量之和替代。
-            aggregate_qty = round(aggregate_qty * factor, 6)
-            continue
-        quantity = _number(fill.get("qty"), positive=True)
-        if kind != "fill" or quantity is None or quantity % 1:
+        symbol, total = next(iter(projected["aggregate_qty"].items()))
+        lots = projected["lots"][symbol]
+        if not position_matches(lots, total, position):
             return None
-        if fill.get("side") == "buy":
-            price = _number(fill.get("price"), positive=True)
-            # paper 历史成交缺少 fee 时使用零费用, 显式无效值不能按零处理。
-            fee = _number(fill.get("fee", 0))
-            if price is None or fee is None or fee < 0:
-                return None
-            unit_cost = price + fee / quantity
-            if not math.isfinite(unit_cost):
-                return None
-            lots.append({"date": fill_day, "qty": quantity, "unit_cost": unit_cost})
-            aggregate_qty += quantity
-        elif fill.get("side") == "sell":
-            aggregate_qty = max(0, aggregate_qty - quantity)
-            while quantity > 1e-9 and lots:
-                take = min(quantity, lots[0]["qty"])
-                lots[0]["qty"] -= take
-                quantity -= take
-                if lots[0]["qty"] <= 1e-9:
-                    lots.popleft()
-            if quantity > 1e-9:
-                return None
-        else:
-            return None
-    stored_lots = position.get("lots", [])
-    total = _number(position.get("qty"), positive=True)
-    if (total is None or len(stored_lots) != len(lots)
-            or not math.isclose(aggregate_qty, total, rel_tol=0, abs_tol=1e-6)):
+        return [{"date": lot["date"], "qty": lot["qty"], "unit_cost": lot["cost"] / lot["qty"]}
+                for lot in lots]
+    except LedgerError:
         return None
-    for lot, stored in zip(lots, stored_lots, strict=True):
-        quantity = _number(stored.get("qty"), positive=True)
-        if (quantity is None or lot["date"] != stored.get("date")
-                or not math.isclose(lot["qty"], quantity, rel_tol=0, abs_tol=1e-6)):
-            return None
-    return list(lots)
 
 
 def exit_candidates(

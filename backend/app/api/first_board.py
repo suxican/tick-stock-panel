@@ -1,12 +1,14 @@
 """首板工作台 HTTP 契约; 领域计算和持久化由服务处理。"""
 from datetime import date
-from typing import Self
+from typing import Literal, Self
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.backtest.first_board_execution import ExecutionOptions
 from app.services.first_board import FirstBoardConfig
 from app.strategy.first_board import FirstBoardRules
+from app.strategy.paper import validate_account_id
 
 router = APIRouter(prefix="/api/first-board", tags=["first-board"])
 
@@ -37,6 +39,28 @@ class PaperOrderRequest(BaseModel):
     side: str = Field(pattern=r"^(buy|sell)$")
     amount: float | None = Field(default=None, gt=0, strict=True)
     qty: int | None = Field(default=None, gt=0, multiple_of=100, strict=True)
+
+
+class TradeValidationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    mode: Literal["replay", "paper"]
+    start: date
+    end: date
+    revision: int | None = Field(default=None, ge=0, strict=True)
+    account_id: str | None = None
+    options: ExecutionOptions | None = None
+
+    @model_validator(mode="after")
+    def validate_request(self) -> Self:
+        if self.start > self.end:
+            raise ValueError("验证开始日期不能晚于结束日期")
+        if self.mode == "paper" and self.options is not None:
+            raise ValueError("模拟盘归因使用实际账本, 不接受回放参数")
+        if self.mode == "replay" and self.account_id is not None:
+            raise ValueError("成交回放不接受模拟账户参数")
+        if self.account_id is not None:
+            validate_account_id(self.account_id)
+        return self
 
 
 @router.get("/config")
@@ -119,5 +143,21 @@ def paper_order(request: Request, body: PaperOrderRequest):
         raise HTTPException(400, "数量与金额只能提供一个")
     try:
         return {"order": _service(request).place_order(**body.model_dump())}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/trade-validation")
+def trade_validation(request: Request, body: TradeValidationRequest):
+    try:
+        return _service(request).trade_validation(**body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/trade-validation-runs")
+def trade_validation_runs(request: Request):
+    try:
+        return {"runs": _service(request).trade_validation_runs()}
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

@@ -23,6 +23,7 @@ export const QK = {
   firstBoardEvents: (day: string) => ['first-board', 'events', day] as const,
   firstBoardVersions: ['first-board', 'versions'] as const,
   firstBoardResearchRuns: ['first-board', 'research-runs'] as const,
+  firstBoardTradeValidationRuns: ['first-board', 'trade-validation-runs'] as const,
   // 全局 / 共享 (Layout 预取)
   capabilities:   ['capabilities'] as const,
   settings:       ['settings'] as const,

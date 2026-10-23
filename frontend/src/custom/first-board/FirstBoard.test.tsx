@@ -15,6 +15,7 @@ const calls = vi.hoisted(() => ({
   firstBoardConfig: vi.fn(), firstBoardSaveConfig: vi.fn(), firstBoardSnapshot: vi.fn(), firstBoardRefresh: vi.fn(),
   firstBoardEvents: vi.fn(), firstBoardVersions: vi.fn(), firstBoardResearch: vi.fn(), firstBoardCompare: vi.fn(),
   firstBoardResearchRuns: vi.fn(), firstBoardPaperOrder: vi.fn(), paperAccounts: vi.fn(),
+  firstBoardTradeValidation: vi.fn(), firstBoardTradeValidationRuns: vi.fn(),
 }))
 const capabilityState = vi.hoisted(() => ({ available: true, failed: false, ready: true }))
 vi.mock('@/lib/api', () => ({ api: calls }))
@@ -69,6 +70,7 @@ beforeEach(() => {
   calls.firstBoardVersions.mockResolvedValue({ versions: [config()] })
   calls.firstBoardEvents.mockResolvedValue({ events: [], total: 0, day: beijingDay() })
   calls.firstBoardResearchRuns.mockResolvedValue({ runs: [] })
+  calls.firstBoardTradeValidationRuns.mockResolvedValue({ runs: [] })
   calls.firstBoardResearch.mockResolvedValue(study())
   calls.firstBoardCompare.mockResolvedValue(comparison())
   calls.paperAccounts.mockResolvedValue({ accounts: [{ id: 'test', name: '测试账户', status: 'active' }] })
@@ -623,6 +625,18 @@ it('shows research observations and denominators without claiming execution win 
   expect(host.textContent).toContain('3 / 10')
   expect(host.textContent).toContain('1.20%')
   expect(calls.firstBoardResearch.mock.calls[0][0].rules.lookback_days).toBe(10)
+})
+it('opens the separate trade validation entry and returns to the existing daily study', async () => {
+  await render('research')
+  expect(calls.firstBoardTradeValidationRuns).not.toHaveBeenCalled()
+  await click('交易链验证')
+  expect(host.textContent).toContain('完整交易链验证')
+  expect(host.textContent).toContain('已记录信号成交回放（模型估计）')
+  expect(calls.firstBoardTradeValidationRuns).toHaveBeenCalled()
+  expect(calls.firstBoardTradeValidation).not.toHaveBeenCalled()
+  await click('日线形态观察')
+  await click('运行日线研究')
+  expect(host.textContent).toContain('触板观察率')
 })
 it('loads comparison parameters for review and never auto-saves the selected experiment', async () => {
   await render('research')
