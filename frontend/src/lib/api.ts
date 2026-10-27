@@ -2572,6 +2572,32 @@ export interface ConfigBackupApplyCategory {
   imported: number
   skipped_conflict: number
   failed: { file: string; error: string }[]
+  /** 导入即冒烟 (仅 custom_signals/custom_factors): 逐条校验+编译+依赖检查结果 */
+  smoke?: (DefinitionSmokeResult & { file: string })[]
+}
+
+/** 统一定义目录项 (GET /api/definitions) — 信号+因子统一视图 */
+export interface DefinitionsCatalogItem {
+  kind: 'signal' | 'factor'
+  id: string
+  label: string
+  enabled?: boolean
+  timeframe?: string
+  lang: string
+  status?: string
+  group?: string
+  dependencies?: string[]
+  warmup_bars?: number | null
+  /** 目录不因单个坏定义失败 — 坏条目携带错误原因 (隔离要求) */
+  error?: string
+}
+
+/** 导入冒烟结果 (POST /api/definitions/smoke) */
+export interface DefinitionSmokeResult {
+  ok: boolean
+  issues: { code: string; message: string }[]
+  dependencies: string[]
+  warmup_bars: number | null
 }
 
 export interface ConfigBackupApplyResult {
@@ -4262,6 +4288,18 @@ export const api = {
     })
   },
 
+  // ── 统一定义目录 / 导入冒烟 (P4) ──
+
+  definitionsList: () =>
+    request<{ items: DefinitionsCatalogItem[] }>('/api/definitions'),
+
+  /** 逐条冒烟: 按 id 复检已存定义 (definition 与 id 二选一) */
+  definitionsSmoke: (kind: 'signal' | 'factor', id: string) =>
+    request<DefinitionSmokeResult & { file?: string }>('/api/definitions/smoke', {
+      method: 'POST',
+      body: JSON.stringify({ kind, id }),
+    }),
+
   analysisMenu: (id: string) =>
     request<AnalysisMenu>(`/api/analysis-menus/${encodeURIComponent(id)}`),
 
@@ -4344,6 +4382,7 @@ export const api = {
     time_window_start?: string | null; time_window_end?: string | null;
     date_param?: string | null;
     time_field?: string | null;
+    since_param?: string | null;
     auth?: ExtPullAuth;
     timeout_seconds?: number;
     page_param?: string | null;
@@ -5339,6 +5378,8 @@ export interface PullConfig {
   date_format?: string
   /** 日内序列表时间列名 (如 "ts"): 配置后同 symbol 允许多行 (按 symbol+时间列去重), 用于集合竞价等多盘数据 */
   time_field?: string | null
+  /** 增量续传参数名 (如 "since"): 每次拉取自动带上本地目标日分区时间列最大值, 源只返回其后数据; 需先配置 time_field */
+  since_param?: string | null
   auth?: ExtPullAuth | null
   /** 单次拉取请求超时 (秒), 默认 30 */
   timeout_seconds?: number
@@ -5431,6 +5472,8 @@ export interface ExtDataConfig {
   updated_at: string
   latest_sync_date?: string | null
   date_range?: string[] | null
+  /** 日内多盘表最新分区的盘次概览; 非多盘表为 null */
+  plate?: { date: string; plates: number; from: string; to: string } | null
   pull?: PullConfig | null
 }
 
