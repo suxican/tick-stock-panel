@@ -155,3 +155,32 @@ def test_loader_isolates_failed_setup_and_registers_valid_route(
     client = TestClient(app)
     response = client.get("/api/custom/valid/status")
     assert response.status_code == 200
+
+
+def test_default_extensions_exclude_retired_market_emotion_routes() -> None:
+    app = FastAPI()
+
+    @app.get("/api/health")
+    def health() -> dict:
+        return {"status": "ok"}
+
+    app.state.first_board_service = types.SimpleNamespace(
+        get_config=lambda: {"enabled": False},
+    )
+
+    registry, errors = configure_backend_extensions(app)
+
+    assert not errors
+    assert "kaipanla.market-emotion" not in registry.extension_ids()
+    assert "first-board.workbench" in registry.extension_ids()
+    assert not any(
+        route.path.startswith("/api/market-recap/kaipanla") for route in app.routes
+    )
+
+    client = TestClient(app)
+    assert client.get("/api/health").json() == {"status": "ok"}
+    assert client.get("/api/first-board/config").json() == {"enabled": False}
+    assert client.get("/api/market-recap/kaipanla/market-emotion").status_code == 404
+    for dataset in ("ext_kpl_limit_up", "ext_kpl_broken_limits"):
+        response = client.post(f"/api/market-recap/kaipanla/query/{dataset}", json={})
+        assert response.status_code == 404

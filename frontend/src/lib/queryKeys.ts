@@ -123,9 +123,8 @@ export const QK = {
                              ['kline-minute-range', symbol, days] as const,
   indexDaily:           (symbol: string, start: string, end: string) =>
                              ['index-daily', symbol, start, end] as const,
-  indexMinute:          (symbol: string, date: string, provider?: string) =>
-                             provider === undefined ? ['index-minute', symbol, date] as const
-                               : ['index-minute', symbol, date, provider] as const,
+  indexMinute:          (symbol: string, date: string) =>
+                             ['index-minute', symbol, date] as const,
 
   // Schema
   extDataSchemaAll:     ['ext-data-schema-all'] as const,
@@ -172,10 +171,6 @@ export const QK = {
   marketGameCapitalRefresh: (id: string) => ['market-game-capital-refresh', id] as const,
   marketGameModel:      (id: string) => ['market-game-model', id] as const,
   marketGameEvaluateModel: (id: string) => ['market-game-evaluate-model', id] as const,
-
-  // 市场情绪：日期与名单类型隔离，实时快照不进入持久化缓存。
-  kaipanlaMarketEmotion: (date?: string) => ['kaipanla-market-emotion', date ?? 'latest'] as const,
-  kaipanlaStocks:        (kind: 'limit_up' | 'broken_limits', date: string) => ['kaipanla-stocks', kind, date] as const,
 
   // 概念涨幅轮动矩阵
   rpsRotation:          (days: number) => ['rps-rotation', days] as const,

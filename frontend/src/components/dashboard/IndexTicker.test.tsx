@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { expect, it } from 'vitest'
 import { IndexTicker } from './widgets'
 
-it('keeps the existing index link by default and supports a static dated snapshot', async () => {
+it('links the index quote and preserves missing values', async () => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   const host = document.createElement('div')
   const root = createRoot(host)
@@ -15,11 +15,8 @@ it('keeps the existing index link by default and supports a static dated snapsho
     expect(host.querySelector('a')?.getAttribute('href')).toBe('/indices?symbol=000001.SH')
     expect(host.textContent).toContain('+0.05%')
     expect(host.textContent).toContain('3813.79')
-    await act(async () => root.render(<MemoryRouter><IndexTicker item={item} linked={false} /></MemoryRouter>))
-    expect(host.querySelector('a')).toBeNull()
-    expect(host.textContent).toContain('+0.05%')
-    await act(async () => root.render(<MemoryRouter><IndexTicker item={{ ...item, change_pct: null, last_price: null }} linked={false} /></MemoryRouter>))
-    expect(host.querySelector('svg')).toBeNull()
+    await act(async () => root.render(<MemoryRouter><IndexTicker item={{ ...item, change_pct: null, last_price: null }} /></MemoryRouter>))
+    expect(host.querySelector('a')?.getAttribute('href')).toBe('/indices?symbol=000001.SH')
     expect(host.textContent).toContain('—')
   } finally {
     await act(async () => root.unmount())

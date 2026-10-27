@@ -20,17 +20,6 @@
 (`get_intraday_latest`)是 Python 插件契约,见
 [plugin-development.md](./plugin-development.md)。
 
-### 市场情绪补充数据
-
-市场情绪菜单的开盘啦客户端位于 `backend/app/data_providers/kaipanla.py`，
-通过 `app.custom.kaipanla` 扩展提供只读 API。它只服务该菜单，不注册为
-`get_provider()` 的行情源，也不参与上述 YAML 配置、行情能力路由或后台落盘。
-直播分时和个股详情仍使用系统已配置的行情源。
-
-请求日期、返回数据日期及采集时间分别保留；百分比使用百分数值，市场量能
-使用万元，缺失或失败不填零。数据集、输出字段、日期归属、单位、缓存与部分
-可用状态见[市场情绪数据契约](./market-emotion.md)。
-
 ## 配置位置
 
 把 YAML 放到运行数据目录下:

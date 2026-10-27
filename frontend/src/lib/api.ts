@@ -532,55 +532,6 @@ export interface OverviewMarket {
   industry_rank: { leading: OverviewDimensionRankItem[]; lagging: OverviewDimensionRankItem[] }
 }
 
-// ===== 市场情绪（开盘啦） =====
-export interface KaipanlaMarketColumn {
-  name: string
-  label: string
-  unit: 'percent' | 'yuan' | 'wan' | 'count' | 'number' | 'text'
-}
-
-export interface KaipanlaLiveStock {
-  symbol: string
-  name: string
-  change_pct: number | null
-  kind: 'focus' | 'discussion'
-}
-
-export interface KaipanlaMarketDataset {
-  id: string
-  label: string
-  state: 'ok' | 'empty' | 'error'
-  date: string | null
-  fetched_at: string | null
-  date_origin: string | null
-  rows: Record<string, unknown>[]
-  columns: KaipanlaMarketColumn[]
-  message?: string
-}
-
-export interface KaipanlaMarketEmotion {
-  source: '开盘啦'
-  requested_date: string | null
-  date: string | null
-  previous_date: string | null
-  fetched_at: string | null
-  state: 'ok' | 'partial' | 'empty' | 'error'
-  datasets: Record<string, KaipanlaMarketDataset>
-  history: KaipanlaMarketDataset
-  missing: { id: string; label: string; reason: string }[]
-}
-
-export interface KaipanlaQueryResult {
-  id: string
-  source: '开盘啦'
-  requested_date: string
-  data_date: string | null
-  date_origin: string
-  fetched_at: string
-  state: 'ok' | 'empty'
-  rows: Record<string, unknown>[]
-}
-
 // ===== 概念涨幅轮动矩阵 =====
 // dates: 日期字符串列表(最新在最前); columns: {日期: [[概念名, 涨幅小数], ...]} 每列各自降序
 export interface RpsRotationData {
@@ -4645,21 +4596,6 @@ export const api = {
   // ===== 大盘复盘 =====
   reviewReportsList: () =>
     request<{ reports: AiReviewReport[] }>('/api/market-recap/reports'),
-
-  kaipanlaMarketEmotion: (date?: string, force = false) => {
-    const params = new URLSearchParams()
-    if (date) params.set('date', date)
-    if (force) params.set('force', 'true')
-    return request<KaipanlaMarketEmotion>(`/api/market-recap/kaipanla/market-emotion${params.size ? `?${params}` : ''}`, {
-      quiet: true, timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
-    })
-  },
-
-  kaipanlaQuery: (id: string, date?: string, parameters: Record<string, string | number> = {}, force = false) =>
-    request<KaipanlaQueryResult>(`/api/market-recap/kaipanla/query/${encodeURIComponent(id)}`, {
-      method: 'POST', body: JSON.stringify({ date, parameters, force }), quiet: true,
-      timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
-    }),
 
   /** 龙虎榜三榜 (fuyao 专有; 历史日按服务端缓存, 当日未发布自动回退上一期) */
   dragonTiger: (date?: string) =>
