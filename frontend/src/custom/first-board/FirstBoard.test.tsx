@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import type { FirstBoardAttention, FirstBoardCandidate, FirstBoardComparison, FirstBoardConfig, FirstBoardResearch, FirstBoardSnapshot, FirstBoardSummary } from '@/lib/api'
+import type { FirstBoardAttention, FirstBoardCandidate, FirstBoardComparison, FirstBoardConfig, FirstBoardFeedback, FirstBoardResearch, FirstBoardSnapshot, FirstBoardSummary } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { FirstBoard } from './FirstBoard'
 import extension from './extension'
@@ -42,6 +42,16 @@ function snapshot(): FirstBoardSnapshot {
       blocked_reasons: [], quote_time: '2026-09-30T10:00:00+08:00', sector: '测试行业', suggested_amount: 25000, event_id: 'event1' }],
     environment: { label: '强势', allowed: true }, coverage: { candidate_count: 1, symbol_count: 1, quote_count: 1, fresh_count: 1 },
     limitations: ['没有逐笔队列数据'], paper: { initialized: true, stats: { rounds: 0, win_rate: null, realized_pnl: 0 }, note: '统计覆盖整个关联模拟账户' } }
+}
+function yesterdayFeedback(): FirstBoardFeedback {
+  const summary = { sample_count: 2, quote_count: 2, coverage: 1, mean_change_pct: .07, median_change_pct: .07, up_count: 1, up_ratio: .5,
+    limit_up_count: 1, limit_known_count: 2, limit_up_ratio: .5, loss_count: 1, loss_ratio: .5, mean_open_premium: .03, mean_open_change: .04, open_count: 2, small_sample: true }
+  return { status: 'ready', message: '完整行情', as_of: beijingDay(), sample_date: '2026-09-29', observed_at: '2026-09-30T10:00:00+08:00', quote_mode: 'live',
+    membership_note: '当前成分等权涨幅', history_excluded_count: 0, groups: { all: summary, main: summary, growth: summary }, sectors: [],
+    rows: [
+      { symbol: '600100.SH', name: '昨日下跌样本', board: 'main', price: 9.4, change_pct: -.06, open_premium: 0, open_change: -.06, at_limit: false, quote_time: '2026-09-30T10:00:00+08:00', status: 'valid', reason: null },
+      { symbol: '300100.SZ', name: '昨日上涨样本', board: 'growth', price: 12, change_pct: .2, open_premium: .06, open_change: .132, at_limit: true, quote_time: '2026-09-30T10:00:00+08:00', status: 'valid', reason: null },
+    ] }
 }
 const summary: FirstBoardSummary = { candidates: 10, unique_stock_days: 8, touched: 3, touch_observed: 10, touch_rate: .3,
   sealed: 2, seal_observed: 10, seal_rate: .2, next_open_count: 9, next_open_mean: .012, next_close_count: 9, next_close_mean: -.01, next_positive_rate: .4 }
@@ -335,6 +345,38 @@ it('keeps candidate rows on refresh failure but stops treating cached attention 
   expect(candidateNames()).toEqual(['A'])
   expect(host.querySelector('[data-attention-positive="true"]')).toBeNull()
   expect(button('模拟买入').disabled).toBe(true)
+})
+
+it('keeps yesterday feedback independent of candidate filters and opens its own stock navigation', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), yesterday_feedback: yesterdayFeedback() })
+  await render()
+  expect(host.textContent).toContain('昨日首板反馈')
+  await filterPattern('trend')
+  expect(candidateNames()).toEqual([])
+  await click('查看明细')
+  const table = host.querySelector('table[aria-label="昨日首板个股表现"]')!
+  expect(table.textContent).toContain('昨日下跌样本')
+  expect(table.textContent).toContain('-6.00%')
+  const memberButton = [...table.querySelectorAll('button')].find(item => item.textContent?.startsWith('昨日下跌样本'))!
+  await act(async () => memberButton.click())
+  const dialog = host.querySelector('[role="dialog"]')!
+  expect(dialog.getAttribute('data-symbol')).toBe('600100.SH')
+  expect(JSON.parse(dialog.getAttribute('data-nav-list')!)).toEqual([
+    { symbol: '300100.SZ', name: '昨日上涨样本' }, { symbol: '600100.SH', name: '昨日下跌样本' },
+  ])
+  expect(calls.firstBoardPaperOrder).not.toHaveBeenCalled()
+})
+
+it('marks yesterday feedback as a retained snapshot when a manual refresh fails', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), yesterday_feedback: yesterdayFeedback() })
+  calls.firstBoardRefresh.mockRejectedValue(new Error('刷新请求失败'))
+  await render()
+  await click('刷新')
+  const feedback = host.querySelector('[data-yesterday-feedback]')!
+  expect(feedback.textContent).toContain('刷新失败，保留上次快照')
+  const mean = [...feedback.querySelectorAll('dt')].find(item => item.textContent === '平均溢价')!.nextElementSibling!
+  expect(mean.textContent).toBe('+7.00%')
+  expect(mean.classList.contains('text-bull')).toBe(false)
 })
 
 it('registers one isolated route and 首板模式 menu', () => {

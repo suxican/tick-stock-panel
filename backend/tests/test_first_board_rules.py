@@ -53,6 +53,16 @@ def test_live_threshold_tolerance_is_applied_once(price, expected):
     assert row["state"] == expected
 
 
+@pytest.mark.parametrize(("price", "expected"), [(1.67, "watch"), (1.68, "approaching")])
+def test_minimum_change_uses_inclusive_boundary(price, expected):
+    row = evaluate_candidates(
+        candidates(), pl.DataFrame([quote(raw_close=price, close=price * 3.125,
+                                         raw_prev_close=1.6, raw_high=price, limit_up_price=1.755)]),
+        FirstBoardRules(approaching_distance=.10), as_of=DAY,
+    )[0]
+    assert row["state"] == expected
+
+
 @pytest.mark.parametrize("limit", [None, float("nan"), float("inf"), 0.0, -1.0, True])
 def test_live_invalid_or_no_limit_threshold_never_falls_back(limit):
     assert evaluate(quote(limit_up_price=limit, limit_up=11.0))["state"] == "invalid"

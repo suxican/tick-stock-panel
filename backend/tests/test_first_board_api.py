@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import polars as pl
@@ -6,6 +7,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.first_board import router
+from app.market_time import CN_TZ
+from app.services import first_board as fb
 from app.services.first_board import FirstBoardService
 from app.services.first_board_context import evaluate_sectors
 
@@ -27,6 +30,72 @@ def test_config_roundtrip_and_conflict(client):
     assert response.json()["revision"] == 1
     assert client.put("/api/first-board/config", json=config).status_code == 409
     assert len(client.get("/api/first-board/versions").json()["versions"]) == 2
+
+
+def test_snapshot_filters_minimum_change_and_applies_saved_revision(client, monkeypatch):
+    now = datetime(2026, 10, 16, 10, 0, tzinfo=CN_TZ)
+    monkeypatch.setattr(fb, "_now", lambda: now)
+    service = client.app.state.first_board_service
+    prices = {"600000.SH": 9.991, "600001.SH": 10.499, "600002.SH": 10.5, "600003.SH": 10.8}
+    candidates = pl.DataFrame([{
+        "symbol": symbol, "name": symbol, "pattern": "platform", "pattern_label": "平台突破",
+        "reference_date": now.date() - timedelta(days=1), "reference_price": 10.0,
+        "reference_adjusted_close": 10.0, "breakout_price": 10.2,
+        "history_bars": 65, "first_board_count": 0,
+    } for symbol in prices])
+
+    def prepare(_day, _config):
+        service._candidates = candidates
+        service._environment = {"allowed": True, "date": "2026-10-15", "state": "range"}
+        service._sectors = {}
+
+    monkeypatch.setattr(service, "_prepare", prepare)
+    monkeypatch.setattr(service._attention_data, "minutes", lambda *_args, **_kwargs: (
+        pl.DataFrame(), False, "测试无分钟数据",
+    ))
+    quotes = pl.DataFrame([{
+        "symbol": symbol, "name": symbol, "date": now.date(),
+        "quote_ts": int(now.timestamp() * 1000), "raw_close": price, "close": price,
+        "raw_high": price, "prev_close": 10.0, "change_pct": price / 10.0 - 1,
+        "limit_up_price": 10.995, "turnover_rate": 5.0, "amount": 80_000_000.0,
+    } for symbol, price in prices.items()])
+
+    config = client.get("/api/first-board/config").json()
+    response = client.put("/api/first-board/config", json={
+        **config, "enabled": True, "notify": False, "require_sector_confirmation": False,
+        "rules": {**config["rules"], "min_change_pct": .05},
+    })
+    assert response.status_code == 200
+    saved = response.json()
+    assert saved["rules"]["min_change_pct"] == .05
+    service.process_snapshot(quotes, now.date(), now=now)
+    response = client.get("/api/first-board/snapshot")
+    assert response.status_code == 200
+    snapshot = response.json()
+    assert snapshot["revision"] == saved["revision"]
+    assert {row["symbol"] for row in snapshot["rows"]} == {"600002.SH", "600003.SH"}
+    assert snapshot["coverage"] == {
+        "candidate_count": 2, "symbol_count": 2, "quote_count": 4, "fresh_count": 4,
+    }
+
+    response = client.put("/api/first-board/config", json={
+        **saved, "rules": {**saved["rules"], "min_change_pct": .06},
+    })
+    assert response.status_code == 200
+    revision = response.json()["revision"]
+    assert revision == saved["revision"] + 1
+    reset = client.get("/api/first-board/snapshot").json()
+    assert reset["revision"] == revision
+    assert reset["rows"] == []
+    service.process_snapshot(quotes, now.date(), now=now)
+    response = client.get("/api/first-board/snapshot")
+    assert response.status_code == 200
+    refreshed = response.json()
+    assert refreshed["revision"] == revision
+    assert [row["symbol"] for row in refreshed["rows"]] == ["600003.SH"]
+    assert refreshed["coverage"] == {
+        "candidate_count": 1, "symbol_count": 1, "quote_count": 4, "fresh_count": 4,
+    }
 
 
 def test_empty_data_responses(client):

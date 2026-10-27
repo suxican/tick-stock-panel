@@ -70,7 +70,8 @@ def _resolve_dir(data_dir: Path | None) -> Path:
 def _load_configs(data_dir: Path):
     from app.services.ext_data import ExtConfigStore
 
-    return ExtConfigStore(data_dir).load_all()
+    # 市场级表没有个股关联契约, 不参与列注入、因子注册或信号字段枚举。
+    return [cfg for cfg in ExtConfigStore(data_dir).load_all() if not cfg.market_level]
 
 
 def _numeric_fields(config) -> list:

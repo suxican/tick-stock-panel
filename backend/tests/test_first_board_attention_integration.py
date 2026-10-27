@@ -97,8 +97,9 @@ def samples(rig):
 
 
 def test_strong_attention_never_promotes_a_watch_candidate_to_a_buy(rig):
-    rig.svc.process_snapshot(quotes(price=9.9), NOW.date(), now=NOW)
+    rig.svc.process_snapshot(quotes(price=10.5), NOW.date(), now=NOW)
     rows = rig.svc.snapshot()["rows"]
+    assert len(rows) == 3
     assert all(row["attention_context"]["group"] == "S1F1" for row in rows)
     assert all(row["state"] == "watch" and row["can_buy"] is False for row in rows)
     assert rig.published == []
@@ -169,6 +170,11 @@ def test_sampling_keeps_false_unknown_and_multiple_patterns_in_denominator(rig):
     assert indexed[SYMBOLS[1]]["attention_context"]["strong_sector"] is False
     assert indexed[SYMBOLS[2]]["attention_context"]["strong_sector"] is None
     assert all(row["can_buy"] is False for row in sample["rows"])
+    assert rig.svc.snapshot()["rows"] == []
+    assert rig.svc.snapshot()["coverage"]["candidate_count"] == 0
+    assert rig.svc.snapshot()["coverage"]["symbol_count"] == 0
+    assert sample["metadata"]["coverage"]["candidate_count"] == 4
+    assert sample["metadata"]["coverage"]["symbol_count"] == 3
     assert sample["membership_version"] == VERSION
     assert sample["metadata"]
 
@@ -347,11 +353,16 @@ def test_real_catalog_adapter_and_evaluator_flow_into_immutable_samples(rig, mon
     assert strong["groups"][0]["member_count"] == 5
     assert strong["groups"][0]["leader"]["symbol"] == "600001.SH"
     assert strong["intraday"]["as_of"] == NOW.replace(hour=9, minute=59, second=0).isoformat()
-    weak = rows[SYMBOLS[2]]["attention_context"]
-    assert weak["strong_sector"] is False and weak["intraday_rising"] is None
-    assert rows[SYMBOLS[2]]["state"] == "watch" and rows[SYMBOLS[2]]["can_buy"] is False
+    assert SYMBOLS[2] not in rows
+    assert rig.svc.snapshot()["coverage"]["candidate_count"] == 2
+    assert rig.svc.snapshot()["coverage"]["symbol_count"] == 2
     saved = samples(rig)
     assert len(saved) == 2 and saved[-1]["symbol_count"] == 3
+    weak_row = next(row for row in saved[-1]["rows"] if row["symbol"] == SYMBOLS[2])
+    weak = weak_row["attention_context"]
+    assert weak["strong_sector"] is False and weak["intraday_rising"] is None
+    assert weak_row["can_buy"] is False
+    assert all(candidate["state"] == "watch" for candidate in weak_row["candidates"])
     assert saved[-1]["membership_version"] == rig.svc._attention_data.version
     assert saved[-1]["metadata"]["minute_price_basis"] == "raw"
     assert saved[-1]["metadata"]["minute_volume_unit"] == "lot"

@@ -5658,6 +5658,68 @@ export interface FirstBoardCandidate {
   suggested_amount: number | null
   event_id?: string | null
 }
+/** 昨日固定首板样本的今日反馈；收益和比例均为小数制，缺失值不填零。 */
+export interface FirstBoardFeedbackSummary {
+  sample_count: number
+  quote_count: number
+  coverage: number | null
+  mean_change_pct: number | null
+  median_change_pct: number | null
+  up_count: number
+  up_ratio: number | null
+  limit_up_count: number
+  limit_known_count: number
+  limit_up_ratio: number | null
+  loss_count: number
+  loss_ratio: number | null
+  mean_open_premium: number | null
+  mean_open_change: number | null
+  open_count: number
+  small_sample: boolean
+}
+export interface FirstBoardFeedbackMember {
+  symbol: string
+  name: string
+  board: 'main' | 'growth'
+  price: number | null
+  change_pct: number | null
+  open_premium: number | null
+  open_change: number | null
+  at_limit: boolean | null
+  quote_time: string | null
+  status: 'valid' | 'missing' | 'stale' | 'invalid'
+  reason: string | null
+}
+export interface FirstBoardFeedbackSector {
+  id: string
+  name: string
+  kind: 'industry' | 'concept'
+  sample_count: number
+  quote_count: number
+  mean_change_pct: number | null
+  limit_up_count: number
+  limit_known_count: number
+  member_count: number
+  member_quote_count: number
+  coverage: number
+  sector_mean_change_pct: number | null
+  up_ratio: number | null
+  status: 'ready' | 'insufficient'
+  reason: string | null
+}
+export interface FirstBoardFeedback {
+  status: 'waiting' | 'ready' | 'partial' | 'unavailable' | 'stale'
+  message: string
+  as_of: string | null
+  sample_date: string | null
+  observed_at: string | null
+  quote_mode: 'live' | 'snapshot'
+  membership_note: string
+  history_excluded_count: number
+  groups: Record<'all' | 'main' | 'growth', FirstBoardFeedbackSummary>
+  rows: FirstBoardFeedbackMember[]
+  sectors: FirstBoardFeedbackSector[]
+}
 export interface FirstBoardSnapshot {
   status: 'disabled' | 'waiting' | 'ready' | 'stale' | 'closed' | 'error'
   message: string
@@ -5666,6 +5728,7 @@ export interface FirstBoardSnapshot {
   revision: number
   rows: FirstBoardCandidate[]
   attention_sampling?: FirstBoardAttentionSampling
+  yesterday_feedback?: FirstBoardFeedback
   environment: { date?: string | null; state?: string | null; label?: string; allowed: boolean; reason?: string }
   coverage: { candidate_count: number; symbol_count: number; quote_count: number; fresh_count: number }
   limitations: string[]

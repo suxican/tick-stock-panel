@@ -14,6 +14,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { RulesPanel } from './RulesPanel'
 import { ResearchPanel } from './ResearchPanel'
+import { YesterdayFeedback } from './YesterdayFeedback'
 import { AttentionCell, AttentionSampling, attentionPriority, matchesAttention, type AttentionFilter } from './AttentionCell'
 import { beijingDay, buttonClass, ErrorNotice, EventBadge, inputClass, LoadingRows, money, Notice, panelClass, PatternBadge, patternLabels, pct, stamp, StateBadge, stateLabels, universeLabels } from './shared'
 
@@ -60,7 +61,7 @@ export function FirstBoard() {
   const attentionCurrent = !snapshot.isError && snapshot.data?.status === 'ready'
   const sortValue = useCallback((row: FirstBoardCandidate, column: ColumnConfig) => column.id === 'attention_context' && !attentionCurrent ? null : candidateSortValue(row, column), [attentionCurrent])
   const { sort, toggle: toggleSort, sortRows } = useTableSort<FirstBoardCandidate>(sortValue, { key: 'change_pct', dir: 'desc' })
-  const [stock, setStock] = useState<{ symbol: string; name: string } | null>(null)
+  const [stock, setStock] = useState<{ symbol: string; name: string; navList?: { symbol: string; name: string }[] } | null>(null)
   const [feedback, setFeedback] = useState('')
   useEffect(() => { if (config.data && !draft) setDraft(config.data) }, [config.data, draft])
   const save = useMutation({
@@ -113,7 +114,16 @@ export function FirstBoard() {
           <ErrorNotice error={snapshot.error ?? refresh.error} retry={() => refresh.mutate()} />
           {matrix.isError && <Notice error>行情能力状态读取失败。<a href="/settings?tab=data-sources" className="ml-2 underline">检查数据源配置</a></Notice>}
           {!!missing.length && <Notice>当前数据源缺少可用的{missing.map(item => item.label).join('、')}。<a href="/settings?tab=data-sources" className="ml-2 underline">配置数据源</a></Notice>}
-          {data && <section className={`${panelClass} space-y-3`}><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-sm font-semibold">{statuses[data.status]}</h2><span className="text-xs text-secondary">交易日期 {data.as_of ?? '—'} · 快照 {stamp(data.observed_at)} · 规则版本 {data.revision}</span></div><p className="text-sm leading-relaxed">{data.message}</p><div className="flex flex-wrap gap-x-6 gap-y-2 text-xs text-secondary"><span>市场环境：{data.environment.label || '待确认'}{data.environment.date ? `（${data.environment.date}）` : ''}</span><span>{data.environment.allowed ? '环境允许提示' : '环境暂不允许提示'}</span><span>候选形态 {data.coverage.candidate_count} · 股票 {data.coverage.symbol_count}</span><span>报价覆盖 {data.coverage.quote_count} · 新鲜报价 {data.coverage.fresh_count}</span></div>{data.environment.reason && <p className="text-xs leading-relaxed text-secondary">{data.environment.reason}</p>}<AttentionSampling sampling={data.attention_sampling} />{!config.data.enabled && <button className={buttonClass} onClick={() => selectTab('rules')}>前往规则版本开启盯盘</button>}</section>}
+          {data && <section className={`${panelClass} space-y-3`}>
+            <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-sm font-semibold">{statuses[data.status]}</h2><span className="text-xs text-secondary">交易日期 {data.as_of ?? '—'} · 快照 {stamp(data.observed_at)} · 规则版本 {data.revision}</span></div>
+            <YesterdayFeedback data={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} onOpenStock={(symbol, name, members) => setStock({ symbol, name, navList: members })}>
+              <p className="text-sm leading-relaxed">{data.message}</p>
+              <div className="flex flex-wrap gap-x-6 gap-y-2 text-xs text-secondary"><span>市场环境：{data.environment.label || '待确认'}{data.environment.date ? `（${data.environment.date}）` : ''}</span><span>{data.environment.allowed ? '环境允许提示' : '环境暂不允许提示'}</span><span>候选形态 {data.coverage.candidate_count} · 股票 {data.coverage.symbol_count}</span><span>报价覆盖 {data.coverage.quote_count} · 新鲜报价 {data.coverage.fresh_count}</span></div>
+              {data.environment.reason && <p className="text-xs leading-relaxed text-secondary">{data.environment.reason}</p>}
+              <AttentionSampling sampling={data.attention_sampling} />
+              {!config.data.enabled && <button className={buttonClass} onClick={() => selectTab('rules')}>前往规则版本开启盯盘</button>}
+            </YesterdayFeedback>
+          </section>}
           <section className={panelClass}><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h2 className="text-sm font-semibold">今日候选 <span className="font-normal text-secondary">{rows.length} 条</span></h2><div className="flex flex-wrap items-center gap-4 text-xs"><label className="flex shrink-0 items-center gap-2 whitespace-nowrap">形态<select className={inputClass} value={filter} onChange={event => setFilter(event.target.value as FirstBoardPattern | 'all')}><option value="all">全部形态</option>{Object.entries(patternLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label className="flex shrink-0 items-center gap-2 whitespace-nowrap">重点关注<select aria-label="重点关注" className={inputClass} value={attentionFilter} onChange={event => setAttentionFilter(event.target.value as AttentionFilter)}><option value="all">全部候选</option><option value="strong">强势板块</option><option value="follow">领涨带动</option><option value="both">同板块双条件</option></select></label><label className="flex items-center gap-2"><input type="checkbox" checked={onlyActionable} onChange={event => setOnlyActionable(event.target.checked)} />只看可提示候选</label></div></div>
             <p className="mb-4 text-xs leading-relaxed text-secondary">板块联动与分时标签仅作关注依据，原买入门槛仍生效。同板块双条件表示该板块强势且领涨触板后候选分时走强；次日溢价尚待验证。</p>
             {snapshot.isLoading ? <LoadingRows /> : rows.length ? <div className="overflow-x-auto"><table aria-label="首板实时候选" className="w-full min-w-[1380px] text-left text-xs"><thead><tr className="text-secondary">{candidateColumns.map(column => {
@@ -135,6 +145,6 @@ export function FirstBoard() {
         {tab === 'rules' && draft && <><ErrorNotice error={versions.error ?? accounts.error} retry={() => { void versions.refetch(); void accounts.refetch() }} /><RulesPanel config={config.data} draft={draft} onDraft={setDraft} onSave={() => save.mutate(draft)} versions={versions.data?.versions ?? []} accounts={accounts.data?.accounts ?? []} saving={save.isPending} error={save.error} reload={() => { if (config.data) setDraft(config.data); save.reset() }} /></>}
       </div>}
     </div>
-    <StockPreviewDialog symbol={stock?.symbol ?? null} name={stock?.name} onClose={() => setStock(null)} navList={navList?.some(item => item.symbol === stock?.symbol) ? navList : undefined} onNavigate={(symbol, name) => setStock({ symbol, name: name ?? symbol })} />
+    <StockPreviewDialog symbol={stock?.symbol ?? null} name={stock?.name} onClose={() => setStock(null)} navList={stock?.navList ?? (navList?.some(item => item.symbol === stock?.symbol) ? navList : undefined)} onNavigate={(symbol, name) => setStock(current => ({ symbol, name: name ?? symbol, navList: current?.navList }))} />
   </div>
 }

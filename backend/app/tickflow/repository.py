@@ -20,6 +20,7 @@ import time
 import uuid
 from collections.abc import Callable
 from datetime import date
+from itertools import pairwise
 from pathlib import Path
 
 import duckdb
@@ -1335,6 +1336,163 @@ class KlineRepository:
             # 保持旧接口空结果的完整 schema, 非空时沿用请求列校验。
             df = cache.clear() if df.is_empty() else df.select(existing)
         return df.sort(["symbol", "date"])
+
+    def get_first_board_history_signature(self, sessions: list[date]) -> tuple:
+        """Identity of three completed stock partitions, independent of live writes.
+
+        The caller obtains these consecutive sessions from the independent index
+        calendar. Only their files and the small instrument dimension are touched;
+        today's publication must not invalidate an unchanged yesterday sample.
+        """
+        if (len(sessions) != 3 or any(type(day) is not date for day in sessions)
+                or sorted(set(sessions)) != sessions):
+            raise ValueError("昨日首板需要三个按顺序排列的独立交易日")
+        if enriched_publication_incomplete(self.store.data_dir, "stock"):
+            raise EnrichedGenerationUnavailableError("enriched publication is incomplete")
+        from datetime import timedelta
+
+        paths = [self.store.data_dir / "kline_daily_enriched" / f"date={day}" / "part.parquet"
+                 for day in sessions]
+        instruments = sorted((self.store.data_dir / "instruments").rglob("*.parquet"))
+        if not instruments:
+            raise ValueError("缺少股票资料，无法确认昨日首板范围")
+        # A bounded independent calendar resolves a recent IPO's exact fifth day.
+        calendar_start = sessions[0] - timedelta(days=15)
+        index_paths = [self.store.data_dir / "kline_index_enriched"
+                       / f"date={calendar_start + timedelta(days=offset)}" / "part.parquet"
+                       for offset in range((sessions[-1] - calendar_start).days + 1)]
+        identity = []
+        for path in [*paths, *instruments, *[path for path in index_paths if path.exists()]]:
+            stat = path.stat()
+            identity.append((str(path.relative_to(self.store.data_dir)), stat.st_mtime_ns, stat.st_size))
+        return tuple(identity)
+
+    def get_first_board_history(self, sessions: list[date]) -> tuple[pl.DataFrame, tuple]:
+        """Read T-3/T-2/T-1 only and rebuild price limits for the final two days.
+
+        No live or long-history cache is read or replaced. Each adjacent pair is
+        rescaled to its target day's raw-price basis before using the shared limit
+        engine, so a later uniform adjustment cannot change historical limits.
+        """
+        from datetime import timedelta
+
+        from app.indicators.pipeline import compute_limit_signals
+        from app.price_limits import (
+            no_limit_window_days,
+            no_limit_window_margin_days,
+            parse_listing_date,
+        )
+        from app.services import data_integrity
+        from app.services.index_const import CORE_INDEX_SYMBOLS
+
+        signature = self.get_first_board_history_signature(sessions)
+        paths = [self.store.data_dir / item[0] for item in signature[:3]]
+        history = guarded_collect(
+            scan_enriched_parquet(paths).select("symbol", "date", "close", "raw_close", "quote_ts"),
+            priority="background",
+        ).filter(pl.col("date").is_in(sessions))
+        instrument_paths = [self.store.data_dir / item[0] for item in signature
+                            if Path(item[0]).parts[0] == "instruments"]
+        instruments = guarded_collect(
+            pl.scan_parquet(instrument_paths),
+            priority="background",
+        )
+        index_paths = [self.store.data_dir / item[0] for item in signature
+                       if Path(item[0]).parts[0] == "kline_index_enriched"]
+        if not {"symbol", "name"}.issubset(instruments.columns):
+            raise ValueError("股票资料缺少代码或名称，无法确认昨日首板范围")
+        if instruments.select(pl.col("symbol").is_duplicated().any()).item():
+            raise ValueError("股票资料存在重复代码，暂不计算昨日首板")
+        listing = (pl.col("listing_date").cast(pl.Date, strict=False) if "listing_date" in instruments.columns
+                   else pl.lit(None, dtype=pl.Date))
+        metadata = instruments.select("symbol", listing.alias("_listing"))
+        recent = metadata.filter(pl.col("_listing").is_between(sessions[0] - timedelta(days=15), sessions[-1]))
+        calendar = (sorted(set(guarded_collect(
+            scan_enriched_parquet(index_paths).filter(pl.col("symbol") == CORE_INDEX_SYMBOLS[0])
+            .select("date"), priority="background",
+        )["date"].drop_nulls().to_list())) if index_paths and not recent.is_empty() else [])
+        calendar = sorted(set(calendar) | set(sessions))
+        with data_integrity._CAL_LOCK:
+            known_calendar = sorted(data_integrity._CAL[1] or [])
+        if "as_of" not in instruments.columns:
+            # Undated latest exchange prices cannot be attributed to yesterday.
+            instruments = instruments.drop([c for c in ("limit_up", "limit_down") if c in instruments.columns])
+        history = history.with_columns(pl.len().over("symbol", "date").alias("_rows"))
+        history = history.unique(["symbol", "date"], keep="first").sort("symbol", "date")
+        stamp = pl.from_epoch("quote_ts", time_unit="ms").dt.replace_time_zone("UTC").dt.convert_time_zone("Asia/Shanghai")
+        valid = pl.all_horizontal([
+            pl.col(column).is_finite() & (pl.col(column) > 0) for column in ("close", "raw_close")
+        ]) & (pl.col("_rows") == 1) & (pl.col("quote_ts").is_null() | (
+            (stamp.dt.date() == pl.col("date")) & (stamp.dt.hour() >= 15)))
+        history = history.with_columns(
+            pl.col("raw_close").alias("_source_raw_close"),
+            valid.fill_null(False).alias("_complete"),
+            *[pl.when(valid.fill_null(False)).then(pl.col(column)).otherwise(None).alias(column)
+              for column in ("close", "raw_close")],
+        )
+        output = []
+        for previous, target in pairwise(sessions):
+            pair = history.filter(pl.col("date").is_in([previous, target]))
+            scale = pair.filter(pl.col("date") == target).select(
+                "symbol", (pl.col("raw_close") / pl.col("close")).alias("_target_scale"),
+            )
+            pair = pair.join(scale, on="symbol", how="inner").sort("symbol", "date").with_columns(
+                (pl.col("close") * pl.col("_target_scale")).alias("close"),
+                ((pl.col("date").shift(1).over("symbol") == previous)
+                 & pl.col("_complete").shift(1).over("symbol") & pl.col("_complete"))
+                .fill_null(False).alias("_pair_known"),
+            ).join(metadata, on="symbol", how="left").with_columns(
+                (pl.col("_pair_known") & pl.col("_listing").is_not_null()
+                 & (pl.col("_listing") <= pl.col("date"))).alias("_pair_known"),
+            )
+            window_passed, window_unknown = [], []
+            for item in recent.iter_rows(named=True):
+                listed = parse_listing_date(item["_listing"])
+                days = no_limit_window_days(item["symbol"], listed)
+                if (not days or listed is None or target < listed
+                        or (target - listed).days > no_limit_window_margin_days(item["symbol"])):
+                    continue
+                observed_days = [day for day in calendar if listed <= day <= target]
+                if listed in sessions:
+                    expected_days = [day for day in sessions if listed <= day <= target]
+                elif known_calendar and known_calendar[0] <= listed <= target <= known_calendar[-1]:
+                    expected_days = [day for day in known_calendar if listed <= day <= target]
+                else:
+                    expected_days = [listed + timedelta(days=offset)
+                                     for offset in range((target - listed).days + 1)
+                                     if (listed + timedelta(days=offset)).weekday() < 5]
+                if listed not in observed_days or observed_days != expected_days:
+                    window_unknown.append(item["symbol"])
+                elif len(observed_days) > days:
+                    window_passed.append(item["symbol"])
+            if window_unknown:
+                pair = pair.with_columns(
+                    (pl.col("_pair_known") & ~pl.col("symbol").is_in(window_unknown)).alias("_pair_known"),
+                )
+            limit_instruments = instruments
+            if window_passed:
+                # The shared engine otherwise sees only this two-row price pair
+                # and cannot distinguish the IPO's fifth and sixth trading days.
+                limit_instruments = instruments.with_columns(
+                    pl.when(pl.col("symbol").is_in(window_passed)).then(None)
+                    .otherwise(pl.col("listing_date")).alias("listing_date"),
+                )
+            calculated = compute_limit_signals(pair, limit_instruments, needed={"limit_up_price"})
+            if calculated.is_empty():
+                continue
+            output.append(calculated.filter(pl.col("date") == target).with_columns(
+                pl.when(pl.col("_pair_known")).then(pl.col("limit_up_price"))
+                .otherwise(None).alias("limit_up_price"),
+                pl.col("_source_raw_close").alias("raw_close"),
+                pl.col("_pair_known").alias("limit_evidence_known"),
+            ).select("symbol", "date", "raw_close", "limit_up_price", "quote_ts", "limit_evidence_known"))
+        frame = (pl.concat(output) if output else pl.DataFrame(schema={
+            "symbol": pl.String, "date": pl.Date, "raw_close": pl.Float64,
+            "limit_up_price": pl.Float64, "quote_ts": pl.Int64, "limit_evidence_known": pl.Boolean,
+        })).join(instruments.select("symbol", "name"), on="symbol", how="left").sort("symbol", "date")
+        if self.get_first_board_history_signature(sessions) != signature:
+            raise EnrichedGenerationUnavailableError("first-board history changed while reading")
+        return frame, signature
 
     def get_enriched_history_span(self) -> tuple[date, date] | None:
         """内存 enriched 历史缓存的可用日期区间 (含端点); 不可用/预热中返回 None。

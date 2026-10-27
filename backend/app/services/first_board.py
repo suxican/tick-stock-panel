@@ -29,6 +29,7 @@ from app.services.first_board_context import (
     load_environment,
     load_sector_members,
 )
+from app.services.first_board_feedback import FirstBoardFeedback, empty_feedback, expire_feedback
 from app.services.first_board_observations import FirstBoardObservationStore
 from app.services.first_board_portfolio import (
     buy_budget,
@@ -44,6 +45,7 @@ from app.strategy.first_board import (
     FirstBoardRules,
     build_candidates,
     evaluate_candidates,
+    meets_min_change,
     required_history_bars,
 )
 
@@ -160,6 +162,7 @@ class FirstBoardService:
         self._latest_prices: dict[str, float] = {}
         self._latest_quote_times: dict[str, str] = {}
         self._attention_data = AttentionData(repo)
+        self._feedback = FirstBoardFeedback(repo)
         self._attention_evaluator = AttentionEvaluator()
         self._attention_input: dict = {}
         self._observation_store = FirstBoardObservationStore(self.root / "observations")
@@ -189,11 +192,13 @@ class FirstBoardService:
             raise ValueError("首板配置损坏或版本不受支持, 已停止加载且保留原文件") from exc
 
     def _empty_snapshot(self) -> dict:
+        previous_feedback = getattr(self, "_snapshot", {}).get("yesterday_feedback")
         return {
             "status": "waiting" if self._config.enabled else "disabled",
             "message": "等待有效行情; 可先配置规则或运行历史观察研究。",
             "as_of": None, "observed_at": None, "revision": self._config.revision,
             "rows": [], "environment": {},
+            "yesterday_feedback": copy.deepcopy(previous_feedback) if previous_feedback else empty_feedback(),
             "attention_sampling": {"status": "paused", "last_sample_at": None, "sample_count": 0},
             "coverage": {"candidate_count": 0, "symbol_count": 0, "quote_count": 0, "fresh_count": 0},
             "limitations": list(_LIMITATIONS),
@@ -322,6 +327,7 @@ class FirstBoardService:
             try:
                 if force:
                     self._prepared_key = None
+                    self._feedback.invalidate()
                 if pending is None:
                     current, day = self._refresh_snapshot()
                     if day is None or current.is_empty():
@@ -623,7 +629,10 @@ class FirstBoardService:
                             self._expire_attention(row["attention_context"], "采样时个股行情已过期")
                             row.update(can_buy=False, event_id=None, suggested_amount=None)
                             row["blocked_reasons"].append("采样时个股行情已过期")
-                    coverage = {**snapshot["coverage"], "fresh_count": sum(
+                    coverage = {**snapshot["coverage"],
+                        "candidate_count": len(sample_rows),
+                        "symbol_count": len({row["symbol"] for row in sample_rows}),
+                        "fresh_count": sum(
                         0 <= _quote_age(stamp, sampled_at) <= config.max_quote_age_seconds
                         for stamp in self._latest_quote_times.values()
                     )}
@@ -652,6 +661,30 @@ class FirstBoardService:
                 return
             with self._lock:
                 config = self._config
+            feedback_now = _beijing(now or _now())
+            # Market feedback is independent of strategy preparation and buy gates.
+            # Publish it first so a failed candidate/history check cannot hide it.
+            try:
+                feedback = self._feedback.evaluate(
+                    current, as_of, now=feedback_now,
+                    live=as_of == feedback_now.date() and _continuous(feedback_now),
+                    max_quote_age_seconds=config.max_quote_age_seconds,
+                )
+            except Exception:  # Optional feedback cannot interrupt trading-state safeguards.
+                logger.warning("昨日首板反馈计算失败", exc_info=True)
+                feedback = empty_feedback("昨日首板反馈暂不可用，请等待下一次行情", status="unavailable")
+            with self._lock:
+                if self._stop.is_set() or config.revision != self._config.revision:
+                    return
+                previous_feedback = self._snapshot.get("yesterday_feedback", {})
+                if (feedback["status"] == "unavailable"
+                        and previous_feedback.get("as_of") == str(as_of)
+                        and previous_feedback.get("sample_date")
+                        and previous_feedback.get("status") not in {"waiting", "unavailable"}):
+                    reason = feedback["message"]
+                    feedback = copy.deepcopy(previous_feedback)
+                    feedback.update(status="stale", message=f"{reason}；保留同日最近观测，请查看更新时间")
+                self._snapshot = {**self._snapshot, "yesterday_feedback": feedback}
             self._prepare(as_of, config)
             if self._stop.is_set():
                 return
@@ -752,12 +785,18 @@ class FirstBoardService:
                            "stale": "缺少当日新鲜行情, 买入提示已暂停。",
                            "waiting": realtime_blocked,
                            "ready": "自动跟踪当前候选; 临近涨停提示需自行确认, 涨停价不代表可成交。"}[status]
+                # 最低涨幅约束盘中列表; 完整观察池继续推进失效/炸板事件并保留研究分母。
+                # 无法计算涨幅的行保留数据无效原因, 不获得买入权限。
+                visible_rows = [row for row in rows if row["change_pct"] is None
+                                or meets_min_change(row["change_pct"], config.rules.min_change_pct)]
                 self._snapshot = {
                     "status": status, "message": message, "as_of": str(as_of), "observed_at": now.isoformat(),
                     "revision": config.revision,
-                    "rows": sorted(rows, key=lambda row: (not row["can_buy"], row["symbol"], row["pattern"])),
+                    "rows": sorted(visible_rows, key=lambda row: (not row["can_buy"], row["symbol"], row["pattern"])),
                     "environment": dict(self._environment),
-                    "coverage": {"candidate_count": len(rows), "symbol_count": len(state["candidate_symbols"]),
+                    "yesterday_feedback": feedback,
+                    "coverage": {"candidate_count": len(visible_rows),
+                                 "symbol_count": len({row["symbol"] for row in visible_rows}),
                                  "quote_count": current.height, "fresh_count": fresh.height},
                     "limitations": list(_LIMITATIONS),
                     "paper": portfolio_snapshot(self.repo.store.data_dir, config.paper_account_id, prices),
@@ -797,6 +836,8 @@ class FirstBoardService:
             quote_times = dict(self._latest_quote_times)
         # UI 停留也不能让上次有效买点无限期有效。
         now = _beijing(_now())
+        expire_feedback(result["yesterday_feedback"], now=now,
+                        max_quote_age_seconds=config.max_quote_age_seconds)
         realtime_blocked = self._realtime_block_reason()
         continuous = _continuous(now)
         fresh_count = sum(0 <= _quote_age(stamp, now) <= config.max_quote_age_seconds

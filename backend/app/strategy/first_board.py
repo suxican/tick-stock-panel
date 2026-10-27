@@ -302,6 +302,11 @@ def observation_limit_price(symbol: str, trade_date: date, previous: float | Non
     return first_board_limit_price(symbol, trade_date, previous, explicit=current.get("limit_up"))
 
 
+def meets_min_change(change: float, minimum: float) -> bool:
+    """包含等于门槛的涨幅, 容忍价格相除产生的浮点误差。"""
+    return change >= minimum or math.isclose(change, minimum, rel_tol=0, abs_tol=1e-12)
+
+
 def evaluate_candidates(
     candidates: pl.DataFrame, current: pl.DataFrame, rules: FirstBoardRules, *, as_of: date,
     historical: bool = False,
@@ -376,7 +381,7 @@ def evaluate_candidates(
             reasons = []
             if adjusted <= candidate["breakout_price"]:
                 reasons.append("尚未突破历史形态参考高点")
-            if change < rules.min_change_pct:
+            if not meets_min_change(change, rules.min_change_pct):
                 reasons.append("涨幅未达到实验门槛")
             if distance > rules.approaching_distance:
                 reasons.append("距离涨停仍超过实验门槛")

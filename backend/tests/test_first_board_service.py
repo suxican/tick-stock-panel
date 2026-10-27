@@ -86,6 +86,73 @@ def test_live_candidate_persists_event_and_restart_deduplicates(service, monkeyp
     assert reopened.snapshot()["rows"][0]["event_id"] == row["event_id"]
 
 
+@pytest.mark.parametrize(("price", "expected_count"), [
+    (9.99, 0), (10.0, 0), (10.49, 0), (10.5, 3), (10.8, 3),
+])
+def test_snapshot_minimum_change_filters_all_patterns(service, monkeypatch, price, expected_count):
+    prepare = service._prepare
+
+    def prepare_patterns(*args):
+        prepare(*args)
+        candidate = service._candidates.to_dicts()[0]
+        service._candidates = pl.DataFrame([
+            {**candidate, "pattern": pattern} for pattern in ("platform", "trend", "oversold")
+        ])
+
+    monkeypatch.setattr(service, "_prepare", prepare_patterns)
+    # Ignore the upstream percentage field; use the same price basis as the displayed change.
+    service.process_snapshot(quotes(raw_close=price, close=price, change_pct=.08), NOW.date(), now=NOW)
+    snapshot = service.snapshot()
+    assert len(snapshot["rows"]) == snapshot["coverage"]["candidate_count"] == expected_count
+    assert snapshot["coverage"]["symbol_count"] == int(expected_count > 0)
+    assert all(row["change_pct"] == pytest.approx(price / 10 - 1) for row in snapshot["rows"])
+
+
+def test_snapshot_minimum_change_includes_exact_boundary_despite_float_rounding(service):
+    service.process_snapshot(quotes(raw_close=1.68, close=1.68, prev_close=1.6,
+                                    raw_high=1.68, limit_up_price=1.755), NOW.date(), now=NOW)
+    assert service.snapshot()["coverage"]["candidate_count"] == 1
+    assert service.snapshot()["rows"][0]["change_pct"] == pytest.approx(.05)
+
+
+def test_minimum_change_config_refresh_and_restart(service, monkeypatch):
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    config = service.get_config()
+    changed = service.save_config({**config, "rules": {**config["rules"], "min_change_pct": .09}})
+    assert service.snapshot()["rows"] == []
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    assert service.snapshot()["rows"] == []
+    assert service.snapshot()["revision"] == changed["revision"]
+
+    reopened = fb.FirstBoardService(service.repo, history_loader=lambda *_: pl.DataFrame())
+    monkeypatch.setattr(reopened, "_prepare", lambda *_: None)
+    reopened._candidates = service._candidates
+    reopened.process_snapshot(quotes(), NOW.date(), now=NOW)
+    assert reopened.snapshot()["rows"] == []
+
+    config = service.get_config()
+    service.save_config({**config, "rules": {**config["rules"], "min_change_pct": .05}})
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    assert service.snapshot()["coverage"]["candidate_count"] == 1
+
+
+def test_falling_below_minimum_leaves_pool_and_reentry_has_a_new_signal(service):
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    first_id = service.snapshot()["rows"][0]["event_id"]
+    service.process_snapshot(quotes(raw_close=10.4, close=10.4), NOW.date(), now=NOW)
+    assert service.snapshot()["rows"] == []
+    assert service.events(NOW.date())[0]["event_type"] == "watch"
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    assert service.snapshot()["rows"][0]["event_id"] not in (None, first_id)
+
+
+def test_broken_stock_below_minimum_leaves_pool_but_keeps_event(service):
+    service.process_snapshot(quotes(raw_close=11.0, close=11.0, raw_high=11.0), NOW.date(), now=NOW)
+    service.process_snapshot(quotes(raw_close=10.4, close=10.4, raw_high=11.0), NOW.date(), now=NOW)
+    assert service.snapshot()["rows"] == []
+    assert service.events(NOW.date())[0]["event_type"] == "broken"
+
+
 @pytest.mark.parametrize("change", [
     {"quote_ts": int((NOW - timedelta(seconds=31)).timestamp() * 1000)},
     {"quote_ts": int((NOW + timedelta(seconds=1)).timestamp() * 1000)},

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -117,6 +118,94 @@ def test_ensure_synced_registers_and_unregisters(data_dir):
 def test_all_factors_lazy_sync(data_dir):
     _mk_config(data_dir)
     assert COL in {s.id for s in all_factors()}  # all_factors 内部惰性同步
+
+
+# ── 市场级表与个股通道隔离 ────────────────────────────────
+
+@pytest.mark.parametrize("mode", ["timeseries", "snapshot"])
+@pytest.mark.parametrize("has_symbol", [False, True])
+def test_market_level_table_is_not_read_or_injected(
+    data_dir, monkeypatch, caplog, mode, has_symbol,
+):
+    stock = _mk_config(data_dir, mode=mode)
+    market = ExtConfig(
+        id="market", label="市场情绪", mode=mode, market_level=True,
+        fields=[ExtField("score", "float"), ExtField("state", "string")],
+    )
+    ExtConfigStore(data_dir).upsert(market)
+    raw_market = pl.DataFrame({"score": [80.0], "state": ["bull"]})
+    if has_symbol:
+        raw_market = raw_market.with_columns(pl.lit("600000.SH").alias("symbol"))
+    write_ext_parquet(raw_market, market, data_dir, snapshot_date=date(2026, 1, 5))
+    write_ext_parquet(
+        pl.DataFrame({"symbol": ["600000.SH"], "hot": [0.9]}),
+        stock, data_dir, snapshot_date=date(2026, 1, 5),
+    )
+    reads = []
+    read_parquet = pl.read_parquet
+
+    def tracked_read(path, *args, **kwargs):
+        reads.append(Path(path))
+        return read_parquet(path, *args, **kwargs)
+
+    monkeypatch.setattr(pl, "read_parquet", tracked_read)
+    frame = _frame([("600000.SH", "2026-01-05", 10.0)])
+    for _ in range(2):
+        out = ext_factors.attach_ext_columns(frame, include_snapshot=True, data_dir=data_dir)
+        assert out.select(frame.columns).equals(frame)
+        assert out[COL].to_list() == [0.9]
+        assert not any(c.startswith("ext_market_") for c in out.columns)
+    assert reads
+    assert not any(p.is_relative_to(data_dir / "ext_data" / "market") for p in reads)
+    assert not [r for r in caplog.records if r.name == ext_factors.__name__]
+    assert ExtConfigStore(data_dir).get("market").market_level  # 配置仍供市场数据读侧使用
+
+
+@pytest.mark.parametrize("mode", ["timeseries", "snapshot"])
+def test_market_level_fields_are_excluded_from_factors_and_signal_options(data_dir, mode):
+    _mk_config(data_dir)
+    ExtConfigStore(data_dir).upsert(ExtConfig(
+        id="market", label="市场情绪", mode=mode, market_level=True,
+        fields=[ExtField("score", "float"), ExtField("state", "string")],
+    ))
+    stock_factors = {COL, "ext_tags_cnt"}
+    assert {s.id for s in ext_factor_specs(data_dir)} == stock_factors
+    assert ext_factors.ext_factor_ids(data_dir) == stock_factors
+    assert ext_factors.numeric_timeseries_ext_columns(data_dir) == stock_factors
+    assert {e["key"] for e in ext_factors.ext_string_field_entries(data_dir)} == {"ext_tags_name"}
+    assert ext_factors.ext_string_fields(data_dir) == {"ext_tags_name"}
+    ext_factors.ensure_synced(data_dir)
+    assert get_factor(COL) is not None
+    assert get_factor("ext_market_score") is None
+    allowed = custom_signals.allowed_fields()
+    assert stock_factors | {"ext_tags_name"} <= allowed
+    assert not {"ext_market_score", "ext_market_state"} & allowed
+
+
+def test_market_level_change_updates_registered_fields(data_dir):
+    cfg = _mk_config(data_dir)
+    for market_level in (False, True, False):
+        cfg.market_level = market_level
+        ExtConfigStore(data_dir).upsert(cfg)
+        ext_factors.ensure_synced(data_dir)
+        assert (get_factor(COL) is not None) is not market_level
+        assert (COL in ext_factors.numeric_timeseries_ext_columns(data_dir)) is not market_level
+        assert ("ext_tags_name" in custom_signals.allowed_fields()) is not market_level
+
+
+@pytest.mark.parametrize("mode", ["timeseries", "snapshot"])
+def test_stock_table_without_symbol_still_warns(data_dir, caplog, mode):
+    cfg = _mk_config(data_dir, mode=mode)
+    write_ext_parquet(
+        pl.DataFrame({"hot": [0.9]}), cfg, data_dir, snapshot_date=date(2026, 1, 5),
+    )
+    frame = _frame([("600000.SH", "2026-01-05", 10.0)])
+    out = ext_factors.attach_ext_columns(frame, include_snapshot=True, data_dir=data_dir)
+    assert out.equals(frame)
+    assert any(
+        r.name == ext_factors.__name__ and "扩展表 tags" in r.message and "symbol" in r.message
+        for r in caplog.records
+    )
 
 
 # ── 时序按日对齐 (PIT) ────────────────────────────────────
