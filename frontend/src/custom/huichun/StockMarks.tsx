@@ -1,58 +1,13 @@
-import { useRef, useState } from 'react'
 import { Pin, Star } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { storage } from '@/lib/storage'
+import { useStockMarks as useStoredStockMarks, type StockMarks, type MarkKind } from '@/lib/useStockMarks'
 
-type StockMarks = ReturnType<typeof storage.huichunStockMarks.get>
+export { markedFirst as pinnedFirst, type MarkKind } from '@/lib/useStockMarks'
 type Mark = StockMarks[string]
-export type MarkKind = keyof Mark
-
-function loadMarks(): StockMarks {
-  const saved = storage.huichunStockMarks.get({})
-  if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {}
-  const marks: StockMarks = {}
-  for (const [symbol, value] of Object.entries(saved)) {
-    if (!/^\d{6}\.(SH|SZ|BJ)$/.test(symbol) || !value || typeof value !== 'object' || Array.isArray(value)) continue
-    const focused = value.focused === true
-    const pinned = value.pinned === true
-    if (focused || pinned) marks[symbol] = { focused, pinned }
-  }
-  return marks
-}
 
 export function useStockMarks() {
-  const [marks, setMarks] = useState(loadMarks)
-  const current = useRef(marks)
-  const [error, setError] = useState<Error | null>(null)
-
-  function save(next: StockMarks) {
-    storage.huichunStockMarks.set(next)
-    // 共享存储会吞掉浏览器写入异常，读回确认后才能承诺刷新后保留。
-    const saved = storage.huichunStockMarks.get({})
-    setError(JSON.stringify(saved) === JSON.stringify(next) ? null
-      : new Error('标记未能保存，当前页面仍有效，刷新后可能丢失。请重试。'))
-  }
-
-  function toggle(symbol: string, kind: MarkKind) {
-    const next = { ...current.current }
-    const value = { ...(next[symbol] ?? { focused: false, pinned: false }) }
-    value[kind] = !value[kind]
-    if (value.focused || value.pinned) next[symbol] = value
-    else delete next[symbol]
-    current.current = next
-    setMarks(next)
-    save(next)
-  }
-
-  return { marks, toggle, error, retry: () => save(current.current) }
-}
-
-/** 先保留原字段排序，再把置顶股票稳定分组；调用方随后分页。 */
-export function pinnedFirst<T extends { symbol: string }>(rows: T[], marks: StockMarks): T[] {
-  const pinned: T[] = []
-  const others: T[] = []
-  for (const row of rows) (marks[row.symbol]?.pinned ? pinned : others).push(row)
-  return [...pinned, ...others]
+  return useStoredStockMarks(storage.huichunStockMarks)
 }
 
 export function StockMarkButtons({ symbol, name, mark, onToggle }: {

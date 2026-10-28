@@ -71,6 +71,7 @@ let host: HTMLDivElement
 let root: Root
 let client: QueryClient
 beforeEach(() => {
+  localStorage.removeItem('first-board-stock-marks')
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   Object.assign(capabilityState, { available: true, failed: false, ready: true })
   Object.values(calls).forEach(call => call.mockReset())
@@ -91,7 +92,7 @@ beforeEach(() => {
   root = createRoot(host)
   client = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0, gcTime: Infinity } } })
 })
-afterEach(async () => { await act(async () => root.unmount()); client.clear(); host.remove(); vi.restoreAllMocks() })
+afterEach(async () => { await act(async () => root.unmount()); client.clear(); host.remove(); vi.restoreAllMocks(); localStorage.removeItem('first-board-stock-marks') })
 async function settle() { for (let i = 0; i < 6; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) }) }
 async function render(tab = 'live') {
   await act(async () => root.render(<MemoryRouter initialEntries={[`/first-board?tab=${tab}`]}><QueryClientProvider client={client}><FirstBoard /></QueryClientProvider></MemoryRouter>))
@@ -110,6 +111,83 @@ function candidate(name: string, values: Partial<FirstBoardCandidate> = {}): Fir
 function candidateNames() {
   return [...host.querySelectorAll('table[aria-label="首板实时候选"] tbody tr')].map(row => row.querySelector('td button')!.firstChild!.textContent)
 }
+async function toggleFocus(name: string, symbol: string, focused = false) {
+  const control = host.querySelector<HTMLButtonElement>(`button[aria-label="${focused ? '取消关注' : '特别关注'} ${name} ${symbol}"]`)
+  expect(control).not.toBeNull()
+  await act(async () => control!.click())
+  await settle()
+}
+
+it('pins every pattern of a focused stock while retaining sorting, filters and stock navigation', async () => {
+  const data = { ...snapshot(), rows: [
+    candidate('A', { change_pct: .1 }), candidate('B', { change_pct: .06 }),
+    candidate('B', { pattern: 'trend', change_pct: .06 }), candidate('C', { change_pct: .08 }),
+  ] }
+  calls.firstBoardSnapshot.mockResolvedValue(data)
+  await render()
+  expect(candidateNames()).toEqual(['A', 'C', 'B', 'B'])
+  await toggleFocus('B', '600001.SH')
+  expect(candidateNames()).toEqual(['B', 'B', 'A', 'C'])
+  expect(host.querySelectorAll('button[aria-label="取消关注 B 600001.SH"][aria-pressed="true"]')).toHaveLength(2)
+  await sortBy('涨幅')
+  await sortBy('涨幅')
+  expect(candidateNames()).toEqual(['B', 'B', 'C', 'A'])
+  await toggleFocus('A', '600000.SH')
+  expect(candidateNames()).toEqual(['B', 'B', 'A', 'C'])
+  await act(async () => host.querySelector<HTMLButtonElement>('table[aria-label="首板实时候选"] tbody td button')!.click())
+  expect(JSON.parse(host.querySelector('[role="dialog"]')!.getAttribute('data-nav-list')!).map((row: { name: string }) => row.name)).toEqual(['B', 'A', 'C'])
+  await filterPattern('trend')
+  expect(candidateNames()).toEqual(['B'])
+  await filterPattern('all')
+  await toggleFocus('B', '600001.SH', true)
+  expect(candidateNames()).toEqual(['A', 'B', 'B', 'C'])
+  await toggleFocus('A', '600000.SH', true)
+  expect(candidateNames()).toEqual(['B', 'B', 'C', 'A'])
+  expect(client.getQueryData<FirstBoardSnapshot>(QK.firstBoardSnapshot)?.rows).toEqual(data.rows)
+  expect(calls.firstBoardPaperOrder).not.toHaveBeenCalled()
+})
+
+it('restores focus across remounts and refreshed quotes using its own persisted stock marks', async () => {
+  const data = { ...snapshot(), rows: [candidate('A', { change_pct: .1 }), candidate('B', { change_pct: .06 })] }
+  localStorage.setItem('huichun-stock-marks', JSON.stringify({ '600000.SH': { focused: true, pinned: true } }))
+  calls.firstBoardSnapshot.mockResolvedValue(data)
+  await render()
+  await toggleFocus('B', '600001.SH')
+  expect(JSON.parse(localStorage.getItem('first-board-stock-marks')!)['600001.SH'].focused).toBe(true)
+  await act(async () => root.unmount())
+  root = createRoot(host)
+  await render()
+  expect(candidateNames()).toEqual(['B', 'A'])
+  calls.firstBoardSnapshot.mockResolvedValue({ ...data, rows: [{ ...data.rows[0], change_pct: .2 }, data.rows[1]] })
+  await click('刷新')
+  expect(candidateNames()).toEqual(['B', 'A'])
+  await toggleFocus('B', '600001.SH', true)
+  expect(JSON.parse(localStorage.getItem('first-board-stock-marks')!)).toEqual({})
+  expect(JSON.parse(localStorage.getItem('huichun-stock-marks')!)).toEqual({ '600000.SH': { focused: true, pinned: true } })
+  localStorage.removeItem('huichun-stock-marks')
+})
+
+it.each(['{', 'null', '[]', '{"600001.SH":{"focused":"yes","pinned":1}}'])('ignores invalid saved focus: %s', async raw => {
+  localStorage.setItem('first-board-stock-marks', raw)
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [candidate('A', { change_pct: .1 }), candidate('B', { change_pct: .06 })] })
+  await render()
+  expect(candidateNames()).toEqual(['A', 'B'])
+  await toggleFocus('B', '600001.SH')
+  expect(candidateNames()).toEqual(['B', 'A'])
+})
+
+it('keeps focus usable and offers retry when persistence fails', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [candidate('A', { change_pct: .1 }), candidate('B', { change_pct: .06 })] })
+  await render()
+  const failure = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('storage unavailable') })
+  await toggleFocus('B', '600001.SH')
+  expect(candidateNames()).toEqual(['B', 'A'])
+  expect(host.textContent).toContain('标记未能保存')
+  failure.mockRestore()
+  await click('重试')
+  expect(host.textContent).not.toContain('标记未能保存')
+  expect(JSON.parse(localStorage.getItem('first-board-stock-marks')!)['600001.SH'].focused).toBe(true)
+})
 function sortButton(label: string) { return host.querySelector<HTMLButtonElement>(`button[aria-label="按${label}排序"]`)! }
 async function sortBy(label: string) {
   expect(sortButton(label)).not.toBeNull()

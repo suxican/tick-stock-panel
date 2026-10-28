@@ -73,6 +73,9 @@ export const storage = {
   /** 回春候选和观察池共用的个股关注、置顶标记 */
   huichunStockMarks: kv<Record<string, { focused: boolean; pinned: boolean }>>('huichun-stock-marks'),
 
+  /** 首板候选的个股特别关注，独立于其他模式 */
+  firstBoardStockMarks: kv<Record<string, { focused: boolean; pinned: boolean }>>('first-board-stock-marks'),
+
   /** 自选列表视图模式 table | card (分组卡片为临时模式, 不持久化) */
   watchlistView:        kv<string>('watchlist_view'),
 
