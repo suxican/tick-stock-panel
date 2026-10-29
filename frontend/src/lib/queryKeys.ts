@@ -7,7 +7,7 @@
 
 // ===== Query Key 工厂 =====
 
-import type { HuichunChartRequest } from './api'
+import type { FirstBoardEventFilters, HuichunChartRequest } from './api'
 
 export const QK = {
   // 回春扫描和收益快照独立刷新；现价仍复用市场行情缓存。
@@ -20,7 +20,7 @@ export const QK = {
   firstBoard: ['first-board'] as const,
   firstBoardConfig: ['first-board', 'config'] as const,
   firstBoardSnapshot: ['first-board', 'snapshot'] as const,
-  firstBoardEvents: (day: string) => ['first-board', 'events', day] as const,
+  firstBoardEvents: (day: string, filters: FirstBoardEventFilters = {}) => ['first-board', 'events', day, filters] as const,
   firstBoardVersions: ['first-board', 'versions'] as const,
   firstBoardResearchRuns: ['first-board', 'research-runs'] as const,
   firstBoardTradeValidationRuns: ['first-board', 'trade-validation-runs'] as const,

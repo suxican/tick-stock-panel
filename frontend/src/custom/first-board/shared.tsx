@@ -19,7 +19,7 @@ const stateColors: Record<FirstBoardState, string> = {
   broken: 'border-orange-500/25 bg-orange-500/10 text-orange-800 dark:text-orange-300',
   invalid: 'border-slate-500/25 bg-slate-500/10 text-slate-700 dark:text-slate-300',
 }
-const eventLabels: Record<string, string> = { buy_candidate: '买入候选', approaching: '临近涨停', sealed: '涨停价观察', broken: '开板观察', invalid: '失效', exit_candidate: '退出提示', watch: '进入观察' }
+export const eventLabels = { buy_candidate: '买入候选', approaching: '临近涨停', sealed: '涨停价观察', broken: '开板观察', invalid: '失效', exit_candidate: '退出提示', watch: '进入观察' }
 const eventColors: Record<string, string> = {
   ...stateColors,
   buy_candidate: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300',
@@ -57,7 +57,7 @@ export function StateBadge({ state }: { state: FirstBoardState }) {
   return <span className={cn(badgeClass, 'rounded', stateColors[state] ?? neutralBadgeClass)}>{stateLabels[state] ?? state}</span>
 }
 export function EventBadge({ type }: { type: string }) {
-  return <span className={cn(badgeClass, 'rounded', eventColors[type] ?? neutralBadgeClass)}>{eventLabels[type] ?? '状态变化'}</span>
+  return <span className={cn(badgeClass, 'rounded', eventColors[type] ?? neutralBadgeClass)}>{eventLabels[type as keyof typeof eventLabels] ?? '状态变化'}</span>
 }
 export function PatternBadge({ pattern, label }: { pattern: FirstBoardEvent['pattern']; label: string }) {
   return <span className={cn(badgeClass, 'rounded-full', patternColors[pattern] ?? neutralBadgeClass)}>{label}</span>

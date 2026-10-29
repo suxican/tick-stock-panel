@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import type { FirstBoardAttention, FirstBoardCandidate, FirstBoardComparison, FirstBoardConfig, FirstBoardFeedback, FirstBoardResearch, FirstBoardSnapshot, FirstBoardSummary } from '@/lib/api'
+import type { FirstBoardAttention, FirstBoardCandidate, FirstBoardComparison, FirstBoardConfig, FirstBoardEvent, FirstBoardEventFilters, FirstBoardFeedback, FirstBoardResearch, FirstBoardSnapshot, FirstBoardSummary } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { FirstBoard } from './FirstBoard'
 import extension from './extension'
@@ -570,6 +570,56 @@ it('starts a newly selected column in ascending order and clears the previous in
   expect(sortButton('现价').closest('th')?.getAttribute('aria-sort')).toBe('none')
   expect(sortButton('涨幅').closest('th')?.getAttribute('aria-sort')).toBe('ascending')
 })
+it('filters each candidate state using the displayed state labels', async () => {
+  const states = ['watch', 'approaching', 'sealed', 'broken', 'invalid'] as const
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: states.map(state => candidate(state, { state })) })
+  await render()
+  const select = host.querySelector<HTMLSelectElement>('select[aria-label="候选状态"]')!
+  expect(select).not.toBeNull()
+  expect([...select.options].map(option => option.text)).toEqual(['全部状态', '观察中', '临近涨停', '涨停价观察', '已开板', '已失效'])
+  for (const state of states) {
+    await act(async () => { select.value = state; select.dispatchEvent(new Event('change', { bubbles: true })) })
+    expect(candidateNames()).toEqual([state])
+    expect([...host.querySelectorAll('h2')].find(item => item.textContent?.startsWith('今日候选'))?.textContent).toBe('今日候选 1 条')
+  }
+  await act(async () => { select.value = 'all'; select.dispatchEvent(new Event('change', { bubbles: true })) })
+  expect(candidateNames()).toEqual([...states])
+})
+it('combines candidate state with other filters and retains sorting and state across refresh and tabs', async () => {
+  const data = { ...snapshot(), rows: [
+    candidate('A', { state: 'broken', price: 30 }), candidate('B', { state: 'approaching', price: 10 }),
+    candidate('C', { state: 'broken', price: 20, pattern: 'oversold', can_buy: false }),
+    candidate('D', { state: 'broken', price: 40 }),
+  ] }
+  calls.firstBoardSnapshot.mockResolvedValue(data)
+  await render()
+  const select = host.querySelector<HTMLSelectElement>('select[aria-label="候选状态"]')!
+  expect(select).not.toBeNull()
+  await sortBy('现价')
+  await act(async () => { select.value = 'broken'; select.dispatchEvent(new Event('change', { bubbles: true })) })
+  expect(candidateNames()).toEqual(['C', 'A', 'D'])
+  await filterPattern('trend')
+  expect(candidateNames()).toEqual([])
+  expect(host.textContent).toContain('当前筛选条件下暂无候选')
+  await filterPattern('all')
+  const actionable = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+  await act(async () => actionable.click())
+  expect(candidateNames()).toEqual(['A', 'D'])
+  await act(async () => host.querySelector<HTMLButtonElement>('table[aria-label="首板实时候选"] tbody td button')!.click())
+  expect(JSON.parse(host.querySelector('[role="dialog"]')!.getAttribute('data-nav-list')!).map((row: { name: string }) => row.name)).toEqual(['A', 'D'])
+  await click('关闭股票')
+  const refreshed = { ...data, rows: [data.rows[0], data.rows[1], { ...data.rows[2], can_buy: true, price: 50 }, { ...data.rows[3], state: 'sealed' as const }] }
+  calls.firstBoardSnapshot.mockResolvedValue(refreshed)
+  await click('刷新')
+  expect(candidateNames()).toEqual(['A', 'C'])
+  expect(sortButton('现价').closest('th')?.getAttribute('aria-sort')).toBe('ascending')
+  expect(client.getQueryData(QK.firstBoardSnapshot)).toEqual(refreshed)
+  await click('信号记录')
+  expect(host.querySelector<HTMLSelectElement>('select[aria-label="信号状态"]')?.value).toBe('all')
+  await click('今日盯盘')
+  expect(host.querySelector<HTMLSelectElement>('select[aria-label="候选状态"]')?.value).toBe('broken')
+  expect(candidateNames()).toEqual(['A', 'C'])
+})
 it('preserves sorting across filters, an empty result and a refreshed snapshot', async () => {
   const data = { ...snapshot(), rows: [candidate('A', { price: 30 }), candidate('B', { price: 10, can_buy: false }), candidate('C', { price: 20 }), candidate('D', { price: 5, pattern: 'oversold' })] }
   calls.firstBoardSnapshot.mockResolvedValue(data)
@@ -612,6 +662,39 @@ it('navigates stock details in sorted visible order with duplicate symbols remov
   expect(navigation().map(row => row.name)).toEqual(['B', 'A'])
   await sortBy('现价')
   expect(navigation().map(row => row.name)).toEqual(['A', 'B'])
+})
+it('collapses monitor details without losing feedback controls or stopping snapshot updates', async () => {
+  const data = { ...snapshot(), yesterday_feedback: yesterdayFeedback() }
+  calls.firstBoardSnapshot.mockResolvedValue(data)
+  await render()
+  const collapse = host.querySelector<HTMLButtonElement>('button[aria-label="收起盯盘详情"]')!
+  expect(collapse).not.toBeNull()
+  expect(collapse.getAttribute('aria-expanded')).toBe('true')
+  const details = document.getElementById(collapse.getAttribute('aria-controls')!)!
+  expect(details.hidden).toBe(false)
+  await click('查看明细')
+  await click('双创')
+  await act(async () => collapse.click())
+  expect(details.hidden).toBe(true)
+  const expand = host.querySelector<HTMLButtonElement>('button[aria-label="展开盯盘详情"]')!
+  expect(expand.getAttribute('aria-expanded')).toBe('false')
+  expect(candidateNames()).toEqual(['测试股票'])
+  const refreshed = { ...data, status: 'stale' as const, observed_at: '2026-09-30T10:05:00+08:00', revision: 2, message: '刷新后的盯盘详情' }
+  calls.firstBoardSnapshot.mockResolvedValue(refreshed)
+  await click('刷新')
+  expect(details.hidden).toBe(true)
+  expect(details.previousElementSibling?.textContent).toContain('数据已过期')
+  expect(details.previousElementSibling?.textContent).toContain('10:05:00')
+  expect(details.previousElementSibling?.textContent).toContain('规则版本 2')
+  await act(async () => expand.click())
+  expect(details.hidden).toBe(false)
+  expect(details.textContent).toContain('刷新后的盯盘详情')
+  expect(button('双创').getAttribute('aria-pressed')).toBe('true')
+  expect(button('收起明细')).toBeDefined()
+  await click('收起')
+  await click('信号记录')
+  await click('今日盯盘')
+  expect(host.querySelector('button[aria-label="展开盯盘详情"]')?.getAttribute('aria-expanded')).toBe('false')
 })
 it('shows the current universe in the live monitor', async () => {
   calls.firstBoardConfig.mockResolvedValue({ ...config(), rules: { ...config().rules, universe: 'hs_a_non_st' } })
@@ -714,13 +797,13 @@ it('requests an ISO event date even when the browser falls back to another local
     return new DateTimeFormat('en-US', options)
   })
   await render('events')
-  expect(calls.firstBoardEvents).toHaveBeenCalledWith('2026-10-09')
+  expect(calls.firstBoardEvents).toHaveBeenCalledWith('2026-10-09', {})
   const input = host.querySelector<HTMLInputElement>('input[type="date"]')!
   expect(input.value).toBe('2026-10-09')
   expect(input.max).toBe('2026-10-09')
   expect(host.textContent).toContain('该日暂无首板信号')
   await numberInput('交易日期', '2026-09-30')
-  expect(calls.firstBoardEvents).toHaveBeenLastCalledWith('2026-09-30')
+  expect(calls.firstBoardEvents).toHaveBeenLastCalledWith('2026-09-30', {})
   expect(client.getQueryData(QK.firstBoardEvents('2026-09-30'))).toBeDefined()
   calls.firstBoardEvents.mockClear()
   await numberInput('交易日期', '')
@@ -732,9 +815,58 @@ it('renders historical events by selected date without turning them into live bu
     pattern: 'platform', pattern_label: '平台突破', state: 'approaching', event_type: 'buy_candidate', message: '历史候选信号', price: 10.8,
     revision: 1, evidence: {}, blocked_reasons: [], quote_time: '2026-09-30T09:00:00+08:00' }], total: 1, day: beijingDay() })
   await render('events')
-  expect(calls.firstBoardEvents).toHaveBeenCalledWith(beijingDay())
+  expect(calls.firstBoardEvents).toHaveBeenCalledWith(beijingDay(), {})
   expect(host.textContent).toContain('历史候选信号')
   expect(button('模拟买入')).toBeUndefined()
+})
+it('combines event filters, keeps them across dates and tabs, and handles empty results and refresh errors', async () => {
+  const records: FirstBoardEvent[] = [
+    { id: 'near', pattern: 'oversold', pattern_label: '超跌反弹', state: 'approaching', event_type: 'approaching' },
+    { id: 'buy', pattern: 'oversold', pattern_label: '超跌反弹', state: 'approaching', event_type: 'buy_candidate' },
+    { id: 'exit', pattern: 'exit', pattern_label: '次日退出', state: 'exit_candidate', event_type: 'exit_candidate' },
+  ].map(item => ({ ...item, ts: 1790720400000, date: beijingDay(), symbol: '600000.SH', name: item.id,
+    message: `信号-${item.id}`, price: 10, revision: 1, evidence: {}, blocked_reasons: [], quote_time: null } as FirstBoardEvent))
+  calls.firstBoardEvents.mockImplementation(async (day: string, filters: FirstBoardEventFilters) => {
+    const events = records.filter(row => (!filters.pattern || row.pattern === filters.pattern) && (!filters.event_type || row.event_type === filters.event_type))
+    return { events, day, total: events.length }
+  })
+  const select = async (label: string, value: string) => {
+    const input = host.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!
+    expect(input).not.toBeNull()
+    await act(async () => { input.value = value; input.dispatchEvent(new Event('change', { bubbles: true })) })
+    await settle()
+  }
+  const messages = () => [...host.querySelectorAll('ul.divide-y > li')].map(row => row.querySelector('p')?.textContent)
+  await render('events')
+  expect(messages()).toEqual(['信号-near', '信号-buy', '信号-exit'])
+  await select('信号形态', 'oversold')
+  expect(messages()).toEqual(['信号-near', '信号-buy'])
+  await select('信号状态', 'approaching')
+  expect(messages()).toEqual(['信号-near'])
+  expect(host.querySelector('h2')?.textContent).toBe('信号记录 1 条')
+  await numberInput('交易日期', '2026-09-30')
+  expect(calls.firstBoardEvents).toHaveBeenLastCalledWith('2026-09-30', { pattern: 'oversold', event_type: 'approaching' })
+  await click('今日盯盘')
+  expect(host.querySelector('select')?.value).toBe('all')
+  await click('信号记录')
+  expect(messages()).toEqual(['信号-near'])
+  await select('信号状态', 'exit_candidate')
+  expect(messages()).toEqual([])
+  expect(host.textContent).toContain('当前筛选条件下暂无信号')
+  expect(host.textContent).not.toContain('该日暂无首板信号')
+  await select('信号形态', 'exit')
+  expect(messages()).toEqual(['信号-exit'])
+  calls.firstBoardEvents.mockRejectedValueOnce(new Error('信号读取失败'))
+  await act(async () => { await client.invalidateQueries({ queryKey: QK.firstBoard }) })
+  await settle()
+  expect(host.textContent).toContain('信号读取失败')
+  expect(messages()).toEqual(['信号-exit'])
+  await click('重试')
+  expect(host.textContent).not.toContain('信号读取失败')
+  await select('信号形态', 'all')
+  await select('信号状态', 'all')
+  expect(messages()).toEqual(['信号-near', '信号-buy', '信号-exit'])
+  expect(client.getQueryData(QK.firstBoardEvents('2026-09-30', { pattern: 'oversold', event_type: 'approaching' }))).toBeDefined()
 })
 it('shows research observations and denominators without claiming execution win rate', async () => {
   await render('research')

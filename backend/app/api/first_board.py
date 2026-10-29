@@ -102,7 +102,12 @@ def refresh(request: Request):
 
 
 @router.get("/events")
-def events(request: Request, day: date | None = None):
+def events(
+    request: Request,
+    day: date | None = None,
+    pattern: Literal["platform", "trend", "oversold", "exit"] | None = None,
+    event_type: Literal["watch", "approaching", "buy_candidate", "sealed", "broken", "invalid", "exit_candidate"] | None = None,
+):
     from app.market_time import cn_today
 
     day = day or cn_today()
@@ -110,6 +115,9 @@ def events(request: Request, day: date | None = None):
         records = _service(request).events(day)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    records = [record for record in records
+               if (pattern is None or record.get("pattern") == pattern)
+               and (event_type is None or record.get("event_type") == event_type)]
     return {"events": records[:5000], "day": str(day), "total": len(records)}
 
 

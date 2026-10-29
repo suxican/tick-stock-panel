@@ -60,6 +60,7 @@ type CodexModelOption = { label: string; value: string; model: string; effort: s
 
 const CODEX_MODEL_OPTIONS: CodexModelOption[] = [
   { label: 'GPT-5.6 Sol · 极高（推荐）', value: 'gpt-5.6-sol:xhigh', model: 'gpt-5.6-sol', effort: 'xhigh', hint: '旗舰档，适合复杂金融分析与专业任务' },
+  { label: 'GPT-6.1 Sol · 极高', value: 'gpt-6.1-sol:xhigh', model: 'gpt-6.1-sol', effort: 'xhigh', hint: '使用 gpt-6.1-sol + xhigh 推理档' },
   { label: 'GPT-5.6 Terra · 极高', value: 'gpt-5.6-terra:xhigh', model: 'gpt-5.6-terra', effort: 'xhigh', hint: '平衡智能、速度与使用成本' },
   { label: 'GPT-5.6 Luna · 极高', value: 'gpt-5.6-luna:xhigh', model: 'gpt-5.6-luna', effort: 'xhigh', hint: '适合成本敏感与高频分析任务' },
   { label: 'gpt-5.5 · 高', value: 'gpt-5.5:high', model: 'gpt-5.5', effort: 'high', hint: '使用 gpt-5.5 + high 推理档' },

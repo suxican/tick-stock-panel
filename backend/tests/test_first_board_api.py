@@ -106,6 +106,37 @@ def test_empty_data_responses(client):
     assert client.post("/api/first-board/refresh").json()["rows"] == []
 
 
+def test_events_filter_before_limit_and_preserve_order(client, monkeypatch):
+    records = [{"id": str(i), "pattern": "platform", "event_type": "watch"} for i in range(5001)]
+    records += [
+        {"id": "buy", "pattern": "oversold", "state": "approaching", "event_type": "buy_candidate"},
+        {"id": "near", "pattern": "oversold", "state": "approaching", "event_type": "approaching"},
+        {"id": "exit", "pattern": "exit", "event_type": "exit_candidate"},
+    ]
+    monkeypatch.setattr(client.app.state.first_board_service, "events", lambda _day: records)
+    base = "/api/first-board/events?day=2026-10-16"
+    assert client.get(base).json()["total"] == 5004
+    assert len(client.get(base).json()["events"]) == 5000
+    result = client.get(base + "&pattern=oversold").json()
+    assert [row["id"] for row in result["events"]] == ["buy", "near"]
+    assert result["total"] == 2
+    for query, ids in [
+        ("event_type=approaching", ["near"]),
+        ("pattern=oversold&event_type=buy_candidate", ["buy"]),
+        ("pattern=exit&event_type=exit_candidate", ["exit"]),
+        ("pattern=trend&event_type=approaching", []),
+    ]:
+        result = client.get(base + "&" + query).json()
+        assert [row["id"] for row in result["events"]] == ids
+        assert result["total"] == len(ids)
+    assert records[0]["id"] == "0"
+
+
+@pytest.mark.parametrize("query", ["pattern=unknown", "event_type=unknown"])
+def test_invalid_event_filters_rejected(client, query):
+    assert client.get("/api/first-board/events?" + query).status_code == 422
+
+
 @pytest.mark.parametrize("payload", [
     {"event_id": "bad/path", "side": "buy", "qty": 100},
     {"event_id": "abc", "side": "buy", "qty": 101},

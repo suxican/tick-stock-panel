@@ -2977,8 +2977,14 @@ export const api = {
   }),
   firstBoardSnapshot: () => request<FirstBoardSnapshot>('/api/first-board/snapshot', { quiet: true }),
   firstBoardRefresh: () => request<FirstBoardSnapshot>('/api/first-board/refresh', { method: 'POST', quiet: true }),
-  firstBoardEvents: (day?: string) => request<{ events: FirstBoardEvent[]; day: string; total: number }>(
-    `/api/first-board/events${day ? `?day=${encodeURIComponent(day)}` : ''}`, { quiet: true }),
+  firstBoardEvents: (day?: string, filters: FirstBoardEventFilters = {}) => {
+    const query = new URLSearchParams()
+    if (day) query.set('day', day)
+    if (filters.pattern) query.set('pattern', filters.pattern)
+    if (filters.event_type) query.set('event_type', filters.event_type)
+    return request<{ events: FirstBoardEvent[]; day: string; total: number }>(
+      `/api/first-board/events${query.size ? `?${query}` : ''}`, { quiet: true })
+  },
   firstBoardVersions: () => request<{ versions: FirstBoardConfig[] }>('/api/first-board/versions'),
   firstBoardResearch: (body: FirstBoardResearchRequest) => request<FirstBoardResearch>('/api/first-board/research', {
     method: 'POST', body: JSON.stringify(body), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, quiet: true,
@@ -5779,6 +5785,10 @@ export interface FirstBoardSnapshot {
   coverage: { candidate_count: number; symbol_count: number; quote_count: number; fresh_count: number }
   limitations: string[]
   paper: { initialized: boolean; account_id?: string; holdings?: PaperHolding[]; stats?: { rounds: number; win_rate: number | null; realized_pnl?: number | null; profit_loss_ratio?: number | null; avg_holding_days?: number | null }; note?: string }
+}
+export interface FirstBoardEventFilters {
+  pattern?: FirstBoardPattern | 'exit'
+  event_type?: 'watch' | 'approaching' | 'buy_candidate' | 'sealed' | 'broken' | 'invalid' | 'exit_candidate'
 }
 export interface FirstBoardEvent {
   id: string
