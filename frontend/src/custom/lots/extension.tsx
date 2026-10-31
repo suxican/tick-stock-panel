@@ -72,7 +72,7 @@ function BatchLots() {
 
   const allSymbols = useMemo(() => Array.from(new Set(lots.map(l => l.symbol))), [lots])
   const namesQuery = useQuery({
-    queryKey: ['instrument-names', allSymbols.join(',')],
+    queryKey: QK.instrumentNames(allSymbols),
     queryFn: () => api.instrumentNames(allSymbols),
     enabled: allSymbols.length > 0,
     staleTime: 300000,
