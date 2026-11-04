@@ -2,6 +2,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { SettingsDataSourcesPanel } from './DataSources'
 import { QK } from '@/lib/queryKeys'
@@ -19,6 +20,9 @@ vi.mock('@/lib/useSharedQueries', () => ({
 }))
 vi.mock('./Keys', () => ({
   TickFlowKeySection: () => null, TierHelpPopover: () => null, useInvalidateTierRelated: () => vi.fn(),
+}))
+vi.mock('@/extensions/registry', () => ({
+  getFrontendExtensionNavigation: () => [{ route: { path: '/zzshare-radar' } }],
 }))
 
 let host: HTMLDivElement
@@ -50,7 +54,7 @@ async function settle() {
 }
 async function render() {
   await act(async () => root.render(
-    <QueryClientProvider client={client}><SettingsDataSourcesPanel /></QueryClientProvider>,
+    <MemoryRouter><QueryClientProvider client={client}><SettingsDataSourcesPanel /></QueryClientProvider></MemoryRouter>,
   ))
   await settle()
 }
@@ -78,6 +82,7 @@ it('通过已注册插件试拉股票日 K 并按选定日期同步，保留原�
   await render()
   expect([...host.querySelectorAll('button')].some(b => b.textContent === '套用')).toBe(false)
   await click('查看操作')
+  expect(host.querySelector('a[href="/zzshare-radar"]')?.textContent).toBe('打开题材雷达')
   expect(host.textContent).toContain('ETF')
   await click('试拉股票日 K')
   expect(calls.testDataSource).toHaveBeenCalledWith('zzshare', 'daily', ['600000.SH'])

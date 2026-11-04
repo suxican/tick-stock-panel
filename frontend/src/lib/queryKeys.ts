@@ -120,6 +120,8 @@ export const QK = {
   pipelineJobs:         ['pipeline-jobs'] as const,
   pipelineJob:          (id: string) => ['pipeline-job', id] as const,
   extData:              ['ext-data'] as const,
+  zzshareThemes:        (date: string) => ['zzshare-themes', date] as const,
+  zzshareResearch:      (kind: string, date: string, code?: string, plateType?: 14 | 15 | 17) => ['zzshare-research', kind, date, code, plateType] as const,
   extDataRows:          (id: string, date?: string, limit?: number, columns?: string) => ['ext-data-rows', id, date, limit, columns] as const,
   dimensionMembers:     (id: string, field: string, value: string, date?: string) => ['dimension-members', id, field, value, date] as const,
   dimensionIntraday:    (id: string, field: string, value: string, date?: string) => ['dimension-intraday', id, field, value, date] as const,

@@ -3,7 +3,7 @@ display_name: "zzshare 自在量化"
 runtime: none
 entry: app.plugins.zzshare.provider:ZzshareProvider
 datasets: [daily]
-description: "A 股个股不复权日 K，可匿名使用。盘后涨停原因可独立同步。"
+description: "提供 A 股个股日 K 和盘后涨停原因。题材榜、市场情绪、个股热榜和龙虎榜见侧栏「题材雷达」。"
 install_hint: "使用项目已有 httpx，无需安装 SDK。可选环境变量 ZZSHARE_TOKEN。"
 homepage: "https://github.com/zzquant/zzshare"
 usage_notes:

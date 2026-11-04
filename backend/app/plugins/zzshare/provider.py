@@ -14,16 +14,14 @@ import httpx
 import polars as pl
 
 from app.market_time import CN_TZ, cn_now
+from app.plugins.zzshare import ZzshareError
+from app.plugins.zzshare.research import fetch_research
 
 _DAY_PATH = "/v3/market/kline/day"
 _PAGE_SIZE = 6000
 _WINDOW_DAYS = 365  # 避开单股 1000 条上限及服务端长窗口截断。
 _INTERVAL = 2.0  # 本插件保守节奏，非服务端配额承诺。
 _SYMBOL = re.compile(r"[0-9]{6}\.(?:SZ|SH|BJ)")
-
-
-class ZzshareError(RuntimeError):
-    """采集失败；上层不得将其等同于成功无记录。"""
 
 
 @dataclass
@@ -101,12 +99,24 @@ class ZzshareProvider:
             response.raise_for_status()
             body = response.json()
         except httpx.HTTPStatusError as exc:
-            raise ZzshareError(f"zzshare HTTP {exc.response.status_code}") from exc
+            status = exc.response.status_code
+            raise ZzshareError(f"zzshare HTTP {status}", status) from exc
         except (httpx.RequestError, ValueError) as exc:
             raise ZzshareError("zzshare 网络错误或响应不是 JSON") from exc
-        if not isinstance(body, dict) or body.get("code") not in (200, 20000):
-            raise ZzshareError("zzshare 返回业务错误")
-        return body.get("data")
+        if not isinstance(body, dict):
+            raise ZzshareError("zzshare 业务响应格式无效")
+        code = body.get("code")
+        if code not in (200, 20000):
+            status = code if code in (401, 403, 429) else None
+            raise ZzshareError(f"zzshare 业务错误 {code}" if isinstance(code, int) else "zzshare 业务错误", status)
+        if "data" not in body:
+            raise ZzshareError("zzshare 业务响应缺少 data")
+        return body["data"]
+
+    def research(self, kind: str, day: str, *, code: str | None = None, plate_type: int = 17,
+                 limit: int = 20, model: int = 1, start: str | None = None) -> list[dict]:
+        return fetch_research(self._get, kind, day, code=code, plate_type=plate_type,
+                              limit=limit, model=model, start=start)
 
     def get_limit_reasons(self, day: str) -> list[dict]:
         """按 ISO 日期取原始归因记录；同股多条记录交上层归并。"""

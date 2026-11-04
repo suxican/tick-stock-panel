@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import { api } from '@/lib/api'
 import { cnDateFromUtc } from '@/lib/format'
 import { QK } from '@/lib/queryKeys'
@@ -7,6 +8,7 @@ import { zzshareReasonsOptions } from '@/lib/useZzshareReasons'
 import { SettingsModal } from '@/components/data/SettingsModal'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
+import { getFrontendExtensionNavigation } from '@/extensions/registry'
 
 const buttonStyle = 'rounded-btn bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent/20 disabled:opacity-50'
 
@@ -35,9 +37,14 @@ export function ZzshareActions({ available }: { available: boolean }) {
     },
   })
   const sample = daily.data?.preview[0]
+  const radar = getFrontendExtensionNavigation().find(item => item.route.path === '/zzshare-radar')
 
   return (
     <div className="space-y-4 text-xs">
+      {radar && <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-3">
+        <span className="text-secondary">强势题材、市场情绪、个股热榜和盘后龙虎榜</span>
+        <Link className={buttonStyle} to={radar.route.path}>打开题材雷达</Link>
+      </div>}
       <section className="space-y-2">
         <h4 className="font-medium text-foreground">股票日 K</h4>
         <p className="text-secondary">试拉浦发银行（600000.SH）的行情。需要用于同步时，可在上方「能力路由」的日 K 项选择 zzshare。该源仅覆盖股票，ETF 和指数日 K 不受支持。</p>

@@ -1,3 +1,5 @@
+import { lazy } from 'react'
+import { Radar } from 'lucide-react'
 import type { FrontendExtension, FrontendSlotContextMap } from '@/extensions/types'
 import { useZzshareReasons } from '@/lib/useZzshareReasons'
 
@@ -26,9 +28,13 @@ export function StockLimitReason({ symbol, tradeDate }: FrontendSlotContextMap['
   )
 }
 
+const ThemeRadar = lazy(() => import('./ThemeRadar').then(module => ({ default: module.ThemeRadar })))
+
 const extension: FrontendExtension = {
   id: 'official.zzshare',
   apiVersion: 1,
+  routes: [{ id: 'zzshare-radar', path: '/zzshare-radar', component: ThemeRadar }],
+  navigation: [{ id: 'zzshare-radar', routeId: 'zzshare-radar', label: '题材雷达', icon: Radar, order: 112 }],
   slots: [{ id: 'zzshare-stock-limit-reason', name: 'stock-preview.footer', component: StockLimitReason }],
 }
 

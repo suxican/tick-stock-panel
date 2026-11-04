@@ -98,6 +98,57 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
   return (responseType === 'blob' ? res.blob() : res.json()) as Promise<T>
 }
 
+export type ZzshareResearchKind =
+  | 'plates_list' | 'plates_rank' | 'market_sentiment' | 'sentiment_trend'
+  | 'ths_hot_top' | 'lhb_list' | 'lhb_detail' | 'lhb_stock_history'
+
+export interface ZzshareResearchResult {
+  kind: ZzshareResearchKind
+  date: string
+  source: 'zzshare'
+  rows: Record<string, string | number | null>[]
+  fetched_at: string | null
+  stale: boolean
+  warning?: string | null
+}
+
+export interface ZzshareThemeStock {
+  symbol: string
+  name: string
+  change_pct: number  // 百分数，非底层行情的小数比例
+  amount_yuan: number | null
+}
+
+export interface ZzshareThemeRow {
+  plate_code: string
+  plate_name: string
+  score: number
+  member_count: number
+  valid_count: number
+  coverage_pct: number
+  avg_change_pct: number
+  rising_pct: number
+  strong_pct: number
+  rising_count: number
+  strong_count: number
+  limit_up_count: number
+  limit_down_count: number
+  leader: ZzshareThemeStock
+  anchor: ZzshareThemeStock | null
+}
+
+export interface ZzshareThemesResult {
+  date: string
+  state: 'idle' | 'running' | 'ready' | 'error' | 'no_data'
+  scope: string
+  message: string
+  rows: ZzshareThemeRow[]
+  coverage: { candidates: number; completed: number; eligible: number }
+  progress: { done: number; total: number }
+  quote_asof: string | null
+  computed_at: string | null
+}
+
 // ===== Capabilities =====
 export interface CapabilityLimits {
   rpm: number | null
@@ -3158,6 +3209,18 @@ export const api = {
       '/api/zzshare/limit-reasons/sync',
       { method: 'POST', body: JSON.stringify({ date }), quiet: true, timeoutMs: extPullTimeoutMs() },
     ),
+  zzshareResearch: (kind: ZzshareResearchKind, date: string, code?: string, plateType?: 14 | 15 | 17) => {
+    const qs = new URLSearchParams({ date })
+    if (code) qs.set('code', code)
+    if (plateType !== undefined) qs.set('plate_type', String(plateType))
+    return request<ZzshareResearchResult>(`/api/zzshare/research/${kind}?${qs}`, { quiet: true, timeoutMs: 60_000 })
+  },
+  zzshareThemes: (date: string) =>
+    request<ZzshareThemesResult>(`/api/zzshare/themes?${new URLSearchParams({ date })}`, { quiet: true }),
+  syncZzshareThemes: (date: string) =>
+    request<ZzshareThemesResult>('/api/zzshare/themes/sync', {
+      method: 'POST', body: JSON.stringify({ date }), quiet: true,
+    }),
   updateDataProviders: (cfg: Partial<Pick<Preferences, ProviderField>>) =>
     request<Pick<Preferences, ProviderField>>(
       '/api/settings/preferences/data-providers',
