@@ -22,6 +22,7 @@ export const MINUTE_DATA_QUERY_PREFIXES = new Set([
 ])
 
 export const QK = {
+  extensionPackages: ['extension-packages'] as const,
   // 回春扫描和收益快照独立刷新；现价仍复用市场行情缓存。
   huichun: ['huichun'] as const,
   huichunConfig: ['huichun', 'config'] as const,
