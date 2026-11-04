@@ -6,13 +6,13 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { StockPanel } from './StockPanel'
 import type { HuichunChartContext } from '@/lib/huichun-chart'
 
-const calls = vi.hoisted(() => ({ klineDaily: vi.fn(), huichunChart: vi.fn(), info: vi.fn(), chart: vi.fn() }))
+const calls = vi.hoisted(() => ({ klineDaily: vi.fn(), huichunChart: vi.fn(), info: vi.fn(), chart: vi.fn(), intraday: vi.fn() }))
 vi.mock('@/lib/api', () => ({ api: calls }))
 vi.mock('@/lib/useSharedQueries', () => ({ useCapabilities: () => ({ data: { capabilities: {} } }) }))
 vi.mock('@/lib/useFinancials', () => ({ useFinancialMetrics: () => ({}), financialMetricsQueryOptions: vi.fn() }))
 vi.mock('@/lib/stock-info-fields', () => ({ loadInfoFields: () => [], saveInfoFields: vi.fn(), buildInfoExtColumnsParam: () => undefined }))
 vi.mock('./StockInfoBar', () => ({ StockInfoBar: (props: unknown) => { calls.info(props); return null } }))
-vi.mock('./StockIntradayChart', () => ({ StockIntradayChart: () => null }))
+vi.mock('./StockIntradayChart', () => ({ StockIntradayChart: (props: unknown) => { calls.intraday(props); return null } }))
 vi.mock('./EChartsCandlestick', async importOriginal => ({
   ...await importOriginal<typeof import('./EChartsCandlestick')>(),
   EChartsCandlestick: (props: unknown) => { calls.chart(props); return <div data-chart="daily" /> },
@@ -62,4 +62,30 @@ it('上下文错股时信息条和图表都不显示旧股票数据', async () =
   expect(calls.info.mock.calls.at(-1)?.[0].name).toBeUndefined()
   expect(host.querySelector('[data-chart]')).toBeNull()
   expect(calls.klineDaily).not.toHaveBeenCalled()
+})
+
+it('历史股票按指定区间请求日 K，并且只有来源日有行情时才打开该日分时', async () => {
+  const history = { start: '2024-03-30', end: '2024-09-30' }
+  const bar = { date: '2024-09-27', open: 10, high: 11, low: 9, close: 10, volume: 100 }
+  const onVisibleTradeDate = vi.fn()
+  const props = { symbol: '600000.SH', dateRange: history, preferredTradeDate: history.end, showIntraday: true, onVisibleTradeDate }
+  calls.klineDaily.mockResolvedValue({ symbol: props.symbol, rows: [bar] })
+  await act(async () => root.render(<QueryClientProvider client={client}><StockPanel {...props} /></QueryClientProvider>))
+  for (let i = 0; i < 5; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+  expect(calls.klineDaily).toHaveBeenCalledWith(props.symbol, undefined, history, undefined)
+  expect(calls.intraday).not.toHaveBeenCalled()
+  expect(host.textContent).toContain('2024-09-30 暂无日 K')
+  calls.klineDaily.mockResolvedValue({ symbol: props.symbol, rows: [bar, { ...bar, date: history.end }] })
+  await act(async () => { await client.invalidateQueries({ queryKey: ['kline', props.symbol] }) })
+  for (let i = 0; i < 3; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+  expect(calls.intraday.mock.calls.at(-1)?.[0].date).toBe(history.end)
+  await act(() => calls.chart.mock.calls.at(-1)?.[0].onDateClick('2024-09-27'))
+  expect(calls.intraday.mock.calls.at(-1)?.[0].date).toBe('2024-09-27')
+  expect(onVisibleTradeDate).toHaveBeenLastCalledWith('2024-09-27')
+  for (const symbol of ['000001.SZ', props.symbol]) {
+    await act(async () => root.render(<QueryClientProvider client={client}><StockPanel {...props} symbol={symbol} /></QueryClientProvider>))
+    for (let i = 0; i < 3; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+  }
+  expect(calls.intraday.mock.calls.at(-1)?.[0].date).toBe(history.end)
+  expect(onVisibleTradeDate).toHaveBeenLastCalledWith(history.end)
 })

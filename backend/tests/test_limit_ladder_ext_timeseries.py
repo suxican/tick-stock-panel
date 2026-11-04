@@ -100,16 +100,22 @@ def _stub_enriched(monkeypatch):
     return snapshot
 
 
-def test_timeseries_ext_column_does_not_duplicate_ladder_rows(tmp_path, _stub_enriched):
+@pytest.mark.parametrize(("as_of", "expected"), [
+    (_AS_OF, "当日概念"),
+    (date(2026, 9, 9), None),
+])
+def test_timeseries_ext_column_uses_ladder_date_without_changing_counts(
+    tmp_path, _stub_enriched, as_of, expected,
+):
     view_df = _write_timeseries_ext(tmp_path, {
         "2026-09-08": pl.DataFrame({"symbol": ["600000.SH"], "concept": ["旧概念"]}),
-        "2026-09-09": pl.DataFrame({"symbol": ["600000.SH"], "concept": ["次新概念"]}),
-        "2026-09-10": pl.DataFrame({"symbol": ["600000.SH"], "concept": ["最新概念"]}),
+        "2026-09-10": pl.DataFrame({"symbol": ["600000.SH"], "concept": ["当日概念"]}),
+        "2026-09-11": pl.DataFrame({"symbol": ["600000.SH"], "concept": ["次日概念"]}),
     })
 
     payload = screener_api.limit_ladder(
         _request(tmp_path, view_df),
-        as_of=_AS_OF,
+        as_of=as_of,
         direction="up",
         ext_columns="concept_ts.concept",
     )
@@ -119,8 +125,9 @@ def test_timeseries_ext_column_does_not_duplicate_ladder_rows(tmp_path, _stub_en
     stocks = tiers[0]["stocks"]
     assert [s["symbol"] for s in stocks] == ["600000.SH"], "同一只票被历史分区放大了"
     assert tiers[0]["count"] == 1
-    # 取最新分区的值, 不是任意一期的历史值
-    assert stocks[0]["concept_ts__concept"] == "最新概念"
+    assert tiers[0]["boards"] == 2
+    assert payload["counts"] == {"up": 1, "down": 0}
+    assert stocks[0].get("concept_ts__concept") == expected
 
 
 def test_snapshot_ext_column_still_joins(tmp_path, _stub_enriched):

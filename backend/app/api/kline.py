@@ -5,7 +5,7 @@ import gzip
 import json
 import logging
 import math
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from app.db_safe import is_valid_ext_ident
 from app.indicators.pipeline import compute_enriched, compute_enriched_single
-from app.market_time import cn_now, cn_today, in_continuous_session
+from app.market_time import CN_TZ, cn_now, cn_today, in_continuous_session
 from app.price_limits import (
     is_no_limit_day,
     is_risk_warning_name,
@@ -481,7 +481,7 @@ def get_daily(
 ):
     """读取本地 enriched 表中某只股票的日 K。
 
-    - 若 QuoteService 有实时行情, 追加/覆盖今日实时蜡烛
+    - 若窗口包含北京今天且 QuoteService 有实时行情，追加/覆盖今日实时蜡烛
     - Free 用户: 若 enriched 表里没有该股票, 实时拉取 + 本地算 enriched 返回
     - ext_columns: 可选，动态 LEFT JOIN 扩展数据表，结果平铺到 stock_info.ext 下
       (key 为 "{config_id}__{field_name}")，供日K信息条等场景展示自定义字段
@@ -503,10 +503,17 @@ def get_daily(
 
     # 从 enriched 表读取 (已含前复权 OHLCV + 技术指标 + 信号); ETF/指数走独立存储
     df = repo.get_daily_asset(asset_type, symbol, start, end)
-
+    source = "enriched"
     if df.is_empty():
         try:
-            raw = kline_sync.sync_daily_batch([symbol], count=days + 30)
+            if start_date or end_date:
+                # 与本地日 K 相同，窗口前预留指标预热；旧日期也按历史区间取数。
+                raw = kline_sync.sync_daily_batch(
+                    [symbol], start_time=datetime.combine(start - timedelta(days=150), time.min, CN_TZ),
+                    end_time=datetime.combine(end, time.max, CN_TZ),
+                )
+            else:
+                raw = kline_sync.sync_daily_batch([symbol], count=days + 30)
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"TickFlow fetch failed: {e}") from e
         if raw.is_empty():
@@ -524,23 +531,19 @@ def get_daily(
                 factors = kline_sync.fetch_adj_factor_single(symbol)
         except Exception as e:  # noqa: BLE001
             logger.debug("单股除权因子拉取失败 %s: %s", symbol, e)
-        enriched = compute_enriched(raw, factors=factors)
-        rows = enriched.tail(days).to_dicts()
-        # 即使 live 模式也尝试追加实时蜡烛
-        rows = _maybe_inject_live_candle(request, symbol, rows, asset_type)
-        resp = {"symbol": symbol, "name": stock_name, "stock_info": stock_info, "rows": rows, "source": "live"}
-        return _gzip_payload(
-            request,
-            _attach_ext(resp, repo, symbol, ext_columns),
-            pref_key="daily_batch_compress",
-        )
+        df = compute_enriched(raw, factors=factors)
+        if start_date or end_date:
+            df = df.filter(pl.col("date").is_between(start, end))
+        else:
+            df = df.tail(days)
+        source = "live"
 
     rows = df.to_dicts()
 
-    # 追加/覆盖今日实时蜡烛
-    rows = _maybe_inject_live_candle(request, symbol, rows, asset_type)
+    if start <= cn_today() <= end:
+        rows = _maybe_inject_live_candle(request, symbol, rows, asset_type)
 
-    resp = {"symbol": symbol, "name": stock_name, "stock_info": stock_info, "rows": rows, "source": "enriched"}
+    resp = {"symbol": symbol, "name": stock_name, "stock_info": stock_info, "rows": rows, "source": source}
     return _gzip_payload(
         request,
         _attach_ext(resp, repo, symbol, ext_columns),

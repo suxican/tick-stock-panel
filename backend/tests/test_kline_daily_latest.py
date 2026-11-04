@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import polars as pl
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -266,3 +267,50 @@ def test_get_daily_default_end_is_beijing_today(monkeypatch) -> None:
     assert captured, "应查询日K"
     _start, end = captured[0]
     assert end == BJ, f"窗口右端必须是北京日期 {BJ}, 实际 {end} (服务器本地 {date.today()})"
+
+
+@pytest.mark.parametrize("local", [True, False], ids=["local", "fallback"])
+@pytest.mark.parametrize("includes_today", [False, True], ids=["historical", "current"])
+def test_daily_explicit_window_limits_rows_and_live_candle(monkeypatch, local, includes_today):
+    from types import SimpleNamespace
+
+    from app.api import kline as kline_api
+
+    today = date(2026, 11, 4)
+    start = date(2026, 11, 2)
+    end = today if includes_today else date(2026, 11, 3)
+    symbol = "002086.SZ"
+    client, repo = _client(_frame_on(today, symbol), today)
+    monkeypatch.setattr(kline_api, "cn_today", lambda: today)
+    # 合成连续交易日，含选定窗口前的 MA 预热数据，以及实时日。
+    dates = [date(2026, 10, d) for d in (26, 27, 28, 29, 30)] + [start, date(2026, 11, 3), today]
+    raw = pl.concat([_frame_on(d, symbol) for d in dates]).drop("ma5", "signal_limit_up")
+    monkeypatch.setattr(repo, "get_daily_asset", lambda _at, _s, a, b:
+                        raw.filter(pl.col("date").is_between(a, b)) if local else pl.DataFrame(),
+                        raising=False)
+    calls = []
+
+    def fetch(_symbols, **params):
+        calls.append(params)
+        return raw
+
+    monkeypatch.setattr(kline_api.kline_sync, "sync_daily_batch", fetch)
+    client.app.state.capabilities = SimpleNamespace(has=lambda _cap: True)
+    monkeypatch.setattr(kline_api.kline_sync, "fetch_adj_factor_single", lambda s: pl.DataFrame({
+        "symbol": [s], "trade_date": [today], "ex_factor": [2.0],
+    }))
+
+    response = client.get("/api/kline/daily", params={
+        "symbol": symbol, "start_date": str(start), "end_date": str(end),
+    })
+    assert response.status_code == 200
+    rows = response.json()["rows"]
+    assert [r["date"] for r in rows] == [str(d) for d in dates if start <= d <= end]
+    assert bool(rows[-1].get("is_live")) is includes_today
+    if local:
+        assert not calls
+    else:
+        assert calls[0]["start_time"].date() < start and calls[0]["end_time"].date() == end
+        assert rows[0]["raw_close"] == 10.6
+        assert rows[0]["close"] == pytest.approx(5.3)
+        assert rows[0]["ma5"] == pytest.approx(5.3)

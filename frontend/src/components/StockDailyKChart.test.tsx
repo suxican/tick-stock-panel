@@ -62,6 +62,17 @@ it('普通日K继续使用已有指标与查询，不请求回春端点', async 
   expect(lastChart().activeIndicators).toEqual(['vol'])
 })
 
+it.each([
+  ['2026-01-01', '2026-08-31', false],
+  ['2026-05-01', '2026-10-22', false],
+  ['2026-03-01', '2026-09-30', true],
+] as const)('同股切换到 %s 至 %s 等待新响应时只允许范围内的旧数据占位', async (start, end, allowed) => {
+  await render()
+  calls.klineDaily.mockImplementationOnce(() => new Promise(() => {}))
+  await render({ dateRange: { start, end } })
+  expect(!!host.querySelector('[data-chart]')).toBe(allowed)
+})
+
 it('回春日K展示后端完整历史计算的10/20/9及G/D/R形态日期', async () => {
   await render({ huichunChart: context })
   expect(calls.huichunChart).toHaveBeenCalledWith({

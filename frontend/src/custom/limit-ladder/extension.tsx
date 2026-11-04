@@ -15,6 +15,7 @@ import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { useTheme } from '@/lib/theme'
 import { useCapabilities, usePreferences } from '@/lib/useSharedQueries'
+import { useZzshareReasons } from '@/lib/useZzshareReasons'
 import { SealedBadge } from '@/components/SealedBadge'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
 import type { ExtColumnDisplayConfig } from '@/lib/watchlist-columns'
@@ -224,8 +225,9 @@ function useSealedDegrade(asOf: string, latestDate: string | undefined, sealedRe
 
 // ===== 单只股票卡片 =====
 
-const StockCard = React.memo(function StockCard({ stock, extFields, direction, sealMode, monitored, monitorRule, onMonitorChange, hasDepth, onClick, onDimensionClick, active }: {
+const StockCard = React.memo(function StockCard({ stock, reason, extFields, direction, sealMode, monitored, monitorRule, onMonitorChange, hasDepth, onClick, onDimensionClick, active }: {
   stock: LimitLadderStock
+  reason?: string
   extFields: ExtFieldConfig
   direction: Direction
   sealMode: 'vol' | 'amount'
@@ -267,7 +269,7 @@ const StockCard = React.memo(function StockCard({ stock, extFields, direction, s
   // 齿轮始终可见: 让免费用户也能看到功能入口, 点开后在菜单内提示权限不足。
   // 有五档盘口能力的用户正常设置; 无能力时保存按钮禁用 + 显示能力提示。
   return (
-    <div className="relative group w-full">
+    <div className="relative group w-full min-w-0 has-[details[open]]:col-span-full">
       {/* 监控设置按钮 (右上角): 不能嵌在卡片 button 内 */}
       <button
         onClick={e => {
@@ -392,6 +394,14 @@ const StockCard = React.memo(function StockCard({ stock, extFields, direction, s
         </div>
       )}
     </div>
+    {reason && (
+      <details className="group/reason mt-1 rounded bg-elevated/40 px-2 py-1 text-xs">
+        <summary className="cursor-pointer truncate text-secondary focus-visible:outline-accent">
+          涨停归因<span className="ml-2 text-muted group-open/reason:hidden">{reason}</span>
+        </summary>
+        <p className="mt-1.5 max-w-prose whitespace-pre-wrap break-words leading-relaxed text-foreground">{reason}</p>
+      </details>
+    )}
     </div>
   )
 })
@@ -982,8 +992,9 @@ function sortLadderStocks(
     })
 }
 
-function TierGroup({ tier, defaultOpen, extFields, filterKeys, bf, onStockClick, selectedTag, onSelectTag, onDimensionClick, direction, sealMode, monitoredSymbols, ladderRules, onMonitorChange, hasDepth, activeSymbol }: {
+function TierGroup({ tier, reasons, defaultOpen, extFields, filterKeys, bf, onStockClick, selectedTag, onSelectTag, onDimensionClick, direction, sealMode, monitoredSymbols, ladderRules, onMonitorChange, hasDepth, activeSymbol }: {
   tier: LimitLadderTier
+  reasons?: ReadonlyMap<string, string>
   defaultOpen: boolean
   extFields: ExtFieldConfig
   filterKeys: Set<FilterKey>
@@ -1147,6 +1158,7 @@ function TierGroup({ tier, defaultOpen, extFields, filterKeys, bf, onStockClick,
                 <StockCard
                   key={`${s.symbol}-${s.status}`}
                   stock={s}
+                  reason={reasons?.get(s.symbol)}
                   extFields={extFields}
                   direction={direction}
                   sealMode={sealMode}
@@ -1516,6 +1528,7 @@ export function LimitUpLadder() {
   }, [showConcept])
   const [previewSymbol, setPreviewSymbol] = useState<string | null>(null)
   const [previewName, setPreviewName] = useState('')
+  const [previewDate, setPreviewDate] = useState<string | null>(null)
   const [previewNavList, setPreviewNavList] = useState<NavItem[]>([])
   const [selectedTag, setSelectedTag] = useState<{ fieldKey: 'concept' | 'industry'; tag: string } | null>(null)
   const [dimensionTarget, setDimensionTarget] = useState<DimensionMembersTarget | null>(null)
@@ -1553,6 +1566,8 @@ export function LimitUpLadder() {
       return prevKey?.[1] === (asOf || undefined) && prevKey?.[3] === direction ? prev : undefined
     },
   })
+  const reasonDate = direction === 'up' && data?.tiers.length ? data.as_of : undefined
+  const reasons = useZzshareReasons(reasonDate)
   const handleOpenDimension = useCallback((kind: DimensionKind, value: string, sourceField?: string) => {
     if (!sourceField) return
     setDimensionTarget({ kind, value, sourceField, date: (data?.as_of ?? asOf) || undefined })
@@ -1587,8 +1602,9 @@ export function LimitUpLadder() {
   const handleStockClick = useCallback((symbol: string, name?: string, navList?: NavItem[]) => {
     setPreviewSymbol(symbol)
     setPreviewName(name ?? '')
+    setPreviewDate(data?.as_of ?? null)
     setPreviewNavList(navList ?? ladderNavItemsRef.current)
-  }, [])
+  }, [data?.as_of])
 
   // sealed 降级判定
   const sealedDegrade = useSealedDegrade(asOf, data?.as_of, data?.sealed_ready, data?.sealed_counts)
@@ -1774,6 +1790,16 @@ export function LimitUpLadder() {
 
       {/* 总览条 + 日期 */}
       <OverviewBar tiers={tiers} dateValue={dateValue} onDateChange={setAsOf} filterKeys={filterKeys} bf={extFields.bf} direction={direction} />
+      {reasonDate && (
+        <div role="status" className="px-5 pb-1 text-[11px] text-secondary">
+          ZZShare · {reasonDate} · {reasons.isError
+            ? '归因暂不可用'
+            : reasons.isPending ? '正在读取盘后归因…'
+              : reasons.data?.size ? '点击「涨停归因」展开全文；未标注的股票无当日归因记录。'
+                : '暂无涨停归因，可在设置 → 数据源 → zzshare 中同步该日。'}
+          {reasons.isError && <button type="button" className="ml-2 text-accent" disabled={reasons.isFetching} onClick={() => void reasons.refetch()}>重试</button>}
+        </div>
+      )}
 
       {/* 概念统计 */}
       {(extFields.showConceptStats ?? true) && (
@@ -1810,6 +1836,7 @@ export function LimitUpLadder() {
           <TierGroup
             key={t.boards}
             tier={t}
+            reasons={reasonDate ? reasons.data : undefined}
             defaultOpen={t.boards >= 1 || t.count <= 8}
             extFields={resolvedExtFields}
             filterKeys={filterKeys}
@@ -1841,6 +1868,7 @@ export function LimitUpLadder() {
       {/* 个股K线弹窗 */}
       <StockPreviewDialog
         symbol={previewSymbol}
+        tradeDate={previewDate}
         name={previewName}
         onClose={() => { setPreviewSymbol(null); setPreviewNavList([]) }}
         navList={previewNavList}

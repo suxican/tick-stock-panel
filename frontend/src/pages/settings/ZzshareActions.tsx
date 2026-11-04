@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, ApiError } from '@/lib/api'
+import { api } from '@/lib/api'
 import { cnDateFromUtc } from '@/lib/format'
 import { QK } from '@/lib/queryKeys'
+import { zzshareReasonsOptions } from '@/lib/useZzshareReasons'
 import { SettingsModal } from '@/components/data/SettingsModal'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
@@ -80,17 +81,12 @@ export function ZzshareActions({ available }: { available: boolean }) {
 }
 
 function ZzshareReasons({ date, onClose }: { date: string; onClose: () => void }) {
-  const rows = useQuery({
-    queryKey: QK.extDataRows('zzshare_limit_reasons', date, 20000),
-    queryFn: () => api.extDataRows('zzshare_limit_reasons', { date, limit: 20000, quiet: true }),
-    retry: false,
-  })
-  const missing = rows.error instanceof ApiError && rows.error.status === 404
+  const rows = useQuery(zzshareReasonsOptions(date))
 
   return (
     <SettingsModal title={`${date} 涨停归因`} onClose={onClose} width="max-w-3xl">
       {rows.isPending ? <p role="status" className="py-8 text-center text-sm text-secondary">正在读取归因…</p>
-        : rows.isError && !missing ? <ErrorState hint={rows.error.message} retrying={rows.isFetching} onRetry={() => void rows.refetch()} />
+        : rows.isError ? <ErrorState hint={rows.error.message} retrying={rows.isFetching} onRetry={() => void rows.refetch()} />
         : !rows.data?.rows.length ? <EmptyState title="该日还没有归因快照" hint="请先同步该交易日，成功后再查看。" />
         : <div className="space-y-3">
           <p className="text-xs text-secondary">共 {rows.data.total} 只股票，点击股票展开完整原因。来源为 ZZShare 盘后归因。</p>

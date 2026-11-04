@@ -18,6 +18,8 @@ export interface FrontendSlotContextMap {
     symbol: string
     name: string | null
     view: 'daily' | 'intraday'
+    /** 来源记录、用户点击的 K 棒或当前图表最后一个实际交易日。 */
+    tradeDate?: string | null
   }
   /** 自选页工具栏扩展区 (按钮行末尾) */
   'watchlist.toolbar': {
@@ -38,6 +40,11 @@ export type FrontendSlotRegistration<K extends FrontendSlotName = FrontendSlotNa
   order?: number
   component: ComponentType<FrontendSlotContextMap[K]>
 }
+
+/** 清单可包含不同插槽；每个组件只需接收其自身槽位的 context。 */
+export type FrontendExtensionSlot = {
+  [K in FrontendSlotName]: FrontendSlotRegistration<K>
+}[FrontendSlotName]
 
 export interface FrontendExtensionRoute {
   id: string
@@ -60,7 +67,7 @@ export interface FrontendExtension {
   apiVersion: typeof FRONTEND_EXTENSION_API_VERSION
   routes?: FrontendExtensionRoute[]
   navigation?: FrontendExtensionNavigation[]
-  slots?: FrontendSlotRegistration[]
+  slots?: FrontendExtensionSlot[]
 }
 
 export interface FrontendExtensionModule {

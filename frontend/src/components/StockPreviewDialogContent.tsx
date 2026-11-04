@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, RefreshCw, Clock, LineChart, Star, RadioTower, Maximize2, Minimize2, Activity } from 'lucide-react'
@@ -29,6 +29,8 @@ import { ExtensionSlot } from '@/extensions/ExtensionSlot'
 export interface Props {
   symbol: string | null
   name?: string
+  /** 源列表所展示的实际交易日。null 表示来源日期未知，省略则跟随图表。 */
+  tradeDate?: string | null
   onClose: () => void
   /** 触发信息 (来自监控触发记录, 有值时在顶栏下方显示) */
   triggerInfo?: {
@@ -53,6 +55,12 @@ const PRESETS: { label: string; months: number }[] = [
   { label: '半年', months: 6 },
   { label: '1年', months: 12 },
 ]
+
+function rangeEndingOn(end: string, months: number) {
+  const start = new Date(`${end}T00:00:00Z`)
+  start.setUTCMonth(start.getUTCMonth() - months)
+  return { start: start.toISOString().slice(0, 10), end }
+}
 
 type PreviewView = 'daily' | 'intraday'
 interface PriceAlertDraft {
@@ -92,19 +100,22 @@ function fmtAbnormalCalcTime(asofSec: number): string {
 }
 
 
-export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, navList: navListSource, onNavigate, huichunChart }: Props) {
+export function StockPreviewDialogContent({ symbol, name, tradeDate, onClose, triggerInfo, navList: navListSource, onNavigate, huichunChart }: Props) {
   const [view, setView] = useState<PreviewView>('daily')
   const [intradayDays, setIntradayDays] = useState<number | null>(loadIntradayDays)
-  const [dateRange, setDateRange] = useState(() => huichunChart ? huichunChartRange(huichunChart) : getDefaultRange())
+  const anchorDay = huichunChart?.as_of ?? tradeDate
+  const rangeScope = JSON.stringify([anchorDay, huichunChart?.symbol, huichunChart?.g_date])
+  const [overrideRange, setOverrideRange] = useState<{ scope: string; range: { start: string; end: string } }>()
+  const dateRange = overrideRange?.scope === rangeScope ? overrideRange.range
+    : huichunChart ? huichunChartRange(huichunChart)
+    : anchorDay ? rangeEndingOn(anchorDay, 6) : getDefaultRange()
+  const setDateRange = (range: { start: string; end: string }) => setOverrideRange({ scope: rangeScope, range })
   const [showMonitorEditor, setShowMonitorEditor] = useState(false)
   const customNames = useCustomSignalNames()
   const [priceAlertDraft, setPriceAlertDraft] = useState<PriceAlertDraft | null>(null)
   const [maximized, setMaximized] = useState(false)
   const qc = useQueryClient()
   const backdrop = useDialogBackdrop(onClose)
-  useEffect(() => {
-    if (huichunChart && huichunChart.symbol === symbol) setDateRange(huichunChartRange(huichunChart))
-  }, [symbol, huichunChart?.symbol, huichunChart?.as_of, huichunChart?.g_date])
 
   const watchlist = useQuery({
     queryKey: QK.watchlist,
@@ -225,6 +236,14 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
   )
   const defaultIntradayDays = minuteHistoryDays != null && minuteHistoryDays < 20 ? 5 : 20
   const effectiveIntradayDays = intradayDays ?? defaultIntradayDays
+  // 多日分时显示最新会话；来源日只锚定首次进入的日 K 区间。
+  const sourceDay = view === 'intraday' ? undefined
+    : tradeDate === null || (huichunChart && huichunChart.symbol !== symbol) ? null
+    : dateRange.end === anchorDay ? anchorDay : undefined
+  const dateScope = JSON.stringify([symbol, view, dateRange.start, dateRange.end, effectiveIntradayDays, sourceDay === undefined ? 'chart' : sourceDay])
+  const [chartDay, setChartDay] = useState<{ scope: string; day: string | null }>()
+  const reportChartDay = useCallback((day: string | null) => setChartDay({ scope: dateScope, day }), [dateScope])
+  const footerDate = chartDay?.scope === dateScope ? chartDay.day : sourceDay ?? null
   useEffect(() => {
     if (!dayOptions.includes(effectiveIntradayDays)) {
       setIntradayDays(defaultIntradayDays)
@@ -331,18 +350,12 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
                   <div className="inline-flex items-center gap-2">
                     <div className="inline-flex items-center rounded border border-border/60 bg-base/60 p-0.5">
                     {PRESETS.map(p => {
-                      const now = huichunChart ? new Date(`${huichunChart.as_of}T00:00:00Z`) : new Date()
-                      const s = new Date(now)
-                      if (huichunChart) s.setUTCMonth(s.getUTCMonth() - p.months)
-                      else s.setMonth(s.getMonth() - p.months)
-                      const expected = s.toISOString().slice(0, 10)
-                      const isActive = dateRange.start === expected
+                      const presetRange = rangeEndingOn(anchorDay ?? getDefaultRange().end, p.months)
+                      const isActive = dateRange.start === presetRange.start && dateRange.end === presetRange.end
                       return (
                         <button
                           key={p.label}
-                          onClick={() => {
-                            setDateRange({ start: expected, end: now.toISOString().slice(0, 10) })
-                          }}
+                          onClick={() => setDateRange(presetRange)}
                           className={`h-6 rounded px-2.5 text-[11px] transition-colors cursor-pointer
                             ${isActive
                               ? 'bg-accent/20 text-accent font-medium'
@@ -356,15 +369,15 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
                     </div>
                     <DatePicker
                       value={dateRange.start}
-                      onChange={(v) => setDateRange(prev => ({ ...prev, start: v }))}
+                      onChange={(v) => setDateRange({ ...dateRange, start: v })}
                       max={dateRange.end}
                     />
                     <span className="text-muted/70 text-[10px]">~</span>
                     <DatePicker
                       value={dateRange.end}
-                      onChange={(v) => setDateRange(prev => ({ ...prev, end: v }))}
+                      onChange={(v) => setDateRange({ ...dateRange, end: v })}
                       min={dateRange.start}
-                      max={huichunChart?.as_of}
+                      max={anchorDay ?? undefined}
                     />
                   </div>
                 ) : (
@@ -545,6 +558,8 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
                   height={420}
                   showIntraday={!huichunChart}
                   dateRange={dateRange}
+                  preferredTradeDate={sourceDay}
+                  onVisibleTradeDate={reportChartDay}
                   priceLines={huichunChart ? undefined : monitorPriceLines}
                   onPriceDoubleClick={huichunChart ? undefined : openPriceAlert}
                   refetchIntervalMs={intradayRefetchMs}
@@ -560,7 +575,7 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
                 {huichunChart && <p className="text-xs leading-relaxed text-secondary">此处为普通分时行情，使用当前分时周期；回春历史形态与 MACD 10 / 20 / 9 请查看“日 K”。</p>}
                 <StockPanel
                   symbol={symbol}
-                  dateRange={huichunChart ? getDefaultRange() : dateRange}
+                  dateRange={getDefaultRange()}
                   infoBarOnly
                   prefetchSymbols={prefetchSymbols}
                   intradayDays={effectiveIntradayDays}
@@ -568,6 +583,7 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
                 />
                 <StockMultiDayIntradayChart
                   symbol={symbol}
+                  onLatestTradeDate={reportChartDay}
                   days={effectiveIntradayDays}
                   height={480}
                   refetchIntervalMs={intradayRefetchMs}
@@ -583,7 +599,7 @@ export function StockPreviewDialogContent({ symbol, name, onClose, triggerInfo, 
             <div className="shrink-0">
               <ExtensionSlot
                 name="stock-preview.footer"
-                context={{ symbol, name: name ?? null, view }}
+                context={{ symbol, name: name ?? null, view, tradeDate: footerDate }}
               />
             </div>
 

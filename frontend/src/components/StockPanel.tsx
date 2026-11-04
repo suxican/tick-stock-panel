@@ -25,6 +25,9 @@ interface Props {
   className?: string
   /** 当用户点击蜡烛选中日期时回调（用于外部自动开启分时图）。 */
   onSelectDate?: (date: string) => void
+  onVisibleTradeDate?: (date: string | null) => void
+  /** 来自有明确交易日的列表。无该日K时，不打开其他日期的分时。 */
+  preferredTradeDate?: string | null
   /** 外部传入的日期范围 */
   dateRange?: { start: string; end: string }
   markers?: ChartMarker[]
@@ -65,6 +68,8 @@ export function StockPanel({
   showIntraday = true,
   className,
   onSelectDate,
+  onVisibleTradeDate,
+  preferredTradeDate,
   dateRange: externalDateRange,
   markers,
   ranges,
@@ -87,7 +92,7 @@ export function StockPanel({
   huichunChart,
 }: Props) {
   const [linkedPrice, setLinkedPrice] = useState<number | null>(null)
-  const [selectedDate, setSelectedDate] = useState<string | null>(null)
+  const [pickedBar, setPickedBar] = useState<{ symbol: string; start: string; end: string; day: string }>()
   const [intradayDismissed, setIntradayDismissed] = useState(false)
   // 信息条指标配置提升到此层：同时供 StockInfoBar 渲染与 StockDailyKChart 请求 ext 数据
   const [fields, setFields] = useState<ColumnConfig[]>(loadInfoFields)
@@ -122,14 +127,16 @@ export function StockPanel({
   const rawRows: KlineRow[] = contextUnavailable ? [] : kline.data?.rows ?? []
   // OHLC 视图用于日期选中/昨收价推导 (与图表侧同口径)
   const rows = useMemo(() => toOHLC(rawRows), [rawRows])
+  const latestTradeDate = !kline.isPlaceholderData ? rows.at(-1)?.date ?? null : null
   const stockInfo = contextUnavailable ? undefined : kline.data?.stock_info
   const name = contextUnavailable ? undefined : kline.data?.name
 
   const handleDateClick = useCallback((date: string) => {
-    setSelectedDate(date)
+    if (date < rangeStart || date > rangeEnd || kline.isPlaceholderData) return
+    setPickedBar({ symbol, start: rangeStart, end: rangeEnd, day: date })
     setIntradayDismissed(false)
     onSelectDate?.(date)
-  }, [onSelectDate])
+  }, [symbol, rangeStart, rangeEnd, kline.isPlaceholderData, onSelectDate])
 
   // 当前日K就绪后, 等可见查询空闲再串行预取邻股, 避免首屏争抢公网带宽。
   // 日K/分时预取 staleTime 30s 防来回切换重复请求; 成为当前股后 useQuery(staleTime=0) 立即后台刷新,
@@ -168,18 +175,19 @@ export function StockPanel({
   useEffect(() => {
     if (prevSymbol.current === symbol) return
     prevSymbol.current = symbol
-    setSelectedDate(null)
     setLinkedPrice(null)
   }, [symbol])
 
-  // 当分时开启、无选中日期时，自动选中最新日期
-  useEffect(() => {
-    if (showIntraday && !selectedDate && rows.length > 0) {
-      setSelectedDate(rows[rows.length - 1].date)
-    }
-  }, [showIntraday, selectedDate, rows])
+  const clickedDay = pickedBar?.symbol === symbol && pickedBar.start === rangeStart && pickedBar.end === rangeEnd
+    ? pickedBar.day : undefined
+  useEffect(() => { setPickedBar(undefined) }, [symbol, rangeStart, rangeEnd, preferredTradeDate])
+  const defaultDay = preferredTradeDate === undefined ? latestTradeDate : preferredTradeDate
+  const visibleDay = clickedDay ?? defaultDay
+  const visibleIdx = !kline.isPlaceholderData && visibleDay ? rows.findIndex(row => row.date === visibleDay) : -1
+  const selectedDate = (clickedDay || showIntraday) && visibleIdx >= 0 ? visibleDay : null
+  useEffect(() => { onVisibleTradeDate?.(visibleDay) }, [onVisibleTradeDate, visibleDay])
 
-  const selectedIdx = selectedDate ? rows.findIndex(r => r.date === selectedDate) : -1
+  const selectedIdx = selectedDate ? visibleIdx : -1
   const selectedRow = selectedIdx >= 0 ? rows[selectedIdx] : undefined
   const prevClose = selectedIdx > 0
     ? rows[selectedIdx - 1].close
@@ -193,6 +201,9 @@ export function StockPanel({
 
   return (
     <div className={className}>
+      {preferredTradeDate && kline.isSuccess && !kline.isPlaceholderData && visibleIdx < 0 && (
+        <p className="mb-2 text-xs text-secondary">{preferredTradeDate} 暂无日 K，图表仅展示区间内已有行情。</p>
+      )}
       <StockInfoBar
         symbol={symbol}
         name={name}

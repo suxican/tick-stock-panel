@@ -120,7 +120,7 @@ it('无行情与同步失败分别给出反馈，可以重试', async () => {
 it('在卡片内按所选交易日查看完整归因，切日后不展示旧日期', async () => {
   calls.extDataRows.mockImplementation(async (_id, opts) => ({
     date: opts.date, total: 1, rows: [{
-      symbol: '600000.SH', name: '浦发银行', reason: `${opts.date} 完整原因`,
+      symbol: '600000.SH', name: '浦发银行', trade_date: opts.date, reason: `${opts.date} 完整原因`,
     }],
   }))
   await render()

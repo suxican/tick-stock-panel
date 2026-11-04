@@ -1272,12 +1272,12 @@ def limit_ladder(
         for config_id, field_name, at in ext_specs:
             view_name = f"ext_{config_id}"
             ext_col_name = f"{config_id}__{field_name}"
+            cfg = configs.get(config_id)
+            # 梯队已解析出实际交易日，时序扩展只读取同日分区。
+            partition_date = str(as_of) if cfg and cfg.mode == "timeseries" else None
             try:
-                # 扩展时序数据必须只取最新分区; 否则一个 symbol 会按历史分区数被 JOIN 放大
-                # (ext_{id} 视图覆盖 timeseries/**), 与自选列表同口径。
-                cfg = configs.get(config_id)
                 if cfg:
-                    ext_df, _ = _read_ext_dataframe(cfg, data_dir)
+                    ext_df, _ = _read_ext_dataframe(cfg, data_dir, snapshot_date=partition_date)
                 else:
                     ext_df = pl.from_arrow(db.query(
                         f"SELECT symbol, {quote_ident(field_name)} FROM {view_name}"
@@ -1288,10 +1288,9 @@ def limit_ladder(
                     df = df.join(joined, on="symbol", how="left")
                     ext_col_names.append(ext_col_name)
             except Exception:
-                cfg = configs.get(config_id)
                 if cfg:
                     try:
-                        ext_df, _ = _read_ext_dataframe(cfg, data_dir)
+                        ext_df, _ = _read_ext_dataframe(cfg, data_dir, snapshot_date=partition_date)
                         time_field = cfg.pull.time_field if cfg.pull else None
                         joined = _dedup_ext(ext_df, field_name, ext_col_name, at, time_field)
                         if joined is not None:

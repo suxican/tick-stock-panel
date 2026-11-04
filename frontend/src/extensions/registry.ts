@@ -4,6 +4,7 @@ import type {
   FrontendExtensionModule,
   FrontendExtensionNavigation,
   FrontendExtensionRoute,
+  FrontendExtensionSlot,
   FrontendSlotName,
   FrontendSlotRegistration,
 } from './types'
@@ -14,7 +15,7 @@ const ID_RE = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/
 const extensions = new Map<string, FrontendExtension>()
 const routes = new Map<string, FrontendExtensionRoute & { extensionId: string }>()
 const navigation = new Map<string, FrontendExtensionNavigation & { extensionId: string }>()
-const slots = new Map<FrontendSlotName, Array<FrontendSlotRegistration & { extensionId: string }>>()
+const slots = new Map<FrontendSlotName, Array<FrontendExtensionSlot & { extensionId: string }>>()
 const loadErrors: FrontendExtensionLoadError[] = []
 let frozen = false
 
