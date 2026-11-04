@@ -15,6 +15,7 @@ import { cn } from '@/lib/cn'
 import { cnSignal } from '@/lib/signals'
 import { useCustomSignalNames } from '@/lib/useCustomSignalNames'
 import { LEGACY_STRATEGY_NOTIFY_EVENTS, STRATEGY_NOTIFY_EVENT_OPTIONS, strategyEventMeta, strategyName } from '@/lib/strategyMonitorEvents'
+import { DEFAULT_MODE_EVENTS, isModeMonitorType, modeEventLabel } from '@/lib/modeMonitorEvents'
 import { boardTag } from '@/components/stock-table/primitives'
 import { resolveWatchlistGroupColor } from '@/lib/watchlist-group-colors'
 import { markSeen, resetBadge, leaveMonitorPage } from '@/lib/monitorBadge'
@@ -27,6 +28,7 @@ import { usePreferences, useQuoteStatus } from '@/lib/useSharedQueries'
 const TYPE_LABEL: Record<string, string> = {
   signal: '信号', price: '价格/涨跌', market: '市场异动', strategy: '策略监控', sector: '板块监控',
   abnormal: '异动监控', volume_delta: '轮询放量', date: '日期提醒',
+  first_board: '首板模式', huichun: '回春模式',
 }
 
 /** 严重级别 → 左侧色条 + 图标 */
@@ -36,6 +38,8 @@ const SEVERITY_CONFIG: Record<string, { bar: string; icon: any; iconCls: string 
   critical: { bar: 'bg-danger',           icon: Flame,       iconCls: 'text-danger' },
 }
 const SOURCE_BADGE_STYLE: Record<string, string> = {
+  first_board: 'bg-accent/10 text-accent border-accent/20',
+  huichun: 'bg-emerald-400/10 text-emerald-500 border-emerald-400/20',
   strategy: 'bg-amber-400/10 text-amber-400 border-amber-400/20',
   signal:   'bg-accent/10 text-accent border-accent/20',
   price:    'bg-emerald-400/10 text-emerald-400 border-emerald-400/20',
@@ -124,7 +128,7 @@ export function Monitor() {
   const [editingRule, setEditingRule] = useState<MonitorRule | null>(null)
   const [editorPreset, setEditorPreset] = useState<Partial<MonitorRule> | null>(null)
 
-  // 深链: /monitor?new=abnormal (异动监控页「告警规则」入口) → 直接弹出预置类型的编辑器
+  // 深链: 异动监控、首板和回春页「告警规则」入口 → 直接弹出预置类型的编辑器
   const [searchParams, setSearchParams] = useSearchParams()
   useEffect(() => {
     const kind = searchParams.get('new')
@@ -133,11 +137,16 @@ export function Monitor() {
       setEditorPreset({ type: 'abnormal', threshold_pct: 70, direction: 'both', abnormal_window: 'any', scope: 'all' })
       setEditorOpen(true)
       setSearchParams({}, { replace: true })
+    } else if (isModeMonitorType(kind ?? undefined)) {
+      setEditingRule(null)
+      setEditorPreset({ type: kind as 'first_board' | 'huichun', asset_type: 'stock', scope: 'all' })
+      setEditorOpen(true)
+      setSearchParams({}, { replace: true })
     }
   }, [searchParams, setSearchParams])
 
   // 触发记录: 过滤 + 统计 (提升到主组件, 供 header 行使用)
-  const [filter, setFilter] = useState<'all' | 'strategy' | 'signal' | 'price' | 'market' | 'sector' | 'abnormal' | 'volume_delta' | 'date'>('all')
+  const [filter, setFilter] = useState<'all' | 'strategy' | 'signal' | 'price' | 'market' | 'sector' | 'abnormal' | 'volume_delta' | 'date' | 'first_board' | 'huichun'>('all')
   const [confirmClear, setConfirmClear] = useState(false)
   const [confirmClearRules, setConfirmClearRules] = useState(false)
 
@@ -224,7 +233,7 @@ export function Monitor() {
               <SectionHeader icon={BellRing} title="触发记录" />
               {/* 过滤标签 — 单行横向滚动, 不折行 (缩放/窄窗口下保持一行) */}
               <div className="flex min-w-0 flex-nowrap items-center gap-0.5 overflow-x-auto [&>button]:shrink-0">
-                {(['all', 'strategy', 'signal', 'price', 'market', 'sector', 'abnormal', 'volume_delta', 'date'] as const).map(f => (
+                {(['all', 'strategy', 'first_board', 'huichun', 'signal', 'price', 'market', 'sector', 'abnormal', 'volume_delta', 'date'] as const).map(f => (
                   <button
                     key={f}
                     onClick={() => setFilter(f)}
@@ -566,7 +575,12 @@ function AlertsList({ alertsQuery, confirmClear, setConfirmClear, total, enterTs
                         </span>
                       </div>
                       {/* 详情行: 实际命中信号为主 (有 signals 时); 无 truth 命中则回退条件摘要 */}
-                      {ev.signals && ev.signals.length > 0 ? (
+                      {isModeMonitorType(ev.source) ? (
+                        <div className="mt-1 space-y-1 text-[11px]">
+                          <span className="font-medium text-accent">{modeEventLabel(ev.source, ev.type)}</span>
+                          {ev.message && <p className="leading-relaxed text-secondary">{ev.message}</p>}
+                        </div>
+                      ) : ev.signals && ev.signals.length > 0 ? (
                         <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px]">
                           <span className="text-muted">命中</span>
                           {ev.signals.map((s: string, j: number) => (
@@ -948,6 +962,15 @@ function RulesList({ rulesQuery, onEdit }: {
                     {r.sector_trigger === 'momentum' ? `${r.window_minutes ?? 5}分钟异动` : '涨跌幅'}
                     {r.direction === 'down' ? ' ≤ -' : ' ≥ '}{r.threshold_pct ?? 1}%
                   </span>
+                </div>
+              ) : isModeMonitorType(r.type) ? (
+                <div className="mt-1 flex flex-wrap items-center gap-1 pl-0.5">
+                  {(r.mode_events ?? DEFAULT_MODE_EVENTS[r.type]).map(event => (
+                    <span key={event} className="rounded bg-elevated px-1.5 py-0.5 text-[9px] text-secondary">
+                      {modeEventLabel(r.type as 'first_board' | 'huichun', event)}
+                    </span>
+                  ))}
+                  <span className="text-[9px] text-muted">{r.type === 'huichun' ? '日线扫描后确认' : '盘中自动盯盘事件'}</span>
                 </div>
               ) : r.type === 'abnormal' ? (
                 <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1 pl-0.5">

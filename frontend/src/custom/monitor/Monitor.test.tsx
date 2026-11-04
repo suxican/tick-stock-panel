@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { act } from 'react'
+import { act, Suspense } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { Monitor } from './extension'
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
+import extension from './extension'
+import { finalizeFrontendExtensions, getFrontendExtensionLoadErrors, getFrontendExtensionNavigation, getFrontendExtensionRoutes, loadFrontendExtensions } from '@/extensions/registry'
 
 const fixtures = vi.hoisted(() => ({ alerts: vi.fn() }))
 vi.mock('@/lib/api', () => ({
@@ -18,6 +19,9 @@ vi.mock('@/lib/api', () => ({
     }, {
       id: 'huichun-rule', name: '回春扫描通知', type: 'huichun', enabled: true,
       scope: 'all', asset_type: 'stock', symbols: [], conditions: [], mode_events: ['pending_cross'],
+    }, {
+      id: 'legacy-mode-rule', name: '旧首板通知', type: 'first_board', enabled: true,
+      scope: 'all', asset_type: 'stock', symbols: [], conditions: [],
     }] }),
     instrumentNames: async () => ({ names: {} }),
     watchlistGroups: async () => ({ groups: [] }),
@@ -39,6 +43,11 @@ vi.mock('@/components/monitor/RuleEditor', () => ({
 let host: HTMLDivElement
 let root: Root
 let client: QueryClient
+beforeAll(async () => {
+  await loadFrontendExtensions({ monitor: async () => ({ default: extension }) })
+  finalizeFrontendExtensions(new Set(['/settings', '/watchlist']))
+  await import('./Page')
+})
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   fixtures.alerts.mockReset().mockImplementation(async ({ source }: { source?: string }) => {
@@ -65,11 +74,36 @@ async function settle() {
 async function render(path = '/monitor') {
   await act(async () => root.render(
     <MemoryRouter initialEntries={[path]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-      <QueryClientProvider client={client}><Monitor /></QueryClientProvider>
+      <QueryClientProvider client={client}>
+        <Suspense fallback={<span>加载中</span>}>
+          <Routes>
+            {getFrontendExtensionRoutes().map(route => {
+              const Page = route.component
+              return <Route key={route.id} path={route.path} element={<Page />} />
+            })}
+            <Route path="*" element={<span>未知页面</span>} />
+          </Routes>
+        </Suspense>
+      </QueryClientProvider>
     </MemoryRouter>,
   ))
-  await settle()
+  await vi.waitFor(async () => {
+    await settle()
+    expect(host.textContent).not.toBe('加载中')
+  })
 }
+
+it('registers the monitor route and menu without load errors', () => {
+  expect(getFrontendExtensionLoadErrors()).toEqual([])
+  expect(getFrontendExtensionRoutes()).toMatchObject([{ path: '/monitor', extensionId: 'official.monitor' }])
+  expect(getFrontendExtensionNavigation()).toMatchObject([{ label: '监控中心', route: { path: '/monitor' } }])
+})
+
+it('keeps unknown paths outside the monitor route', async () => {
+  await render('/unknown-monitor')
+  expect(host.textContent).toBe('未知页面')
+  expect(fixtures.alerts).not.toHaveBeenCalled()
+})
 
 it('filters first-board and huichun alerts and presents their configured event summaries', async () => {
   await render()
@@ -79,6 +113,8 @@ it('filters first-board and huichun alerts and presents their configured event s
   expect(host.textContent).toContain('A0 确认')
   expect(host.textContent).toContain('待金叉观察')
   expect(host.textContent).toContain('日线扫描后确认')
+  expect(host.textContent).toContain('临近涨停买入候选')
+  expect(host.textContent).toContain('次日退出提示')
   for (const [label, source, visible, hidden] of [
     ['首板模式', 'first_board', '首板样本', '价格样本'],
     ['回春模式', 'huichun', '回春样本', '首板样本'],
@@ -93,7 +129,7 @@ it('filters first-board and huichun alerts and presents their configured event s
   }
 })
 
-it.each(['first_board', 'huichun'])('opens the %s rule editor from its deep link', async type => {
+it.each(['first_board', 'huichun', 'abnormal'])('opens the %s rule editor from its deep link', async type => {
   await render(`/monitor?new=${type}`)
   expect(host.querySelector('[data-editor]')?.textContent).toBe(type)
 })

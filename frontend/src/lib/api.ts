@@ -2614,7 +2614,6 @@ export interface DataSourcesResponse {
 }
 
 export interface DataSourceTestResult {
-  error?: string
   provider: string
   dataset: string
   rows: number

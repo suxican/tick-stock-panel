@@ -18,7 +18,7 @@ it('loads the remaining menus without the retired market emotion route', () => {
   const navigation = registry.getFrontendExtensionNavigation()
   expect(routes.some(route => route.path === '/market-emotion')).toBe(false)
   expect(navigation.some(item => item.label === '市场情绪')).toBe(false)
-  for (const path of ['/limit-ladder', '/first-board', '/market-game']) {
+  for (const path of ['/monitor', '/lots', '/limit-ladder', '/first-board', '/market-game']) {
     expect(routes.some(route => route.path === path)).toBe(true)
     expect(navigation.some(item => item.route.path === path)).toBe(true)
   }

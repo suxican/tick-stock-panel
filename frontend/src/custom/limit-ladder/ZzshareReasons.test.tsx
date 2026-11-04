@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-import { act } from 'react'
+import { act, Suspense } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 import { LimitUpLadder } from './extension'
 
 const calls = vi.hoisted(() => ({ ladder: vi.fn(), rows: vi.fn() }))
@@ -33,6 +33,10 @@ function payload(date: string, reason: string) {
   return { id: 'zzshare_limit_reasons', mode: 'timeseries', date, total: 1,
     rows: [{ symbol: stock.symbol, trade_date: date, reason, source: 'zzshare' }] }
 }
+beforeAll(async () => {
+  // Await module transformation before rendering through the lazy extension.
+  await import('./Page')
+})
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
@@ -58,7 +62,9 @@ async function settle() {
 async function render() {
   await act(async () => root.render(
     <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-      <QueryClientProvider client={client}><LimitUpLadder /></QueryClientProvider>
+      <QueryClientProvider client={client}>
+        <Suspense fallback={<span>加载中</span>}><LimitUpLadder /></Suspense>
+      </QueryClientProvider>
     </MemoryRouter>,
   ))
   await settle()
