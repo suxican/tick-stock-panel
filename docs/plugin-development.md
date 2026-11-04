@@ -384,7 +384,7 @@ uv run --extra dev python -m ruff check app/plugins/<your_plugin>/ tests/test_<y
 
 - **zzshare（自在量化）**。在「设置 → 数据源 → zzshare」试拉 A 股股票日 K。试拉只预览结果。需要用于日 K 同步时，单独切换日 K 数据源。插件使用公开 HTTP 接口，默认匿名访问，可通过环境变量 `ZZSHARE_TOKEN` 提供自己的凭据。
   - 插件只声明 `daily`，返回未复权 OHLC，成交量由股转换为手，成交额为元。指数、ETF 走系统现有日 K 回退流程。上游 `factor` 不写入本地除权事件表。
-  - 卡片上的涨停归因同步独立于日 K 选择。收盘后选定交易日，成功后在「数据 → 扩展数据」查看 `zzshare_limit_reasons` 当日分区。一只股票一行，同股保留不同的原因文本。原始记录数含重复项，不可用作涨停家数。采集时间表示本地取数时刻，不能作为原因的历史发布时间。
+  - 卡片上的涨停归因同步独立于日 K 选择。在「设置 → 数据源 → zzshare → 查看操作」选定已收盘交易日，点击「同步涨停归因」，再点「查看涨停归因」展开股票完整原因。首次成功同步后才创建 `zzshare_limit_reasons`，在「数据」页的「数据画像」中显示为「ZZShare 涨停归因」卡片；顶部「扩展数据」按钮用于新建表。一只股票一行，同股保留不同的原因文本。原始记录数含重复项，不可用作涨停家数。采集时间表示本地取数时刻，不能作为原因的历史发布时间。
   - `POST /api/zzshare/limit-reasons/sync` 接受 `{"date":"YYYY-MM-DD"}`。首次成功写入该日快照，同日重复同步读取已有分区。无数据时可稍后重试。历史查询请指定分区日期。[上游接口文档](https://github.com/zzquant/zzshare)
 
 - **`backend/app/plugins/fuyao/`** — 同花顺官方 REST 数据源(runtime: none, 纯 HTTP 零依赖)

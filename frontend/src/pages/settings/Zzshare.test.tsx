@@ -5,12 +5,15 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { SettingsDataSourcesPanel } from './DataSources'
 import { QK } from '@/lib/queryKeys'
+import { ApiError } from '@/lib/api'
 
 const calls = vi.hoisted(() => ({
   dataSources: vi.fn(), capabilityMatrix: vi.fn(), updateDataProviders: vi.fn(),
-  testDataSource: vi.fn(), syncZzshareLimitReasons: vi.fn(),
+  testDataSource: vi.fn(), syncZzshareLimitReasons: vi.fn(), extDataRows: vi.fn(),
 }))
-vi.mock('@/lib/api', () => ({ api: calls }))
+vi.mock('@/lib/api', async importOriginal => ({
+  ...await importOriginal<typeof import('@/lib/api')>(), api: calls,
+}))
 vi.mock('@/lib/useSharedQueries', () => ({
   usePreferences: () => ({ data: {} }), useCapabilities: () => ({ data: undefined }),
 }))
@@ -52,7 +55,7 @@ async function render() {
   await settle()
 }
 async function click(label: string) {
-  const button = [...host.querySelectorAll('button')].find(b => b.textContent?.trim() === label)
+  const button = [...host.querySelectorAll('button')].find(b => b.getAttribute('aria-label') === label || b.textContent?.trim() === label)
   expect(button, label).toBeDefined()
   await act(async () => button!.click())
   await settle()
@@ -112,4 +115,44 @@ it('无行情与同步失败分别给出反馈，可以重试', async () => {
   expect(host.textContent).toContain('读取已有快照')
   expect(client.getQueryState(QK.extData)?.isInvalidated).toBe(false)
   expect(calls.updateDataProviders).not.toHaveBeenCalled()
+})
+
+it('在卡片内按所选交易日查看完整归因，切日后不展示旧日期', async () => {
+  calls.extDataRows.mockImplementation(async (_id, opts) => ({
+    date: opts.date, total: 1, rows: [{
+      symbol: '600000.SH', name: '浦发银行', reason: `${opts.date} 完整原因`,
+    }],
+  }))
+  await render()
+  await click('查看操作')
+  await click('查看涨停归因')
+  expect(calls.extDataRows).not.toHaveBeenCalled()
+  await selectDate('2025-09-30')
+  await click('查看涨停归因')
+  expect(calls.extDataRows).toHaveBeenLastCalledWith('zzshare_limit_reasons', {
+    date: '2025-09-30', limit: 20000, quiet: true,
+  })
+  expect(host.querySelector('[role=dialog]')?.textContent).toContain('2025-09-30 完整原因')
+  await click('关闭')
+  await selectDate('2025-09-29')
+  await click('查看涨停归因')
+  expect(host.querySelector('[role=dialog]')?.textContent).toContain('2025-09-29 完整原因')
+  expect(host.querySelector('[role=dialog]')?.textContent).not.toContain('2025-09-30 完整原因')
+  expect(calls.syncZzshareLimitReasons).not.toHaveBeenCalled()
+})
+
+it('未同步时说明先同步，读取失败时可重试且不假装没有数据', async () => {
+  calls.extDataRows.mockRejectedValue(new ApiError('扩展表不存在', 404))
+  await render()
+  await click('查看操作')
+  await selectDate('2025-09-30')
+  await click('查看涨停归因')
+  expect(host.querySelector('[role=dialog]')?.textContent).toContain('请先同步该交易日')
+  await click('关闭')
+  calls.extDataRows.mockRejectedValue(new ApiError('服务暂时不可用', 500))
+  await click('查看涨停归因')
+  expect(host.querySelector('[role=dialog]')?.textContent).toContain('服务暂时不可用')
+  calls.extDataRows.mockResolvedValue({ total: 0, rows: [] })
+  await click('重试')
+  expect(host.querySelector('[role=dialog]')?.textContent).toContain('请先同步该交易日')
 })

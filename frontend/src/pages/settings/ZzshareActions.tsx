@@ -1,8 +1,11 @@
 import { useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { api } from '@/lib/api'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { api, ApiError } from '@/lib/api'
 import { cnDateFromUtc } from '@/lib/format'
 import { QK } from '@/lib/queryKeys'
+import { SettingsModal } from '@/components/data/SettingsModal'
+import { EmptyState } from '@/components/EmptyState'
+import { ErrorState } from '@/components/ErrorState'
 
 const buttonStyle = 'rounded-btn bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent/20 disabled:opacity-50'
 
@@ -10,6 +13,7 @@ export function ZzshareActions({ available }: { available: boolean }) {
   const qc = useQueryClient()
   const today = cnDateFromUtc(new Date().toISOString())
   const [date, setDate] = useState('')
+  const [viewDate, setViewDate] = useState<string | null>(null)
   const daily = useMutation({
     mutationFn: async () => {
       const result = await api.testDataSource('zzshare', 'daily', ['600000.SH'])
@@ -46,7 +50,7 @@ export function ZzshareActions({ available }: { available: boolean }) {
       </section>
       <section className="space-y-2 border-t border-border/50 pt-4">
         <h4 className="font-medium text-foreground">盘后涨停归因</h4>
-        <p className="text-secondary">选择已收盘的交易日。首次同步保存当日快照，重复同步读取已保存的数据。结果可在「数据 → 扩展数据」查看。</p>
+        <p className="text-secondary">选择已收盘的交易日，首次成功同步后创建「ZZShare 涨停归因」表。点击「查看涨停归因」浏览该日股票和完整原因，重复同步读取已保存的快照。</p>
         <div className="flex flex-wrap items-center gap-2">
           <label className="flex items-center gap-2 text-secondary">
             交易日
@@ -58,6 +62,10 @@ export function ZzshareActions({ available }: { available: boolean }) {
             onClick={() => sync.mutate(date)}>
             {sync.isPending ? '同步中…' : '同步涨停归因'}
           </button>
+          <button type="button" className={buttonStyle} disabled={!date || date > today || sync.isPending}
+            onClick={() => setViewDate(date)}>
+            查看涨停归因
+          </button>
         </div>
         {sync.data && <p role="status" className="text-secondary">
           {sync.data.date} · {sync.data.state === 'no_data' ? '当日暂无归因数据，未写入快照，可稍后重试。' : (
@@ -66,6 +74,35 @@ export function ZzshareActions({ available }: { available: boolean }) {
         </p>}
         {sync.isError && <p role="alert" className="text-danger">{sync.error.message}</p>}
       </section>
+      {viewDate && <ZzshareReasons date={viewDate} onClose={() => setViewDate(null)} />}
     </div>
+  )
+}
+
+function ZzshareReasons({ date, onClose }: { date: string; onClose: () => void }) {
+  const rows = useQuery({
+    queryKey: QK.extDataRows('zzshare_limit_reasons', date, 20000),
+    queryFn: () => api.extDataRows('zzshare_limit_reasons', { date, limit: 20000, quiet: true }),
+    retry: false,
+  })
+  const missing = rows.error instanceof ApiError && rows.error.status === 404
+
+  return (
+    <SettingsModal title={`${date} 涨停归因`} onClose={onClose} width="max-w-3xl">
+      {rows.isPending ? <p role="status" className="py-8 text-center text-sm text-secondary">正在读取归因…</p>
+        : rows.isError && !missing ? <ErrorState hint={rows.error.message} retrying={rows.isFetching} onRetry={() => void rows.refetch()} />
+        : !rows.data?.rows.length ? <EmptyState title="该日还没有归因快照" hint="请先同步该交易日，成功后再查看。" />
+        : <div className="space-y-3">
+          <p className="text-xs text-secondary">共 {rows.data.total} 只股票，点击股票展开完整原因。来源为 ZZShare 盘后归因。</p>
+          {rows.data.rows.map(row => (
+            <details key={row.symbol} className="rounded-lg border border-border bg-elevated/30">
+              <summary className="cursor-pointer px-4 py-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60">
+                {row.name} <span className="ml-2 font-mono text-xs text-secondary">{row.symbol}</span>
+              </summary>
+              <p className="whitespace-pre-wrap break-words border-t border-border/50 px-4 py-3 text-sm leading-relaxed text-secondary">{row.reason}</p>
+            </details>
+          ))}
+        </div>}
+    </SettingsModal>
   )
 }

@@ -4244,13 +4244,13 @@ export const api = {
   extDataList: () =>
     request<{ items: ExtDataConfig[] }>('/api/ext-data'),
 
-  extDataRows: (id: string, opts?: { date?: string; limit?: number; columns?: string[] }) => {
+  extDataRows: (id: string, opts?: { date?: string; limit?: number; columns?: string[]; quiet?: boolean }) => {
     const qs = new URLSearchParams()
     if (opts?.date) qs.set('date', opts.date)
     if (opts?.limit) qs.set('limit', String(opts.limit))
     if (opts?.columns?.length) qs.set('columns', opts.columns.join(','))
     const suffix = qs.toString()
-    return request<ExtDataRowsResult>(`/api/ext-data/${encodeURIComponent(id)}/rows${suffix ? `?${suffix}` : ''}`)
+    return request<ExtDataRowsResult>(`/api/ext-data/${encodeURIComponent(id)}/rows${suffix ? `?${suffix}` : ''}`, { quiet: opts?.quiet })
   },
 
   dimensionMembers: (id: string, opts: { field: string; value: string; date?: string; limit?: number }) => {
