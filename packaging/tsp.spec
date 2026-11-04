@@ -85,6 +85,7 @@ datas += [
     (str(ROOT / "backend" / "app" / "plugins" / "fuyao" / "plugin.yaml"), "app/plugins/fuyao"),
     (str(ROOT / "backend" / "app" / "plugins" / "tdxquant" / "plugin.yaml"), "app/plugins/tdxquant"),
     (str(ROOT / "backend" / "app" / "plugins" / "yahoo_overseas" / "plugin.yaml"), "app/plugins/yahoo_overseas"),
+    (str(ROOT / "backend" / "app" / "plugins" / "zzshare" / "plugin.yaml"), "app/plugins/zzshare"),
 ]
 hiddenimports += [
     "app.plugins.fuyao.provider",
@@ -93,6 +94,7 @@ hiddenimports += [
     "app.plugins.tdxquant.client",
     "app.plugins.tdxquant.probe",
     "app.plugins.yahoo_overseas.provider",
+    "app.plugins.zzshare.provider",
 ]
 
 # ── 后端源码扩展 (app/custom/*) ──────────────────────────────────────

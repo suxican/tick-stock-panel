@@ -55,6 +55,12 @@ def test_spec_declares_market_game_overseas_plugin():
     assert '"app/plugins/yahoo_overseas"' in SPEC_CODE
 
 
+def test_spec_declares_zzshare_plugin():
+    assert '"app.plugins.zzshare.provider"' in SPEC_CODE
+    assert '"plugins" / "zzshare" / "plugin.yaml"' in SPEC_CODE
+    assert '"app/plugins/zzshare"' in SPEC_CODE
+
+
 def test_spec_includes_huichun_calendar_resource():
     """收益跟踪必须使用随包日历, 不能依赖开发者未入库的 docs 文件。"""
     assert '"services" / "huichun_resources"' in SPEC_CODE

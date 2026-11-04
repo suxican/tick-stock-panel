@@ -1,0 +1,11 @@
+name: zzshare
+display_name: "zzshare 自在量化"
+runtime: none
+entry: app.plugins.zzshare.provider:ZzshareProvider
+datasets: [daily]
+description: "A 股个股不复权日 K，可匿名使用。盘后涨停原因可独立同步。"
+install_hint: "使用项目已有 httpx，无需安装 SDK。可选环境变量 ZZSHARE_TOKEN。"
+homepage: "https://github.com/zzquant/zzshare"
+usage_notes:
+  - "大股票池按交易日拉取全市场快照，再按所选代码过滤。"
+  - "ETF、指数及复权因子请使用支持对应能力的数据源。"

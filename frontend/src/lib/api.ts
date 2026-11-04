@@ -2464,6 +2464,7 @@ export interface DataSourceTestResult {
   rows: number
   columns: string[]
   preview: Record<string, unknown>[]
+  error?: string
 }
 
 /** 插件 Key 保存结果 (先探后存: 无效 Key 返回 ok=false 且不落盘) */
@@ -3152,6 +3153,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ provider, dataset, symbols, config }),
     }),
+  syncZzshareLimitReasons: (date: string) =>
+    request<{ date: string; table_id: string; state: 'synced' | 'cached' | 'no_data'; raw_rows: number; stocks: number }>(
+      '/api/zzshare/limit-reasons/sync',
+      { method: 'POST', body: JSON.stringify({ date }), quiet: true, timeoutMs: extPullTimeoutMs() },
+    ),
   updateDataProviders: (cfg: Partial<Pick<Preferences, ProviderField>>) =>
     request<Pick<Preferences, ProviderField>>(
       '/api/settings/preferences/data-providers',

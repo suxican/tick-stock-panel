@@ -45,6 +45,7 @@ import { CAP_LABELS, TIER_RANK, tierRank, tierStyle, TierTag } from '@/lib/capab
 import { DEFAULT_ROUTING, buildProviderRouting } from '@/lib/provider-routing'
 import { toast } from '@/components/Toast'
 import { DataSourceEditor } from './DataSourceEditor'
+import { ZzshareActions } from './ZzshareActions'
 import { TickFlowKeySection, TierHelpPopover, useInvalidateTierRelated } from './Keys'
 
 const DATASET_LABEL: Record<string, string> = {
@@ -870,11 +871,15 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
                     ) : (
                       <>
                         <button
-                          onClick={(e) => { e.stopPropagation(); switchProvider.mutate(item.name) }}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            if (plugin?.name === 'zzshare') setSelected(item.name)
+                            else switchProvider.mutate(item.name)
+                          }}
                           disabled={switchProvider.isPending}
                           className="rounded px-1.5 py-0.5 text-[10px] font-medium bg-accent/10 text-accent hover:bg-accent/20 transition-colors disabled:opacity-50"
                         >
-                          套用
+                          {plugin?.name === 'zzshare' ? '查看操作' : '套用'}
                         </button>
                         {plugin && plugin?.runtime !== 'none' && !plugin?.api_key_env && (
                           uninstalling ? (
@@ -1085,6 +1090,7 @@ function PluginDetail({ plugin, isActive, matrixCaps, servingSet }: {
               <PluginKeyConfig plugin={plugin} />
             </div>
           )}
+          {plugin.name === 'zzshare' && <ZzshareActions available={plugin.available} />}
         </div>
 
         {/* 能力适配表: 全部能力 × 该源适配状态 (样式对齐 TickFlow 能力档位表) */}
