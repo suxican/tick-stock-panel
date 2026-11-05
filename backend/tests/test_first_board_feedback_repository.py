@@ -73,6 +73,17 @@ def test_target_pair_scale_handles_ex_rights_and_later_uniform_adjustment(repo):
     assert frame["limit_up_price"].to_list() == pytest.approx([5.495, 5.495])
 
 
+def test_reader_preserves_raw_candle_range_for_one_price_limits(repo):
+    sample = partition(repo, DAYS[-1], raw=11.0, adjusted=5.5)
+    path = repo.store.data_dir / "kline_daily_enriched" / f"date={DAYS[-1]}" / "part.parquet"
+    sample.with_columns(pl.lit(5.5).alias("high"), pl.lit(5.45).alias("low"),
+                        pl.lit(11.0).alias("raw_high"), pl.lit(10.9).alias("raw_low")).write_parquet(path)
+    frame, _ = repo.get_first_board_history(DAYS)
+    assert frame.filter(pl.col("date") == DAYS[-1]).select("raw_high", "raw_low").rows() == [(11.0, 10.9)]
+    # Old partitions lack these columns. Their OHLC range stays unknown.
+    assert frame.filter(pl.col("date") == DAYS[1]).select("raw_high", "raw_low").rows() == [(None, None)]
+
+
 def test_missing_previous_price_and_incomplete_previous_close_do_not_prove_limit(repo):
     stamp = int(datetime(2026, 10, 21, 14, 55, tzinfo=CN_TZ).timestamp() * 1000)
     partition(repo, DAYS[0], stamp=stamp)

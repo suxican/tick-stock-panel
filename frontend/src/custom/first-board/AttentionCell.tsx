@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { FirstBoardAttention, FirstBoardSnapshot } from '@/lib/api'
+import type { FirstBoardAttention } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { pct, stamp } from './shared'
 
@@ -12,15 +12,6 @@ const colors = {
   both: 'border-violet-500/25 bg-violet-500/10 text-violet-800 dark:text-violet-300',
 }
 const leaderStatus = (atLimit: boolean | null) => atLimit == null ? '触板状态待确认' : atLimit ? '触板' : '已开板'
-
-export function AttentionSampling({ sampling }: { sampling: FirstBoardSnapshot['attention_sampling'] }) {
-  if (!sampling) return null
-  const labels = { recorded: '研究采样已记录', already_recorded: '本时点已采样', not_due: '等待下一采样时点', paused: '研究采样暂停', error: '研究采样暂不可用' }
-  return <p className="text-xs leading-relaxed text-secondary" role="status">
-    {labels[sampling.status]} · 今日采样时点 {sampling.sample_count} · 最近采样 {stamp(sampling.last_sample_at)}
-    {sampling.reason && <span className="block">{sampling.reason}</span>}
-  </p>
-}
 
 export function hasCurrentAttention(context: FirstBoardAttention | undefined, snapshotCurrent = true): context is FirstBoardAttention {
   return snapshotCurrent && context?.schema_version === 1 && (context.status === 'ready' || context.status === 'partial')

@@ -7,7 +7,9 @@ never scan history. Returns and ratios are fractions, prices are raw yuan.
 from __future__ import annotations
 
 import logging
+import math
 import time
+from bisect import bisect_left
 from contextlib import suppress
 from datetime import date, datetime, timedelta
 
@@ -21,6 +23,9 @@ from app.strategy.first_board import _UNIVERSE_PATTERNS
 logger = logging.getLogger(__name__)
 MEMBERSHIP_NOTE = "行业和概念使用当前成员的等权涨幅，并非板块指数或当日涨停原因；概念可能重复归属。"
 _HISTORY_COLUMNS = ["symbol", "date", "raw_close", "limit_up_price"]
+_OPENING_EDGES = (0.02, 0.04, 0.06, 0.08, 0.10)
+_OPENING_LABELS = (">10%", "8～10%", "6～8%", "4～6%", "2～4%", "0～2%", "平开",
+                   "-2～0%", "-4～-2%", "-6～-4%", "-8～-6%", "-10～-8%", "<-10%")
 
 
 def _number(frame: pl.DataFrame, column: str) -> pl.Expr:
@@ -31,6 +36,36 @@ def _number(frame: pl.DataFrame, column: str) -> pl.Expr:
 
 def _positive(expr: pl.Expr) -> pl.Expr:
     return (expr.is_finite() & (expr > 0)).fill_null(False)
+
+
+def _opening_distribution(symbols: list[str], excluded: int, quotes: dict[str, dict]) -> dict:
+    returns = []
+    counts = [0] * len(_OPENING_LABELS)
+    up = 0
+    for symbol in symbols:
+        premium = quotes.get(symbol, {}).get("distribution_premium")
+        if premium is None or not math.isfinite(premium):
+            continue
+        returns.append(premium)
+        # Ignore only floating-point dust at zero / exact bin edges, never round
+        # the individual returns used for the mean to their display precision.
+        magnitude = abs(premium)
+        index = 6
+        if magnitude > 1e-12:
+            steps = 1 + bisect_left(_OPENING_EDGES, magnitude - 1e-12)
+            if premium > 0:
+                up += 1
+                index -= steps
+            else:
+                index += steps
+        counts[index] += 1
+    valid = len(returns)
+    return {
+        "sample_count": len(symbols), "history_excluded_count": excluded, "open_count": valid,
+        "up_count": up, "up_ratio": up / valid if valid else None,
+        "mean_open_premium": math.fsum(returns) / valid if valid else None,
+        "bins": [{"label": label, "count": n} for label, n in zip(_OPENING_LABELS, counts, strict=True)],
+    }
 
 
 def _summary(rows: list[dict]) -> dict:
@@ -70,7 +105,7 @@ def _summary(rows: list[dict]) -> dict:
 def empty_feedback(message: str = "等待昨日首板样本与行情", *, status: str = "waiting") -> dict:
     return {"status": status, "message": message, "as_of": None, "sample_date": None,
             "observed_at": None, "quote_mode": "snapshot", "membership_note": MEMBERSHIP_NOTE,
-            "history_excluded_count": 0,
+            "history_excluded_count": 0, "opening_distribution": None,
             "groups": {key: _summary([]) for key in ("all", "main", "growth")},
             "rows": [], "sectors": []}
 
@@ -100,6 +135,8 @@ class FirstBoardFeedback:
         self._key: tuple | None = None
         self._prepared_at = 0.0
         self._pool: list[dict] = []
+        self._non_one_price_limits: list[str] = []
+        self._opening_excluded = 0
         self._sample_date: date | None = None
         self._excluded = 0
         self._sessions: list[date] = []
@@ -200,6 +237,10 @@ class FirstBoardFeedback:
             & (pl.col("raw_close") >= pl.col("limit_up_price"))
         )
         yesterday = yesterday.filter(pl.col("_valid"))
+        high, low = _number(yesterday, "raw_high"), _number(yesterday, "raw_low")
+        known_range = _positive(high) & _positive(low) & pl.col("raw_close").is_between(low, high)
+        opening_excluded = incomplete + yesterday.filter(~known_range).height
+        non_one_price_limits = yesterday.filter(known_range & (high > low))["symbol"].to_list()
         prior = history.filter(pl.col("date") == previous).group_by("symbol").agg(
             ((pl.col("_history_known")
               & (pl.col("limit_up_price").is_null() | (pl.col("raw_close") < pl.col("limit_up_price")))).all()
@@ -215,6 +256,7 @@ class FirstBoardFeedback:
         self._pool = [{**row, "board": "main" if row["symbol"].startswith(("60", "00")) else "growth"}
                       for row in pool.to_dicts()]
         self._sample_date, self._excluded = sample_date, excluded
+        self._non_one_price_limits, self._opening_excluded = non_one_price_limits, opening_excluded
         self._key, self._prepared_at = key, time.monotonic()
 
     @staticmethod
@@ -224,7 +266,8 @@ class FirstBoardFeedback:
             return {}
         frame = current.select(
             "symbol", "date", *[_number(current, col).alias(col) for col in (
-                "raw_close", "close", "open", "change_pct", "limit_up_price", "quote_ts",
+                "raw_close", "close", "open", "prev_close", "change_pct", "limit_up_price", "quote_ts",
+                "volume", "amount",
             )],
         ).with_columns(pl.len().over("symbol").alias("_count"))
         valid = (_positive(pl.col("raw_close")) & _positive(pl.col("close"))
@@ -233,24 +276,42 @@ class FirstBoardFeedback:
         start = datetime.combine(as_of, datetime.min.time(), CN_TZ).timestamp() * 1000
         known_stamp = pl.col("quote_ts").is_not_null()
         timestamp_valid = pl.col("quote_ts").is_between(start, start + 86400000, closed="left") & (age >= 0)
+        duplicate = pl.col("_count") != 1
+        wrong_day = (pl.col("date") != as_of).fill_null(True)
+        invalid_time = known_stamp & ~timestamp_valid.fill_null(False)
+        stale = pl.lit(live) & ~age.is_between(0, max_age).fill_null(False)
         frame = frame.with_columns(
-            pl.when(pl.col("_count") != 1).then(pl.lit("invalid"))
-            .when((pl.col("date") != as_of).fill_null(True)).then(pl.lit("missing"))
+            pl.when(duplicate).then(pl.lit("invalid"))
+            .when(wrong_day).then(pl.lit("missing"))
             .when(~valid.fill_null(False)).then(pl.lit("invalid"))
-            .when(known_stamp & ~timestamp_valid.fill_null(False)).then(pl.lit("invalid"))
-            .when(pl.lit(live) & ~age.is_between(0, max_age).fill_null(False)).then(pl.lit("stale"))
+            .when(invalid_time).then(pl.lit("invalid"))
+            .when(stale).then(pl.lit("stale"))
             .otherwise(pl.lit("valid")).alias("status"),
         )
         usable = pl.col("status") == "valid"
         open_ok = usable & _positive(pl.col("open"))
+        # Sources may omit turnover fields. A reported zero with no positive
+        # turnover on either field does not establish an opening trade.
+        traded = (_positive(pl.col("volume")) | _positive(pl.col("amount"))
+                  | (pl.col("volume").is_null() & pl.col("amount").is_null()))
+        auction_end = start + (9 * 60 + 25) * 60000
+        opened = pl.lit(now.timestamp() * 1000 >= auction_end) & (~known_stamp | (pl.col("quote_ts") >= auction_end))
+        implied_premium = pl.col("open") / pl.col("close") * (1 + pl.col("change_pct")) - 1
+        # Both open and prev_close are on the enriched adjusted scale. Prefer
+        # their direct ratio over a vendor's potentially rounded change_pct.
+        opening_return = (pl.when(_positive(pl.col("prev_close"))).then(pl.col("open") / pl.col("prev_close") - 1)
+                          .when(pl.col("prev_close").is_null() & usable).then(implied_premium)
+                          .otherwise(None))
+        confirmed_open = (~(duplicate | wrong_day | invalid_time | stale) & _positive(pl.col("open"))
+                          & opened & traded)
         frame = frame.select(
             "symbol", "status", "quote_ts",
             pl.when(usable).then(pl.col("raw_close")).otherwise(None).alias("price"),
             pl.when(usable).then(pl.col("change_pct")).otherwise(None).alias("change_pct"),
             # open/close share the adjusted scale; change_pct supplies today's
             # authoritative return base, including ex-rights days.
-            pl.when(open_ok).then(pl.col("open") / pl.col("close") * (1 + pl.col("change_pct")) - 1)
-            .otherwise(None).alias("open_premium"),
+            pl.when(open_ok).then(implied_premium).otherwise(None).alias("open_premium"),
+            pl.when(confirmed_open).then(opening_return).otherwise(None).alias("distribution_premium"),
             pl.when(open_ok).then(pl.col("close") / pl.col("open") - 1).otherwise(None).alias("open_change"),
             pl.when(usable & _positive(pl.col("limit_up_price")))
             .then(pl.col("raw_close") >= pl.col("limit_up_price")).otherwise(None).alias("at_limit"),
@@ -314,6 +375,9 @@ class FirstBoardFeedback:
             return result
         result.update(sample_date=str(self._sample_date), history_excluded_count=self._excluded)
         quotes = self._quotes(current, as_of, now, live, max_quote_age_seconds)
+        result["opening_distribution"] = _opening_distribution(
+            self._non_one_price_limits, self._opening_excluded, quotes,
+        )
         rows = []
         for member in self._pool:
             quote = quotes.get(member["symbol"], {"status": "missing"})

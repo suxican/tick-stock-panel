@@ -6228,6 +6228,16 @@ export interface FirstBoardFeedbackSector {
   status: 'ready' | 'insufficient'
   reason: string | null
 }
+/** 昨日非一字涨停（含连板）的开盘表现；两个比例均为小数制，分档按涨幅从高到低排列。 */
+export interface FirstBoardOpeningDistribution {
+  sample_count: number
+  history_excluded_count: number
+  open_count: number
+  up_count: number
+  up_ratio: number | null
+  mean_open_premium: number | null
+  bins: { label: string; count: number }[]
+}
 export interface FirstBoardFeedback {
   status: 'waiting' | 'ready' | 'partial' | 'unavailable' | 'stale'
   message: string
@@ -6235,6 +6245,7 @@ export interface FirstBoardFeedback {
   sample_date: string | null
   observed_at: string | null
   quote_mode: 'live' | 'snapshot'
+  opening_distribution?: FirstBoardOpeningDistribution | null
   membership_note: string
   history_excluded_count: number
   groups: Record<'all' | 'main' | 'growth', FirstBoardFeedbackSummary>

@@ -785,7 +785,8 @@ class KlineRepository:
                 df_hist = guarded_collect(lf.select(read_cols), priority="background")
                 logger.info("enriched refresh step done: collect history rows=%d (%.2fs)", len(df_hist), time.perf_counter() - step)
                 if not df_hist.is_empty():
-                    instruments = self._instruments_cache if self._instruments_cache is not None else pl.DataFrame()
+                    # 扩展数据更新会同时清空元数据缓存，懒重建也须先加载涨跌停规则所需元数据。
+                    instruments = self.get_instruments()
 
                     # 分批计算并关联元数据, 保留完整历史, 限制宽表临时副本。
                     step = time.perf_counter()
@@ -1516,7 +1517,9 @@ class KlineRepository:
         signature = self.get_first_board_history_signature(sessions)
         paths = [self.store.data_dir / item[0] for item in signature[:3]]
         history = guarded_collect(
-            scan_enriched_parquet(paths).select("symbol", "date", "close", "raw_close", "quote_ts"),
+            scan_enriched_parquet(paths).select(
+                "symbol", "date", "close", "raw_close", "raw_high", "raw_low", "quote_ts",
+            ),
             priority="background",
         ).filter(pl.col("date").is_in(sessions))
         instrument_paths = [self.store.data_dir / item[0] for item in signature
@@ -1613,9 +1616,11 @@ class KlineRepository:
                 .otherwise(None).alias("limit_up_price"),
                 pl.col("_source_raw_close").alias("raw_close"),
                 pl.col("_pair_known").alias("limit_evidence_known"),
-            ).select("symbol", "date", "raw_close", "limit_up_price", "quote_ts", "limit_evidence_known"))
+            ).select("symbol", "date", "raw_close", "raw_high", "raw_low",
+                     "limit_up_price", "quote_ts", "limit_evidence_known"))
         frame = (pl.concat(output) if output else pl.DataFrame(schema={
             "symbol": pl.String, "date": pl.Date, "raw_close": pl.Float64,
+            "raw_high": pl.Float64, "raw_low": pl.Float64,
             "limit_up_price": pl.Float64, "quote_ts": pl.Int64, "limit_evidence_known": pl.Boolean,
         })).join(instruments.select("symbol", "name"), on="symbol", how="left").sort("symbol", "date")
         if self.get_first_board_history_signature(sessions) != signature:

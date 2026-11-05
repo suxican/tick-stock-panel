@@ -75,6 +75,110 @@ def test_fixed_pool_and_fraction_units_with_adjusted_open(setup):
     assert result["groups"]["growth"]["sample_count"] == 1
 
 
+def test_opening_distribution_has_its_own_non_one_price_limit_pool(setup):
+    service, state = setup
+    # Yesterday's confirmed limits include a consecutive board and a one-price first board.
+    # Opening statistics use the former, while first-board feedback uses the latter.
+    def bars(symbol, *, previous=10.0, low=10.9, name="测试股票", limit=10.995, close=11.0):
+        return [history_row(symbol, BEFORE, price=previous, name=name),
+                {**history_row(symbol, PREVIOUS, price=close, limit=limit, name=name),
+                 "raw_low": low, "raw_high": close}]
+
+    records = [*bars("600000.SH"), *bars("300001.SZ", previous=11.0),
+               *bars("600002.SH"), *bars("600003.SH", low=11.0),
+               *bars("600004.SH", name="*ST测试"), *bars("920001.BJ"),
+               *bars("600006.SH", low=None), *bars("600007.SH", limit=None),
+               *bars("600008.SH", close=10.9), *bars("600009.SH", low=11.5)]
+    state["history"] = pl.DataFrame(records)
+    regular, consecutive = quotes().to_dicts()
+    regular.update(close=10.0, open=11.2, change_pct=0.0)
+    consecutive.update(close=6.0, open=4.5, change_pct=.2)
+    missing_open = {**regular, "symbol": "600002.SH", "open": None}
+    result = service.evaluate(pl.DataFrame([regular, consecutive, missing_open]), DAY, now=NOW, live=True)
+    opening = result["opening_distribution"]
+    assert opening["sample_count"] == 3
+    assert opening["history_excluded_count"] == 3
+    assert opening["open_count"] == 2
+    assert opening["up_count"] == 1
+    assert opening["up_ratio"] == .5
+    # +12% and -10% using the quote's adjusted open and matching return base.
+    assert opening["mean_open_premium"] == pytest.approx(.01)
+    first_board_members = {row["symbol"] for row in result["rows"]}
+    assert "600003.SH" in first_board_members and "300001.SZ" not in first_board_members
+
+
+def test_opening_bins_keep_flat_exact_boundaries_and_both_tails(setup):
+    service, state = setup
+    returns = [19.94, 10, 8, 6, 4, 2, 0, -2, -4, -6, -8, -10, -19.5]
+    # Give each expected bin a different frequency so a displaced boundary is detectable.
+    pcts = [pct for count, pct in enumerate(returns, start=1) for _ in range(count)]
+    symbols = [f"{600000 + i}.SH" for i in range(len(pcts))]
+    state["history"] = history(symbols).with_columns(
+        (pl.col("raw_close") - .1).alias("raw_low"), pl.col("raw_close").alias("raw_high"),
+    )
+    base = quotes().row(0, named=True)
+    current = pl.DataFrame([{**base, "symbol": symbol, "open": 100.0 + pct,
+                             "close": 100.0, "raw_close": 100.0, "change_pct": 0.0}
+                            for symbol, pct in zip(symbols, pcts, strict=True)])
+    opening = service.evaluate(current, DAY, now=NOW, live=True)["opening_distribution"]
+    assert [bucket["count"] for bucket in opening["bins"]] == list(range(1, 14))
+    assert opening["open_count"] == len(pcts)
+    assert opening["up_count"] == sum(pct > 0 for pct in pcts)
+    assert opening["up_ratio"] == pytest.approx(opening["up_count"] / len(pcts))
+    assert opening["mean_open_premium"] == pytest.approx(sum(pcts) / len(pcts) / 100)
+
+
+def test_opening_distribution_missing_evidence_never_becomes_flat(setup):
+    service, state = setup
+    # Older history lacked raw high/low. First-board feedback can still be evaluated.
+    result = service.evaluate(quotes(), DAY, now=NOW, live=True)
+    assert result["groups"]["all"]["sample_count"] == 2
+    opening = result["opening_distribution"]
+    assert opening["history_excluded_count"] == 2
+    assert opening["sample_count"] == opening["open_count"] == 0
+    assert opening["up_ratio"] is None and opening["mean_open_premium"] is None
+
+    state["generation"] = "v2"
+    state["history"] = state["history"].with_columns(
+        (pl.col("raw_close") - .1).alias("raw_low"), pl.col("raw_close").alias("raw_high"),
+    )
+    no_open = quotes().with_columns(pl.lit(0.0).alias("open"))
+    opening = service.evaluate(no_open, DAY, now=NOW, live=True)["opening_distribution"]
+    assert opening["sample_count"] == 2 and opening["open_count"] == 0
+    assert opening["up_ratio"] is None and opening["mean_open_premium"] is None
+    assert sum(bucket["count"] for bucket in opening["bins"]) == 0
+
+
+def test_opening_distribution_waits_for_trades_and_prefers_the_exact_return_base(setup):
+    service, state = setup
+    state["history"] = state["history"].with_columns(
+        (pl.col("raw_close") - .1).alias("raw_low"), pl.col("raw_close").alias("raw_high"),
+    )
+    auction_end = NOW.replace(hour=9, minute=25)
+    indicative_time = auction_end - timedelta(seconds=1)
+    # The open equals the adjusted reference. The vendor's rounded return would suggest a rise.
+    q = quotes(auction_end).with_columns(
+        pl.lit(5.5).alias("open"), pl.lit(5.5).alias("prev_close"), pl.lit(.1001).alias("change_pct"),
+        pl.when(pl.col("symbol") == "600000.SH").then(100.0).otherwise(0.0).alias("volume"),
+        pl.lit(0.0).alias("amount"),
+    )
+    indicative = q.with_columns(pl.lit(int(indicative_time.timestamp() * 1000)).alias("quote_ts"))
+    for now in (indicative_time, auction_end):
+        opening = service.evaluate(indicative, DAY, now=now, live=True)["opening_distribution"]
+        assert opening["open_count"] == 0
+    opening = service.evaluate(q, DAY, now=auction_end, live=True)["opening_distribution"]
+    assert opening["sample_count"] == 2
+    assert opening["open_count"] == 1
+    assert opening["up_count"] == 0 and opening["mean_open_premium"] == 0
+    assert opening["bins"][6] == {"label": "平开", "count": 1}
+
+    opening_only = q.with_columns(pl.lit(None, dtype=pl.Float64).alias(column)
+                                  for column in ("close", "raw_close", "change_pct"))
+    result = service.evaluate(opening_only, DAY, now=auction_end, live=True)
+    assert result["opening_distribution"]["open_count"] == 1
+    assert result["groups"]["all"]["quote_count"] == 0
+
+
 def test_exact_two_session_pool_excludes_multiboard_st_bj_and_unknown(setup):
     service, state = setup
     rows = history().to_dicts()
@@ -131,7 +235,9 @@ def test_cache_generation_invalidates_without_history_scan_each_quote(setup):
 def test_history_unavailable_and_generation_change_fail_closed(setup):
     service, state = setup
     state["history"] = None
-    assert service.evaluate(quotes(), DAY, now=NOW, live=True)["status"] == "unavailable"
+    unavailable = service.evaluate(quotes(), DAY, now=NOW, live=True)
+    assert unavailable["status"] == "unavailable"
+    assert unavailable["opening_distribution"] is None
     state["history"] = history()
     state["generation"] = "v2"
     service.repo.get_first_board_history = lambda *_args, **_kwargs: (
@@ -374,6 +480,9 @@ def test_api_returns_feedback_and_no_history_reads_on_get(setup, monkeypatch):
     from app.services import first_board as fb
 
     feedback, state = setup
+    state["history"] = state["history"].with_columns(
+        (pl.col("raw_close") - .1).alias("raw_low"), pl.col("raw_close").alias("raw_high"),
+    )
     service = fb.FirstBoardService(feedback.repo, history_loader=lambda *_: pl.DataFrame())
     service._feedback = feedback
     monkeypatch.setattr(fb, "_now", lambda: NOW)
@@ -386,5 +495,7 @@ def test_api_returns_feedback_and_no_history_reads_on_get(setup, monkeypatch):
     for _ in range(2):
         response = client.get("/api/first-board/snapshot")
         assert response.status_code == 200
-        assert response.json()["yesterday_feedback"]["groups"]["all"]["mean_change_pct"] == pytest.approx(.025)
+        payload = response.json()["yesterday_feedback"]
+        assert payload["groups"]["all"]["mean_change_pct"] == pytest.approx(.025)
+        assert payload["opening_distribution"]["open_count"] == 2
     assert state["reads"] == 1

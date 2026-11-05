@@ -335,7 +335,8 @@ it('shows attention evidence with explicit decimal units without granting a simu
   expect(cell.textContent).toContain('5分钟收盘价回撤 0.50%')
   expect(cell.textContent).toContain('test-provider')
   expect(cell.textContent).toContain('members-v1')
-  expect(host.textContent).toContain('仅作关注依据，原买入门槛仍生效')
+  expect(host.textContent).not.toContain('板块联动与分时标签仅作关注依据')
+  expect(host.textContent).not.toContain('首板优先分越高，盘中复核顺序越靠前')
   expect(button('模拟买入').disabled).toBe(true)
   expect(calls.firstBoardPaperOrder).not.toHaveBeenCalled()
 })
@@ -407,17 +408,18 @@ it('distinguishes unknown leader quotes from an observed opened limit', async ()
   expect(candidateNames()).toEqual([])
 })
 
-it.each([
-  ['recorded', '研究采样已记录'], ['already_recorded', '本时点已采样'], ['not_due', '等待下一采样时点'],
-  ['paused', '研究采样暂停'], ['error', '研究采样暂不可用'],
-] as const)('shows sampling status %s without changing original buy availability', async (status, label) => {
+it('keeps the market context in the monitor header and omits the old notes', async () => {
   calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), attention_sampling: {
-    status, sample_count: 20, last_sample_at: '2026-09-30T09:45:00+08:00', reason: status === 'error' ? '采样写入失败' : undefined,
+    status: 'recorded', sample_count: 20, last_sample_at: '2026-09-30T09:45:00+08:00',
   } })
   await render()
-  expect(host.textContent).toContain(`${label} · 今日采样时点 20`)
-  expect(host.textContent).toContain('最近采样 09/30 09:45:00')
-  if (status === 'error') expect(host.textContent).toContain('采样写入失败')
+  const header = host.querySelector('button[aria-label="收起盯盘详情"]')!.closest('header')!
+  expect(header.textContent).toContain('市场环境：强势')
+  expect(header.textContent).toContain('环境允许提示')
+  expect(header.textContent).toContain('候选形态 1 · 股票 1')
+  expect(host.textContent).not.toContain('今日采样时点')
+  expect(host.textContent).not.toContain('报价覆盖')
+  expect(host.textContent).not.toContain('当前报价可用')
   expect(button('模拟买入').disabled).toBe(false)
   expect(calls.firstBoardResearch).not.toHaveBeenCalled()
 })
@@ -526,11 +528,16 @@ it('keeps candidate rows on refresh failure but stops treating cached attention 
 })
 
 it('keeps yesterday feedback independent of candidate filters and opens its own stock navigation', async () => {
-  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), yesterday_feedback: yesterdayFeedback() })
+  const feedback = yesterdayFeedback()
+  feedback.opening_distribution = { sample_count: 9, history_excluded_count: 0, open_count: 0,
+    up_count: 0, up_ratio: null, mean_open_premium: null, bins: [] }
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), yesterday_feedback: feedback })
   await render()
   expect(host.textContent).toContain('昨日首板反馈')
   await filterPattern('trend')
   expect(candidateNames()).toEqual([])
+  expect(host.textContent).toContain('昨日非一字涨停 9 只')
+  expect(host.textContent).toContain('等待有效开盘价。')
   await click('查看明细')
   const table = host.querySelector('table[aria-label="昨日首板个股表现"]')!
   expect(table.textContent).toContain('昨日下跌样本')
@@ -779,16 +786,18 @@ it('collapses monitor details without losing feedback controls or stopping snaps
   const expand = host.querySelector<HTMLButtonElement>('button[aria-label="展开盯盘详情"]')!
   expect(expand.getAttribute('aria-expanded')).toBe('false')
   expect(candidateNames()).toEqual(['测试股票'])
-  const refreshed = { ...data, status: 'stale' as const, observed_at: '2026-09-30T10:05:00+08:00', revision: 2, message: '刷新后的盯盘详情' }
+  const refreshed = { ...data, status: 'stale' as const, observed_at: '2026-09-30T10:05:00+08:00', revision: 2, environment: { ...data.environment, label: '偏弱', allowed: false } }
   calls.firstBoardSnapshot.mockResolvedValue(refreshed)
   await click('刷新')
   expect(details.hidden).toBe(true)
   expect(details.previousElementSibling?.textContent).toContain('数据已过期')
   expect(details.previousElementSibling?.textContent).toContain('10:05:00')
   expect(details.previousElementSibling?.textContent).toContain('规则版本 2')
+  expect(details.previousElementSibling?.textContent).toContain('市场环境：偏弱')
+  expect(details.previousElementSibling?.textContent).toContain('环境暂不允许提示')
   await act(async () => expand.click())
   expect(details.hidden).toBe(false)
-  expect(details.textContent).toContain('刷新后的盯盘详情')
+  expect(details.textContent).not.toContain('市场环境')
   expect(button('双创').getAttribute('aria-pressed')).toBe('true')
   expect(button('收起明细')).toBeDefined()
   await click('收起')
@@ -796,10 +805,12 @@ it('collapses monitor details without losing feedback controls or stopping snaps
   await click('今日盯盘')
   expect(host.querySelector('button[aria-label="展开盯盘详情"]')?.getAttribute('aria-expanded')).toBe('false')
 })
-it('shows the current universe in the live monitor', async () => {
+it('hides the introductory rule notice in the live monitor', async () => {
   calls.firstBoardConfig.mockResolvedValue({ ...config(), rules: { ...config().rules, universe: 'hs_a_non_st' } })
   await render()
-  expect(host.textContent).toContain('沪深主板、创业板、科创板（非 ST）')
+  expect(host.textContent).not.toContain('个交易日无收盘涨停')
+  expect(host.textContent).not.toContain('临近涨停是买入候选提示')
+  expect(host.querySelector('table[aria-label="首板实时候选"]')).not.toBeNull()
 })
 it('keeps legacy universe explicit and saves expanded scope with a 20 percent threshold', async () => {
   await render('rules')
@@ -862,7 +873,7 @@ it('explains disabled and empty monitor states', async () => {
   await render()
   expect(host.textContent).toContain('监控未开启')
   expect(host.textContent).toContain('暂无匹配的首板候选')
-  await click('前往规则版本开启盯盘')
+  await click('规则版本')
   expect(host.textContent).toContain('保存为新版本')
 })
 it('converts displayed percentages and 万元 to exact backend units before saving', async () => {

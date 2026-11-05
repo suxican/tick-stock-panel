@@ -17,9 +17,10 @@ import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { RulesPanel } from './RulesPanel'
 import { ResearchPanel } from './ResearchPanel'
 import { YesterdayFeedback } from './YesterdayFeedback'
-import { AttentionCell, AttentionSampling, attentionPriority, matchesAttention, type AttentionFilter } from './AttentionCell'
+import { OpeningDistribution } from './OpeningDistribution'
+import { AttentionCell, attentionPriority, matchesAttention, type AttentionFilter } from './AttentionCell'
 import { PriorityCell, currentPriority, matchesPriority, priorityFilters, strongBoards, type PriorityFilter } from './PriorityCell'
-import { beijingDay, buttonClass, ErrorNotice, EventBadge, eventLabels, inputClass, LoadingRows, money, Notice, panelClass, PatternBadge, patternLabels, pct, stamp, StateBadge, stateLabels, universeLabels } from './shared'
+import { beijingDay, buttonClass, ErrorNotice, EventBadge, eventLabels, inputClass, LoadingRows, money, Notice, panelClass, PatternBadge, patternLabels, pct, stamp, StateBadge, stateLabels } from './shared'
 
 const tabs = [{ id: 'live', label: '今日盯盘' }, { id: 'events', label: '信号记录' }, { id: 'research', label: '效果验证' }, { id: 'rules', label: '规则版本' }]
 const statuses = { disabled: '监控未开启', waiting: '等待数据', ready: '盯盘中', stale: '数据已过期', closed: '非连续竞价时段', error: '暂不可用' }
@@ -156,20 +157,28 @@ export function FirstBoard() {
       {feedback && <Notice><div className="flex items-center justify-between gap-3"><span>{feedback}</span><button className={buttonClass} onClick={() => setFeedback('')}>关闭提示</button></div></Notice>}
       {config.data && <div role="tabpanel" id={`first-board-panel-${tab}`} aria-labelledby={`first-board-tab-${tab}`} className="space-y-4">
         {tab === 'live' && <>
-          <Notice>近 {config.data.rules.lookback_days} 个交易日无收盘涨停 · {universeLabels[config.data.rules.universe]}。临近涨停是买入候选提示，不能证明扫板、排板能够成交。涨停价观察也不能证明封单稳定。</Notice>
           <ErrorNotice error={snapshot.error ?? refresh.error} retry={() => refresh.mutate()} />
           {matrix.isError && <Notice error>行情能力状态读取失败。<a href="/settings?tab=data-sources" className="ml-2 underline">检查数据源配置</a></Notice>}
           {!!missing.length && <Notice>当前数据源缺少可用的{missing.map(item => item.label).join('、')}。<a href="/settings?tab=data-sources" className="ml-2 underline">配置数据源</a></Notice>}
           {data && <section className={`${panelClass} space-y-3`}>
-            <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-sm font-semibold">{statuses[data.status]}</h2><div className="flex flex-wrap items-center gap-3"><span className="text-xs text-secondary">交易日期 {data.as_of ?? '—'} · 快照 {stamp(data.observed_at)} · 规则版本 {data.revision}</span><button type="button" className={buttonClass} aria-label={monitorExpanded ? '收起盯盘详情' : '展开盯盘详情'} aria-expanded={monitorExpanded} aria-controls={monitorDetailsId} onClick={() => setMonitorExpanded(value => !value)}>{monitorExpanded ? '收起' : '展开'}{monitorExpanded ? <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" /> : <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />}</button></div></div>
+            <header className="flex flex-wrap items-center justify-between gap-x-5 gap-y-2">
+              <h2 className="text-sm font-semibold">{statuses[data.status]}</h2>
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-secondary">
+                <span>市场环境：{data.environment.label || '待确认'}{data.environment.date ? `（${data.environment.date}）` : ''}</span>
+                <span>{data.environment.allowed ? '环境允许提示' : '环境暂不允许提示'}</span>
+                <span>候选形态 {data.coverage.candidate_count} · 股票 {data.coverage.symbol_count}</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-xs text-secondary">交易日期 {data.as_of ?? '—'} · 快照 {stamp(data.observed_at)} · 规则版本 {data.revision}</span>
+                <button type="button" className={buttonClass} aria-label={monitorExpanded ? '收起盯盘详情' : '展开盯盘详情'} aria-expanded={monitorExpanded} aria-controls={monitorDetailsId} onClick={() => setMonitorExpanded(value => !value)}>
+                  {monitorExpanded ? '收起' : '展开'}{monitorExpanded ? <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" /> : <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />}
+                </button>
+              </div>
+            </header>
             <div id={monitorDetailsId} hidden={!monitorExpanded}>
-            <YesterdayFeedback data={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} onOpenStock={(symbol, name, members) => setStock({ symbol, name, navList: members })}>
-              <p className="text-sm leading-relaxed">{data.message}</p>
-              <div className="flex flex-wrap gap-x-6 gap-y-2 text-xs text-secondary"><span>市场环境：{data.environment.label || '待确认'}{data.environment.date ? `（${data.environment.date}）` : ''}</span><span>{data.environment.allowed ? '环境允许提示' : '环境暂不允许提示'}</span><span>候选形态 {data.coverage.candidate_count} · 股票 {data.coverage.symbol_count}</span><span>报价覆盖 {data.coverage.quote_count} · 新鲜报价 {data.coverage.fresh_count}</span></div>
-              {data.environment.reason && <p className="text-xs leading-relaxed text-secondary">{data.environment.reason}</p>}
-              <AttentionSampling sampling={data.attention_sampling} />
-              {!config.data.enabled && <button className={buttonClass} onClick={() => selectTab('rules')}>前往规则版本开启盯盘</button>}
-            </YesterdayFeedback>
+              <YesterdayFeedback data={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} onOpenStock={(symbol, name, members) => setStock({ symbol, name, navList: members })}>
+                <OpeningDistribution feedback={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} />
+              </YesterdayFeedback>
             </div>
           </section>}
           <section className={panelClass}><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h2 className="text-sm font-semibold">今日候选 <span className="font-normal text-secondary">{rows.length} 条</span></h2><div className="flex flex-wrap items-center gap-4 text-xs"><label className="flex shrink-0 items-center gap-2 whitespace-nowrap">形态<select className={inputClass} value={filter} onChange={event => setFilter(event.target.value as FirstBoardPattern | 'all')}><option value="all">全部形态</option>{Object.entries(patternLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label className="flex shrink-0 items-center gap-2 whitespace-nowrap">状态<select aria-label="候选状态" className={inputClass} value={stateFilter} onChange={event => setStateFilter(event.target.value as FirstBoardState | 'all')}><option value="all">全部状态</option>{Object.entries(stateLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label className="flex shrink-0 items-center gap-2 whitespace-nowrap">重点关注<select aria-label="重点关注" className={inputClass} value={attentionFilter} onChange={event => setAttentionFilter(event.target.value as AttentionFilter)}><option value="all">全部候选</option><option value="strong">强势板块</option><option value="follow">领涨带动</option><option value="both">同板块双条件</option></select></label><label className="flex shrink-0 items-center gap-2 whitespace-nowrap">评分筛选<select aria-label="评分筛选" className={inputClass} value={priorityFilter} onChange={event => { setPriorityFilter(event.target.value as PriorityFilter); setBoardId('') }}>{Object.entries(priorityFilters).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>{boardIndex && <label className="flex min-w-0 max-w-full items-center gap-2 whitespace-nowrap">板块<select aria-label="具体强势板块" className={cn(inputClass, 'max-w-[min(18rem,65vw)]')} value={boardId} onChange={event => setBoardId(event.target.value)}>
@@ -177,8 +186,6 @@ export function FirstBoard() {
               {boardId && !boardIndex.choices.some(([id]) => id === boardId) && <option value={boardId}>原选板块当前无匹配</option>}
               {boardIndex.choices.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
             </select></label>}<label className="flex items-center gap-2"><input type="checkbox" checked={onlyActionable} onChange={event => setOnlyActionable(event.target.checked)} />只看可提示候选</label></div></div>
-            <p className="mb-4 text-xs leading-relaxed text-secondary">板块联动与分时标签仅作关注依据，原买入门槛仍生效。同板块双条件表示该板块强势且领涨触板后候选分时走强；次日溢价尚待验证。</p>
-            <p className="mb-3 text-xs text-secondary">首板优先分越高，盘中复核顺序越靠前。满分 100，缺项保留空值。按分数排序时先列可提示候选，再列观察与影子候选。特别关注仍置顶。</p>
             <ErrorNotice error={stockMarks.error} retry={stockMarks.retry} />
             <div ref={candidateViewport} role="region" aria-label="今日候选列表" tabIndex={0} className="h-[560px] max-h-[70vh] overflow-auto overscroll-contain scrollbar-gutter-stable focus-visible:outline focus-visible:outline-accent">
             {snapshot.isLoading ? <LoadingRows /> : rows.length ? <table aria-label="首板实时候选" className="w-full min-w-[1380px] text-left text-xs"><thead><tr className="text-secondary">{candidateColumns.map(column => {

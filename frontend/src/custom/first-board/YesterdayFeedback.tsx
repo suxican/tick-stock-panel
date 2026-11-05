@@ -1,5 +1,5 @@
 import { useId, useMemo, useState, type ReactNode } from 'react'
-import { ChevronDown, ChevronUp } from 'lucide-react'
+import { ChevronDown, ChevronUp, Info } from 'lucide-react'
 import type { FirstBoardFeedback, FirstBoardFeedbackMember, FirstBoardFeedbackSector } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { fmtPct, fmtPrice, priceColorClass } from '@/lib/format'
@@ -65,12 +65,15 @@ export function YesterdayFeedback({ data, refreshFailed = false, onOpenStock, ch
 }) {
   const [scope, setScope] = useState<Scope>('all')
   const [expanded, setExpanded] = useState(false)
+  const [showQuoteNote, setShowQuoteNote] = useState(false)
   const [sectorKind, setSectorKind] = useState<'industry' | 'concept'>('industry')
   const detailId = useId()
   const titleId = useId()
+  const quoteNoteId = useId()
   const summary = data?.groups[scope]
   const muted = refreshFailed || data?.status === 'stale'
   const available = !!data && data.status !== 'waiting' && data.status !== 'unavailable'
+  const quoteNote = data && available && data.message ? `${refreshFailed ? '保留快照' : statusLabels[data.status]} · ${data.message}` : null
   const members = useMemo(() => (data?.rows ?? []).filter(row => scope === 'all' || row.board === scope).toSorted((a, b) => (b.change_pct ?? -Infinity) - (a.change_pct ?? -Infinity)), [data?.rows, scope])
   const sectors = useMemo(() => (data?.sectors ?? []).filter(row => row.kind === sectorKind), [data?.sectors, sectorKind])
   const unknownLimits = summary ? Math.max(0, summary.sample_count - summary.limit_known_count) : 0
@@ -96,22 +99,28 @@ export function YesterdayFeedback({ data, refreshFailed = false, onOpenStock, ch
             <Metric label="跌幅 ≥ 5%" hint={summary.loss_ratio == null ? '比例待确认' : `占有效行情 ${(summary.loss_ratio * 100).toFixed(1)}%`}>{summary.loss_count}<span className="text-sm font-normal text-secondary"> / {summary.sample_count}</span></Metric>
           </dl>
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-secondary">
-            <span>{data.quote_mode === 'live' ? '盘中行情' : '最近行情'} · 统计更新 {stamp(data.observed_at)}</span>
+            <span className="relative inline-flex items-center gap-1">
+              <span>{data.quote_mode === 'live' ? '盘中行情' : '最近行情'} · 统计更新 {stamp(data.observed_at)}</span>
+              {quoteNote && <span className="inline-flex" onMouseEnter={() => setShowQuoteNote(true)} onMouseLeave={() => setShowQuoteNote(false)}>
+                <button type="button" aria-label="行情说明" aria-describedby={showQuoteNote ? quoteNoteId : undefined}
+                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-secondary hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                  onFocus={() => setShowQuoteNote(true)} onBlur={() => setShowQuoteNote(false)} onKeyDown={event => { if (event.key === 'Escape') setShowQuoteNote(false) }}>
+                  <Info className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+                {showQuoteNote && <span id={quoteNoteId} role="tooltip" className="absolute left-0 top-full z-30 w-80 max-w-[calc(100vw-5rem)] pt-2">
+                  <span className="block rounded-md border border-border bg-elevated p-3 text-xs leading-relaxed text-foreground">{quoteNote}</span>
+                </span>}
+              </span>}
+            </span>
             <button type="button" className={buttonClass} aria-expanded={expanded} aria-controls={detailId} onClick={() => setExpanded(value => !value)}>{expanded ? '收起明细' : '查看明细'}{expanded ? <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" /> : <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />}</button>
           </div>
           {summary.small_sample && <p className="mt-2 text-xs text-secondary">样本少于 10 只，比例容易受个别股票影响。</p>}
           {!!unknownLimits && <p className="mt-2 text-xs text-secondary">涨停状态待确认 {unknownLimits} 只，二板数量为已确认值。</p>}
         </>}
       {refreshFailed && <p role="status" className="mt-2 text-xs text-secondary">刷新失败，保留上次快照。请使用页面刷新重试。</p>}
-      {data && available && data.message && <p className="mt-2 text-xs leading-relaxed text-secondary">{refreshFailed ? '保留快照' : statusLabels[data.status]} · {data.message}</p>}
+      {!summary?.sample_count && quoteNote && <p className="mt-2 text-xs leading-relaxed text-secondary">{quoteNote}</p>}
     </section>
     {expanded && available && summary && <div id={detailId} className="min-w-0 space-y-5 border-t border-border pt-4 xl:col-span-2">
-      <div className="space-y-2 text-xs leading-relaxed text-secondary">
-        <p>固定样本：上一交易日收盘涨停，前一交易日未收盘涨停的沪深非 ST 股票；不受今日候选筛选影响。溢价为价格表现，不等于实际成交收益。</p>
-        <p>平均开盘溢价 <span className={cn('tabular-nums', !muted && priceColorClass(summary.mean_open_premium))}>{fmtPct(summary.mean_open_premium)}</span> · 有效开盘数据 {summary.open_count} / {summary.sample_count}；双创包含创业板、科创板。</p>
-        {!!data.history_excluded_count && <p>{data.history_excluded_count} 只股票缺少首板识别所需的历史或涨停依据，未纳入确认样本。</p>}
-        {data.quote_mode === 'snapshot' && <p>行情时点以个股报价时间为准；统计更新不代表已确认收盘。</p>}
-      </div>
       <div className="space-y-3"><h4 className="text-sm font-medium">个股表现 <span className="font-normal text-secondary">{scopes.find(item => item.id === scope)?.label} · {members.length} 只</span></h4>{members.length ? <MemberTable rows={members} muted={muted} onOpenStock={onOpenStock} /> : <p className="text-xs text-secondary">该范围暂无可展示的个股明细。</p>}</div>
       <div className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-3"><h4 className="text-sm font-medium">关联板块对照</h4><div className="flex gap-1" role="group" aria-label="关联板块分类">{(['industry', 'concept'] as const).map(kind => <button key={kind} type="button" aria-pressed={sectorKind === kind} className={cn(buttonClass, sectorKind === kind && 'border-accent/50 text-foreground')} onClick={() => setSectorKind(kind)}>{kind === 'industry' ? '行业' : '概念'}</button>)}</div></div>

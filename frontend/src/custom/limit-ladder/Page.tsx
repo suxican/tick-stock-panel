@@ -791,7 +791,6 @@ function OverviewBar({ tiers, dateValue, onDateChange, filterKeys, bf, direction
   bf?: BrokenFailedConfig
   direction: Direction
 }) {
-  if (tiers.length === 0) return null
   const cfg = { ...DEFAULT_BF, ...bf }
   const mainStatus = direction === 'down' ? 'limit_down' : 'limit_up'
   const brokenStatus = direction === 'down' ? 'recovery' : 'broken'
@@ -1632,7 +1631,7 @@ export function LimitUpLadder() {
     )
   }
 
-  if (!data || rawTiers.length === 0) {
+  if (!data) {
     return (
       <div className="flex flex-col h-full">
         <PageHeader title={direction === 'down' ? '连跌梯队' : '连板梯队'} />
@@ -1788,14 +1787,10 @@ export function LimitUpLadder() {
 
       {/* 总览条 + 日期 */}
       <OverviewBar tiers={tiers} dateValue={dateValue} onDateChange={setAsOf} filterKeys={filterKeys} bf={extFields.bf} direction={direction} />
-      {reasonDate && (
+      {reasonDate && reasons.isError && (
         <div role="status" className="px-5 pb-1 text-[11px] text-secondary">
-          ZZShare · {reasonDate} · {reasons.isError
-            ? '归因暂不可用'
-            : reasons.isPending ? '正在读取盘后归因…'
-              : reasons.data?.size ? '点击「涨停归因」展开全文；未标注的股票无当日归因记录。'
-                : '暂无涨停归因，可在设置 → 数据源 → zzshare 中同步该日。'}
-          {reasons.isError && <button type="button" className="ml-2 text-accent" disabled={reasons.isFetching} onClick={() => void reasons.refetch()}>重试</button>}
+          归因暂不可用
+          <button type="button" className="ml-2 text-accent" disabled={reasons.isFetching} onClick={() => void reasons.refetch()}>重试</button>
         </div>
       )}
 
@@ -1830,6 +1825,15 @@ export function LimitUpLadder() {
 
       {/* 梯队列表 */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
+        {sortedTiers.length === 0 && (
+          <EmptyState
+            icon={Flame}
+            title={rawTiers.length > 0 ? '当前筛选条件下暂无股票' : direction === 'down' ? '暂无连跌数据' : '暂无连板数据'}
+            hint={rawTiers.length > 0
+              ? '调整上方状态、板块筛选或配置，或切换日期查看'
+              : direction === 'down' ? '该日期无跌停股或行情数据未就绪，可切换日期查看' : '该日期无涨停股或行情数据未就绪，可切换日期查看'}
+          />
+        )}
         {sortedTiers.map(t => (
           <TierGroup
             key={t.boards}

@@ -79,6 +79,8 @@ it('一次读取梯队实际返回的当日快照并按代码匹配，切换历�
   calls.rows.mockImplementation(async (_id, { date }) => payload(date, date === recent ? '当日原因' : '历史原因'))
   await render()
   expect(calls.rows).toHaveBeenCalledTimes(1)
+  expect(host.textContent).not.toContain('ZZShare')
+  expect(host.textContent).not.toContain('点击「涨停归因」展开全文')
   const details = host.querySelector('details')!
   expect(details.parentElement?.textContent).toContain('浦发银行')
   expect(details.parentElement?.textContent).not.toContain('平安银行')
@@ -106,7 +108,7 @@ it('归因请求失败与空快照都保留两只梯队股票', async () => {
   expect(host.textContent).toContain('浦发银行')
   await click([...host.querySelectorAll('button')].find(el => el.textContent === '选择历史日期')!)
   await settle()
-  expect(host.textContent).toContain('暂无涨停归因')
+  expect(host.textContent).not.toContain('ZZShare')
   expect(host.textContent).toContain('平安银行')
   expect(host.querySelector('details')).toBeNull()
 })
@@ -117,7 +119,7 @@ it('归因加载期间可以打开个股，切至跌停梯队不带入涨停原�
     finish = () => resolve(payload(recent, '仅涨停归因'))
   }))
   await render()
-  expect(host.textContent).toContain('正在读取盘后归因')
+  expect(host.textContent).not.toContain('ZZShare')
   const card = [...host.querySelectorAll<HTMLElement>('[role=button]')].find(el => el.textContent?.includes('浦发银行'))!
   await click(card)
   expect(host.querySelector('[data-preview]')?.textContent).toBe('600000.SH ' + recent)
@@ -127,4 +129,35 @@ it('归因加载期间可以打开个股，切至跌停梯队不带入涨停原�
   expect(host.textContent).toContain('连跌梯队')
   expect(host.textContent).not.toContain('仅涨停归因')
   expect(calls.rows).toHaveBeenCalledTimes(1)
+})
+
+it('只有断板数据时显示筛选空态并保留日期，开启断板筛选后恢复股票与归因', async () => {
+  calls.ladder.mockResolvedValue({
+    as_of: recent, counts: { up: 0, down: 0 },
+    tiers: [{ boards: 2, count: 1, stocks: [{ ...stock, status: 'failed' }] }],
+  })
+  calls.rows.mockResolvedValue(payload(recent, '当日原因'))
+  await render()
+  expect(host.textContent).toContain('当前筛选条件下暂无股票')
+  expect(host.textContent).toContain('调整上方状态、板块筛选或配置，或切换日期查看')
+  expect(host.textContent).toContain('选择历史日期')
+  expect(host.textContent).not.toContain('浦发银行')
+
+  await click([...host.querySelectorAll('button')].find(el => el.textContent === '断板')!)
+  expect(host.textContent).not.toContain('当前筛选条件下暂无股票')
+  expect(host.textContent).toContain('浦发银行')
+  expect(host.querySelector('details')?.textContent).toContain('当日原因')
+  expect(calls.rows).toHaveBeenCalledTimes(1)
+})
+
+it('当日没有原始梯队时仍可切换日期和涨跌方向', async () => {
+  calls.ladder.mockResolvedValue({ as_of: recent, tiers: [], counts: { up: 0, down: 0 } })
+  await render()
+  expect(host.textContent).toContain('暂无连板数据')
+  expect(host.textContent).toContain('选择历史日期')
+  expect(calls.rows).not.toHaveBeenCalled()
+
+  await click([...host.querySelectorAll('button')].find(el => el.textContent === '跌停0')!)
+  expect(host.textContent).toContain('暂无连跌数据')
+  expect(host.textContent).toContain('选择历史日期')
 })

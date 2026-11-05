@@ -104,13 +104,40 @@ it('retains values with a refresh failure message and neutralizes stale price em
   expect(metric('平均溢价')?.classList.contains('text-bull')).toBe(false)
 })
 
-it('labels snapshots without claiming a confirmed close and shows history exclusions', async () => {
+it('labels snapshots and hides expanded explanations while preserving member details', async () => {
   await render({ ...feedback(), quote_mode: 'snapshot', history_excluded_count: 2 })
   expect(host.textContent).toContain('最近行情')
   expect(host.textContent).not.toContain('收盘已确认')
   await click('查看明细')
-  expect(host.textContent).toContain('2 只股票缺少首板识别所需的历史或涨停依据，未纳入确认样本')
-  expect(host.textContent).toContain('平均开盘溢价 +1.69%')
+  expect(host.textContent).not.toContain('固定样本：')
+  expect(host.textContent).not.toContain('平均开盘溢价')
+  expect(host.textContent).not.toContain('2 只股票缺少首板识别所需的历史或涨停依据，未纳入确认样本')
+  expect(host.textContent).not.toContain('行情时点以个股报价时间为准')
+  expect(host.querySelector('table[aria-label="昨日首板个股表现"]')?.textContent).toContain('主板样本')
+})
+
+it('shows the quote explanation only when its timestamp icon is hovered or focused', async () => {
+  const message = '最近行情快照；未另行确认最终收盘结果。'
+  await render({ ...feedback(), status: 'partial', quote_mode: 'snapshot', message })
+  expect(host.textContent).not.toContain(message)
+  const icon = host.querySelector<HTMLButtonElement>('button[aria-label="行情说明"]')!
+  expect(icon).not.toBeNull()
+  expect(icon.parentElement?.parentElement?.textContent).toContain('统计更新 10/27 10:00:00')
+  await act(async () => icon.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+  expect(host.querySelector('[role="tooltip"]')?.textContent).toBe(`部分数据待确认 · ${message}`)
+  expect(icon.getAttribute('aria-describedby')).toBe(host.querySelector('[role="tooltip"]')?.id)
+  await act(async () => icon.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })))
+  expect(host.querySelector('[role="tooltip"]')).toBeNull()
+  await act(async () => icon.focus())
+  expect(host.querySelector('[role="tooltip"]')?.textContent).toContain(message)
+  await act(async () => icon.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+  expect(host.querySelector('[role="tooltip"]')).toBeNull()
+  await act(async () => icon.blur())
+  await act(async () => icon.focus())
+  await render({ ...feedback(), message: '行情覆盖完整' }, true)
+  expect(host.querySelector('[role="tooltip"]')?.textContent).toBe('保留快照 · 行情覆盖完整')
+  await act(async () => icon.blur())
+  expect(host.querySelector('[role="tooltip"]')).toBeNull()
 })
 
 it('explains old API, waiting, unavailable and empty samples without fake performance', async () => {
