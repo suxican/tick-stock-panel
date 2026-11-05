@@ -90,10 +90,18 @@ CAPABILITY_REGISTRY: list[dict] = [
     {
         "id": "overseas",
         "label": "外围行情",
-        "desc": "纳斯达克与韩国市场参考行情",
+        "desc": "美股、日本和韩国市场参考行情",
         "field": "overseas_data_provider",
         "default": "yahoo_overseas",
         # None means unsupported, distinct from the free domestic daily tier.
+        "tf_tier": None,
+    },
+    {
+        "id": "ths_index",
+        "label": "同花顺指数",
+        "desc": "全A指数报价与日K",
+        "field": "ths_index_data_provider",
+        "default": "fuyao",
         "tf_tier": None,
     },
 ]
@@ -235,6 +243,7 @@ def _current_routing() -> dict[str, str]:
         "adj_factor_provider": preferences.get_adj_factor_provider(),
         "financial_data_provider": preferences.get_financial_provider(),
         "overseas_data_provider": preferences.get_overseas_data_provider(),
+        "ths_index_data_provider": preferences.get_ths_index_data_provider(),
     }
 
 

@@ -559,6 +559,7 @@ class DataProvidersIn(BaseModel):
     realtime_data_provider: str | None = None
     financial_data_provider: str | None = None
     overseas_data_provider: str | None = None
+    ths_index_data_provider: str | None = None
 
 
 class PluginKeyIn(BaseModel):
@@ -656,6 +657,7 @@ def get_preferences() -> dict:
         "realtime_data_provider": preferences.get_realtime_data_provider(),
         "financial_data_provider": preferences.get_financial_provider(),
         "overseas_data_provider": preferences.get_overseas_data_provider(),
+        "ths_index_data_provider": preferences.get_ths_index_data_provider(),
         "data_source_job_timeout_s": preferences.get_data_source_job_timeout_s(),
         "data_source_long_job_timeout_s": preferences.get_data_source_long_job_timeout_s(),
         "minute_batch_compress": preferences.get_minute_batch_compress(),
@@ -751,6 +753,7 @@ def get_capability_matrix() -> dict:
             "adj_factor_provider": preferences.get_adj_factor_provider(),
             "financial_data_provider": preferences.get_financial_provider(),
             "overseas_data_provider": preferences.get_overseas_data_provider(),
+            "ths_index_data_provider": preferences.get_ths_index_data_provider(),
         },
         tickflow_tier=policy.base_tier_name(),
     )
@@ -869,6 +872,8 @@ def uninstall_plugin(name: str) -> dict:
     # The validated getter may already fall back after removal; inspect the stored route.
     if str(preferences.load().get("overseas_data_provider", "")).strip().lower() == name.lower():
         preferences.save({"overseas_data_provider": "yahoo_overseas"})
+    if str(preferences.load().get("ths_index_data_provider", "")).strip().lower() == name.lower():
+        preferences.save({"ths_index_data_provider": "fuyao"})
     custom_sources.load_all()
     result = list_data_sources()
     result["uninstall_ok"] = ok
@@ -939,6 +944,8 @@ def delete_data_source(name: str, request: Request) -> dict:
         updates["adj_factor_provider"] = "tickflow"
     if str(preferences.load().get("overseas_data_provider", "")).strip().lower() == name.lower():
         updates["overseas_data_provider"] = "yahoo_overseas"
+    if str(preferences.load().get("ths_index_data_provider", "")).strip().lower() == name.lower():
+        updates["ths_index_data_provider"] = "fuyao"
     if updates:
         preferences.save(updates)
     # 删除源可能触发偏好回退 tickflow, 同步刷新能力快照
@@ -994,6 +1001,7 @@ def update_data_providers(req: DataProvidersIn, request: Request) -> dict:
         "realtime_data_provider": preferences.get_realtime_data_provider(),
         "financial_data_provider": preferences.get_financial_provider(),
         "overseas_data_provider": preferences.get_overseas_data_provider(),
+        "ths_index_data_provider": preferences.get_ths_index_data_provider(),
     }
 
 

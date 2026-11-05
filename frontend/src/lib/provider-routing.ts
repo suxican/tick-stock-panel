@@ -10,6 +10,7 @@ export const DEFAULT_ROUTING: Record<ProviderField, string> = {
   realtime_data_provider: 'tickflow',
   financial_data_provider: 'tickflow',
   overseas_data_provider: 'yahoo_overseas',
+  ths_index_data_provider: 'fuyao',
 }
 
 /**

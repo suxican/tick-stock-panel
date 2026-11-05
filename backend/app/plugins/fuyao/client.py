@@ -138,6 +138,15 @@ class FuyaoClient:
         return rows, server_ts
 
     # ---- 历史日K ----
+    def index_historical_kline(self, thscode: str, start_ms: int, end_ms: int) -> list[dict]:
+        """指数日 K，查询窗口限近五年，无股票复权参数。"""
+        data = self._get(
+            "/api/a-share-index/prices/historical",
+            {"thscode": thscode, "interval": "1d", "start": int(start_ms), "end": int(end_ms)},
+        )
+        rows = data.get("item")
+        return rows if isinstance(rows, list) else []
+
     def historical_kline(
         self, thscode: str, start_ms: int, end_ms: int, adjust: str = "none"
     ) -> list[dict]:

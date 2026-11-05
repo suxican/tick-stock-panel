@@ -24,7 +24,9 @@ def _get_quote_service(request: Request):
     return getattr(request.app.state, "quote_service", None)
 
 
-def _fallback_index_quotes_from_daily(request: Request, symbols: list[str] | None = None) -> list[dict]:
+def _fallback_index_quotes_from_daily(
+    request: Request, symbols: list[str] | None = None, *, recent_sessions: bool = False,
+) -> list[dict]:
     """实时指数缓存为空时，从本地指数日 K 取最近收盘价作为兜底。"""
     repo = getattr(request.app.state, "repo", None)
     if not repo:
@@ -36,6 +38,15 @@ def _fallback_index_quotes_from_daily(request: Request, symbols: list[str] | Non
         placeholders = ", ".join("?" for _ in symbols)
         symbol_filter = f"WHERE symbol IN ({placeholders})"
         params.extend(symbols)
+        if recent_sessions:
+            # Mixed snapshots are read on each domestic quote update. Prune to
+            # recent local sessions, including the preceding complete partitions
+            # when today's snapshot only contains the four core indices.
+            symbol_filter += """ AND date >= (
+                SELECT min(date) FROM (
+                    SELECT DISTINCT date FROM kline_index_daily ORDER BY date DESC LIMIT 3
+                )
+            )"""
 
     try:
         rows = repo.execute_all(
@@ -110,6 +121,16 @@ def index_quotes(
     if not rows:
         rows = _fallback_index_quotes_from_daily(request, symbol_list)
         return {"rows": rows, "count": len(rows), "source": "index_daily"}
+    for row in rows:
+        row["source"] = "realtime"
+    if symbol_list:
+        present = {row["symbol"] for row in rows}
+        missing = [symbol for symbol in symbol_list if symbol not in present]
+        if missing:
+            closes = _fallback_index_quotes_from_daily(request, missing, recent_sessions=True)
+            if closes:
+                rows.extend(closes)
+                return {"rows": rows, "count": len(rows), "source": "mixed"}
     return {"rows": rows, "count": len(rows), "source": "realtime"}
 
 

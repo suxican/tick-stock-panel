@@ -411,6 +411,18 @@ def get_overseas_data_provider() -> str:
 
 # ===== 盘后管道拉取内容开关 (A股 / ETF / 指数 独立控制) =====
 
+def get_ths_index_data_provider() -> str:
+    """同花顺专有指数使用独立能力，缺失时保留明确的不可用状态。"""
+    default = "fuyao"
+    provider = str(load().get("ths_index_data_provider", default) or default).strip().lower()
+    try:
+        from app.data_providers import custom as custom_sources
+        if provider in custom_sources.names() and custom_sources.provider_has_dataset(provider, "ths_index"):
+            return provider
+    except Exception:  # noqa: BLE001
+        pass
+    return default
+
 def get_pipeline_pull_a_share() -> bool:
     """是否拉取 A 股日K。默认 True。"""
     return load().get("pipeline_pull_a_share", True)

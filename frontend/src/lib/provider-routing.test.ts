@@ -12,6 +12,7 @@ const CAPS: Pick<CapabilityRoute, 'id' | 'field'>[] = [
   { id: 'financial', field: 'financial_data_provider' },
   { id: 'full_minute', field: 'full_minute_data_provider' },
   { id: 'overseas', field: 'overseas_data_provider' },
+  { id: 'ths_index', field: 'ths_index_data_provider' },
 ]
 
 const ALL_FIELDS: ProviderField[] = [
@@ -23,6 +24,7 @@ const ALL_FIELDS: ProviderField[] = [
   'financial_data_provider',
   'full_minute_data_provider',
   'overseas_data_provider',
+  'ths_index_data_provider',
 ]
 
 const DEMO = 'demo_source'
@@ -50,6 +52,7 @@ describe('buildProviderRouting', () => {
     expect(routing.adj_factor_provider).toBe('tickflow')
     expect(routing.financial_data_provider).toBe('tickflow')
     expect(routing.overseas_data_provider).toBe('yahoo_overseas')
+    expect(routing.ths_index_data_provider).toBe('fuyao')
   })
 
   it('每个可路由字段都被覆盖 (防止再漏能力)', () => {
@@ -94,7 +97,8 @@ describe('buildProviderRouting', () => {
   it('默认路由覆盖全部字段, 海外能力有独立默认源', () => {
     expect(Object.keys(DEFAULT_ROUTING).sort()).toEqual([...ALL_FIELDS].sort())
     expect(DEFAULT_ROUTING.overseas_data_provider).toBe('yahoo_overseas')
-    for (const field of ALL_FIELDS.filter(field => field !== 'overseas_data_provider')) {
+    expect(DEFAULT_ROUTING.ths_index_data_provider).toBe('fuyao')
+    for (const field of ALL_FIELDS.filter(field => field !== 'overseas_data_provider' && field !== 'ths_index_data_provider')) {
       expect(DEFAULT_ROUTING[field]).toBe('tickflow')
     }
   })

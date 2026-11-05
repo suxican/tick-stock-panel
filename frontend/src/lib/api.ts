@@ -494,8 +494,17 @@ export interface IndexInstrument {
   [key: string]: any
 }
 
+export interface CatalogIndex extends IndexInstrument {
+  name: string
+  market: 'CN' | 'US' | 'JP' | 'KR'
+  capability?: 'ths_index'
+}
+
 export interface IndexQuote {
   symbol: string
+  snapshot_time?: number | null
+  date?: string | null
+  source?: string
   name?: string | null
   last_price?: number | null
   close?: number | null
@@ -2721,6 +2730,7 @@ export type ProviderField =
   | 'realtime_data_provider'
   | 'financial_data_provider'
   | 'overseas_data_provider'
+  | 'ths_index_data_provider'
 
 /** 能力路由矩阵中的一个候选源 (candidates 只含当前确实可提供该能力的源) */
 export interface CapabilityCandidate {
@@ -2957,6 +2967,7 @@ export interface Preferences {
   financial_data_provider?: string
   /** 海外市场快照独立路由；默认 yahoo_overseas。 */
   overseas_data_provider?: string
+  ths_index_data_provider?: string
   data_source_job_timeout_s: number
   data_source_long_job_timeout_s: number
   minute_batch_compress: boolean
@@ -3997,6 +4008,11 @@ export const api = {
     }>(
       `/api/kline/minute-range?symbol=${encodeURIComponent(symbol)}&days=${days}`,
     ),
+  indexCatalog: () => request<{ rows: CatalogIndex[] }>('/api/index/catalog'),
+  overseasIndexQuotes: () =>
+    request<{ rows: IndexQuote[]; source: string; reason?: string }>('/api/index/overseas-quotes'),
+  thsIndexQuotes: () =>
+    request<{ rows: IndexQuote[]; source: string; reason?: string }>('/api/index/ths-quotes'),
   indexDaily: (symbol: string, days = 120, dateRange?: { start: string; end: string }) =>
     request<{
       symbol: string
@@ -4004,6 +4020,8 @@ export const api = {
       index_info?: IndexInstrument
       rows: KlineRow[]
       source?: string
+      reason?: string
+      unavailable?: boolean
     }>(
       dateRange
         ? `/api/index/daily?symbol=${encodeURIComponent(symbol)}&start_date=${dateRange.start}&end_date=${dateRange.end}`

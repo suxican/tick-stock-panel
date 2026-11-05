@@ -1,5 +1,5 @@
 """Fixed quote fixtures verify units, dates and unavailable paths without network."""
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from urllib.parse import unquote
 from zoneinfo import ZoneInfo
 
@@ -56,6 +56,60 @@ def test_acquisition_normalizes_all_four_symbols_and_decimal_changes():
         assert row["session_date"] == "2026-10-20"
         assert row["phase"] == "closed"
         assert row["available_at"] == result["fetched_at"] == FETCHED.isoformat()
+
+
+def test_index_page_quotes_exclude_equities_and_isolate_failed_symbol():
+    def handler(request):
+        symbol = unquote(request.url.path).split("/")[-1]
+        spec = yahoo._PAGE_INDICES[symbol]
+        return httpx.Response(429) if symbol == "^GSPC" else httpx.Response(200, json=_payload(spec))
+
+    rows = _provider(handler).get_overseas_index_quotes()
+    by_symbol = {row["symbol"]: row for row in rows}
+    assert set(by_symbol) == {"^GSPC", "^DJI", "^IXIC", "^KS11", "^N225"}
+    assert by_symbol["^GSPC"]["price"] is None
+    assert by_symbol["^KS11"]["change_pct"] == pytest.approx(.1)
+
+
+def test_index_daily_inclusive_exchange_dates_ohlc_and_no_unknown_symbols():
+    calls = []
+
+    def handler(request):
+        calls.append(request.url)
+        # The US end date is inclusive, with the request ending at local midnight next day.
+        assert int(request.url.params["period2"]) == int(datetime(2026, 10, 21, 4, tzinfo=UTC).timestamp())
+        return httpx.Response(200, json=_payload(yahoo._PAGE_INDICES["^DJI"]))
+
+    provider = _provider(handler)
+    day = date(2026, 10, 20)
+    rows = provider.get_overseas_index_daily("^DJI", day, day)
+    assert rows == [dict(symbol="^DJI", date="2026-10-20", open=101, high=112, low=100,
+                         close=110, volume=None)]
+    with pytest.raises(ValueError):
+        provider.get_overseas_index_daily("005930.KS", day, day)
+    assert len(calls) == 1
+
+
+def test_unpublished_index_close_allows_a_quote_but_no_daily_candle():
+    spec = yahoo._PAGE_INDICES["^N225"]
+    payload = _payload(spec)
+    payload["chart"]["result"][0]["indicators"]["quote"][0]["close"][-1] = None
+    row = yahoo._normalize(payload, spec, FETCHED, quote_only=True)
+    assert row["price"] == 110
+    assert row["change_pct"] == pytest.approx(0.1)
+    provider = _provider(lambda _: httpx.Response(200, json=payload))
+    rows = provider.get_overseas_index_daily("^N225", date(2026, 10, 19), date(2026, 10, 20))
+    assert [item["date"] for item in rows] == ["2026-10-19"]
+
+
+@pytest.mark.parametrize("field,value", [("symbol", "^HSI"), ("exchangeTimezoneName", "Asia/Shanghai")])
+def test_index_daily_rejects_unrelated_market(field, value):
+    payload = _payload(yahoo._PAGE_INDICES["^N225"])
+    payload["chart"]["result"][0]["meta"][field] = value
+    with pytest.raises(ValueError):
+        _provider(lambda _: httpx.Response(200, json=payload)).get_overseas_index_daily(
+            "^N225", date(2026, 10, 1), date(2026, 10, 20),
+        )
 
 
 @pytest.mark.parametrize("status", [429, 500, 302])

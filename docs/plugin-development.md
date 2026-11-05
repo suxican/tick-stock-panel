@@ -298,6 +298,25 @@ provider 不应自行切换或回退到其他数据源。
 | `name` | 可选 | 快照无名称时置 None, 下游用标的维表关联 |
 | `amplitude` / `turnover_rate` / `session` | 可选 | 缺失置 None, 不启发式伪造; turnover_rate 入口为小数制 |
 
+### 同花顺指数数据集 `ths_index`
+
+指数页的同花顺全A（沪深）使用 `883421.TI`。此能力通过
+`ths_index_data_provider` 独立路由，默认 `fuyao`，可用性由能力矩阵决定。
+Python 插件声明 `datasets: [ths_index]` 后需实现以下方法。通用 YAML 尚不支持此数据集。
+
+- `get_ths_index_quotes() -> list[dict]` 返回指定指数的 `symbol`、
+  `last_price`、`prev_close`、小数制 `change_pct` 和毫秒 `snapshot_time`。
+  `snapshot_time` 是服务端取得快照的时间，不能推断为成交时间或交易日。
+- `get_ths_index_daily(symbol: str, start: date, end: date) -> pl.DataFrame`
+  返回标准日 K 列，日期为北京交易日且含首尾日期，成交量使用手、成交额使用元。
+  服务复用通用指标计算，在内存中缓存结果。
+
+扶摇适配器分别调用 `/api/a-share-index/prices/snapshot` 与
+`/api/a-share-index/prices/historical`，仅查询 `883421.TI`。查询凭据复用现有扶摇插件，
+指数报价与日 K 不写入股票仓库。页面每 10 秒刷新报价，服务端合并重复请求，
+源不可用时显示原因。该指数接口仅提供日 K 与快照。参见
+[扶摇指数接口文档](https://fuyao.aicubes.cn/docs/api-reference/a-share-index/)。
+
 ### 海外观察数据集 `overseas`
 
 海外观察使用独立数据集和路由，不混入 A 股 `realtime`、国内指数缓存或本地日线仓库。
@@ -325,6 +344,11 @@ def get_overseas_quotes(self) -> dict:
 | `available_at` | 本系统本次实际取得报价的时间；不是历史最早公开时间 |
 | `phase` | `intraday`、`closed`、`unknown`；无法核验交易时段时为 `unknown` |
 | `source_url` / `reason` | 固定行情页面和可读状态原因；不得泄漏响应原文、密钥或底层异常 |
+
+指数页复用同一 `overseas` 路由。插件可分别实现以下可选方法。缺少某个方法时，仅对应的指数报价或日 K 显示为空。
+
+- `get_overseas_index_quotes() -> list[dict]` 返回上述报价结构的列表，覆盖 `^DJI`、`^GSPC`、`^IXIC`、`^N225`、`^KS11` 中支持的指数。日本市场使用 `JP`、`JPY` 和 `Asia/Tokyo`。指数页 API 将已核验的小数涨跌幅转换为百分数。
+- `get_overseas_index_daily(symbol: str, start: date, end: date) -> list[dict]` 按当地交易日升序返回含首尾日期的日线，每行含 `symbol`、ISO 格式 `date`、`open/high/low/close` 及可空的 `volume`。缺少 OHLC 的日期跳过。
 
 内置 `yahoo_overseas` 使用项目已有 `httpx`，无需额外依赖或 API Key。
 注册、构造、`availability()`、`validate()` 均不联网；显式采集时最多四个并发请求，

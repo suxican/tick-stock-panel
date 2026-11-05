@@ -1,18 +1,26 @@
-"""指数 API (核心四只固定清单, 浏览/搜索全量指数已下线; 仅保留详情读数与同步)。"""
+"""指数页固定目录、行情详情与境内指数同步。"""
 from __future__ import annotations
 
 import logging
 import threading
 import time
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import Annotated
 
 import polars as pl
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.indicators.pipeline import compute_enriched
 from app.market_time import cn_today
-from app.services import index_sync, kline_sync, preferences, trading_day  # noqa: F401
+from app.services import (  # noqa: F401
+    index_sync,
+    kline_sync,
+    overseas_indices,
+    preferences,
+    ths_indices,
+    trading_day,
+)
+from app.services.index_const import INDEX_PAGE_BY_SYMBOL, OVERSEAS_INDEX_SYMBOLS, THS_ALL_A_SYMBOL
 from app.tickflow.capabilities import Cap
 
 logger = logging.getLogger(__name__)
@@ -24,6 +32,21 @@ _INDEX_MINUTE_CACHE_TTL = 10.0
 _INDEX_MINUTE_CACHE_MAX = 32
 _index_minute_cache: dict[tuple[str, str, str], tuple[float, pl.DataFrame]] = {}
 _index_minute_cache_lock = threading.Lock()
+
+
+@router.get("/catalog")
+def get_index_catalog():
+    return {"rows": list(INDEX_PAGE_BY_SYMBOL.values())}
+
+
+@router.get("/overseas-quotes")
+def get_overseas_quotes():
+    return overseas_indices.get_quotes()
+
+
+@router.get("/ths-quotes")
+def get_ths_quotes():
+    return ths_indices.get_quotes()
 
 
 def _index_info(repo, symbol: str) -> dict:
@@ -42,15 +65,32 @@ def get_index_daily(
     request: Request,
     symbol: str = Query(..., description="指数代码, 如 000001.SH"),
     days: int = Query(120, ge=10, le=2000),
-    start_date: Optional[str] = Query(None, description="起始日期 YYYY-MM-DD, 优先于 days"),
-    end_date: Optional[str] = Query(None, description="截止日期 YYYY-MM-DD, 默认今天"),
+    start_date: str | None = Query(None, description="起始日期 YYYY-MM-DD, 优先于 days"),
+    end_date: str | None = Query(None, description="截止日期 YYYY-MM-DD, 默认今天"),
 ):
     """读取指数日 K。指数数据使用独立 kline_index_* parquet。"""
-    repo = request.app.state.repo
     # 未传 end_date 时用北京今天。实时注入只在内存缓存命中时补当日 K,
     # 缓存冷时 parquet 当日行能否进结果取决于这个窗口右端。
-    end = date.fromisoformat(end_date) if end_date else cn_today()
-    start = date.fromisoformat(start_date) if start_date else end - timedelta(days=days)
+    try:
+        end = date.fromisoformat(end_date) if end_date else cn_today()
+        start = date.fromisoformat(start_date) if start_date else end - timedelta(days=days)
+    except (ValueError, OverflowError) as exc:
+        raise HTTPException(status_code=422, detail="日期格式应为 YYYY-MM-DD") from exc
+    if start > end:
+        raise HTTPException(status_code=422, detail="开始日期不能晚于结束日期")
+    if symbol == THS_ALL_A_SYMBOL:
+        if (end - start).days > 5 * 366:
+            raise HTTPException(status_code=422, detail="同花顺指数单次查询最多覆盖 5 年")
+        info = INDEX_PAGE_BY_SYMBOL[symbol]
+        return {"symbol": symbol, "name": info["name"], "index_info": info,
+                **ths_indices.get_daily(symbol, start, end)}
+    if symbol in OVERSEAS_INDEX_SYMBOLS:
+        if (end - start).days > 5000:
+            raise HTTPException(status_code=422, detail="海外指数单次查询最多覆盖 5000 天")
+        info = INDEX_PAGE_BY_SYMBOL[symbol]
+        return {"symbol": symbol, "name": info["name"], "index_info": info,
+                **overseas_indices.get_daily(symbol, start, end)}
+    repo = request.app.state.repo
     info = _index_info(repo, symbol)
 
     df = repo.get_index_daily(symbol, start, end)
@@ -65,7 +105,7 @@ def get_index_daily(
 
     try:
         raw = kline_sync.sync_daily_batch([symbol], count=days + 150)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         raise HTTPException(status_code=502, detail=f"TickFlow fetch failed: {e}") from e
     if raw.is_empty():
         return {"symbol": symbol, "name": info.get("name"), "index_info": info, "rows": [], "source": "none"}
@@ -79,7 +119,7 @@ def get_index_daily(
 def get_index_minute(
     request: Request,
     symbol: str = Query(..., description="指数代码, 如 000001.SH"),
-    trade_date: date | None = Query(None, alias="date", description="交易日期, 休市时默认最近本地指数交易日"),
+    trade_date: Annotated[date | None, Query(alias="date", description="交易日期, 休市时默认最近本地指数交易日")] = None,
 ):
     """实时读取指数分钟 K。不写入股票分钟 parquet。
 
@@ -87,6 +127,12 @@ def get_index_minute(
     未指定日期且确认休市时使用最近本地指数日 K 的日期。
     结果带 10s 进程内缓存, 不同指数、日期和分钟源分别缓存。
     """
+    if symbol in OVERSEAS_INDEX_SYMBOLS or symbol == THS_ALL_A_SYMBOL:
+        info = INDEX_PAGE_BY_SYMBOL[symbol]
+        return {
+            "symbol": symbol, "name": info["name"], "index_info": info,
+            "date": trade_date, "rows": [], "source": "unsupported",
+        }
     repo = request.app.state.repo
     capset = request.app.state.capabilities
     info = _index_info(repo, symbol)

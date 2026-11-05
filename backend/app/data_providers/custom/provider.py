@@ -109,6 +109,9 @@ class GenericHTTPProvider:
     def validate(self) -> list[str]:
         errors: list[str] = []
         for dataset, cfg in self.config.datasets.items():
+            if dataset == "ths_index":
+                errors.append("同花顺指数需使用实现 ths_index 能力的 Python 插件，暂不支持通用 YAML 映射")
+                continue
             if dataset == "overseas":
                 errors.append("外围行情需使用实现 get_overseas_quotes 的 Python 插件, 暂不支持通用 YAML 映射")
                 continue

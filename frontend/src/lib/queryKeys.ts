@@ -61,6 +61,14 @@ export const QK = {
   quoteInterval:  ['quote-interval'] as const,
   overviewMarket: (asOf?: string) => ['overview-market', asOf ?? 'latest'] as const,
   indexQuotes:    ['index-quotes'] as const,
+  indexCatalog:   ['index-catalog'] as const,
+  indexCatalogQuotes: (symbols: string[]) => ['index-quotes', 'catalog', symbols] as const,
+  overseasIndexQuotes: (source?: string) => ['overseas-index-quotes', source] as const,
+  overseasIndexDaily: (source: string | undefined, symbol: string, start: string, end: string) =>
+    ['overseas-index-daily', source, symbol, start, end] as const,
+  thsIndexQuotes: (source?: string) => ['ths-index-quotes', source] as const,
+  thsIndexDaily: (source: string | undefined, symbol: string, start: string, end: string) =>
+    ['ths-index-daily', source, symbol, start, end] as const,
 
   // Watchlist
   watchlist:            ['watchlist'] as const,

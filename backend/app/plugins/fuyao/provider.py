@@ -48,7 +48,8 @@ from app.plugins.fuyao.client import FuyaoClient, FuyaoError
 logger = logging.getLogger(__name__)
 
 # 只声明真实提供的数据集; 其余数据集 provider_has_dataset 返回 False → 回退 tickflow
-_DATASETS = ("realtime", "daily", "adj_factor", "financial")
+_DATASETS = ("realtime", "daily", "adj_factor", "financial", "ths_index")
+_THS_ALL_A_SYMBOL = "883421.TI"
 
 API_KEY_ENV = "FUYAO_API_KEY"
 SECRETS_FIELD = "fuyao_api_key"  # UI 配置的 Key 存 secrets.json, 优先级高于 .env
@@ -125,6 +126,11 @@ def _to_float(value) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _ths_float(value) -> float | None:
+    number = None if isinstance(value, bool) else _to_float(value)
+    return number if number is not None and math.isfinite(number) else None
 
 
 def _first(row: dict, *names: str):
@@ -460,6 +466,64 @@ class FuyaoProvider:
         return records
 
     # ---- daily ----
+    def get_ths_index_quotes(self) -> list[dict]:
+        """同花顺全 A 快照，时间来自上游，成交量按文档股→手。"""
+        rows, timestamp = self._get_client().index_snapshot([_THS_ALL_A_SYMBOL])
+        matches = [row for row in rows if isinstance(row, dict) and row.get("thscode") == _THS_ALL_A_SYMBOL]
+        if not matches:
+            return []
+        if len(matches) != 1:
+            raise FuyaoError("全A行情返回重复标的")
+        if type(timestamp) is not int or timestamp <= 0:
+            raise FuyaoError("全A行情缺少有效的上游时间")
+        raw = dict(matches[0])
+        for quote_field in ("last_price", "prev_price", "prev_close_price", "price_change", "price_change_ratio_pct",
+                      "open_price", "high_price", "low_price", "highest_price", "lowest_price", "volume", "turnover"):
+            raw[quote_field] = _ths_float(raw.get(quote_field))
+        rec = _map_snapshot_row(raw, timestamp)
+        if rec is None:
+            return []
+        price, previous, ratio = rec["last_price"], rec["prev_close"], rec["change_pct"]
+        if any(value is None or not math.isfinite(value) for value in (price, previous, ratio)):
+            raise FuyaoError("全A行情数值缺失或无效")
+        if min(price, previous) <= 0 or not math.isclose(ratio, price / previous - 1, rel_tol=1e-6, abs_tol=1e-8):
+            raise FuyaoError("全A行情涨跌幅无法核验")
+        # The envelope time may be the snapshot acquisition time, including after
+        # midnight. It cannot identify the trading session of the last price.
+        rec["snapshot_time"] = rec.pop("timestamp")
+        return [rec]
+
+    def get_ths_index_daily(self, symbol: str, start: date, end: date) -> pl.DataFrame:
+        """仅查询全 A 日 K，不进入股票 dump 或除权路径。"""
+        if symbol != _THS_ALL_A_SYMBOL:
+            raise FuyaoError("不支持此同花顺指数")
+        if start > end:
+            raise FuyaoError("开始日期不能晚于结束日期")
+        rows = self._get_client().index_historical_kline(symbol, _ms_of_date(start), _ms_of_date(end))
+        normalized = []
+        for row in rows:
+            try:
+                day = _date_of_ms(row.get("date_ms"))
+                if day is None or not start <= day <= end:
+                    continue
+                prices = {field: _ths_float(row.get(f"{field}_price")) for field in ("open", "high", "low", "close")}
+                if any(value is None or not math.isfinite(value) or value <= 0 for value in prices.values()):
+                    continue
+                if not prices["low"] <= min(prices["open"], prices["close"]) <= max(prices["open"], prices["close"]) <= prices["high"]:
+                    continue
+                volume, amount = _ths_float(row.get("volume")), _ths_float(row.get("turnover"))
+                normalized.append({"symbol": symbol, "date": day, **prices,
+                                   "volume": math.floor(volume / 100) if volume is not None and math.isfinite(volume) and volume >= 0 else None,
+                                   "amount": amount if amount is not None and math.isfinite(amount) and amount >= 0 else None})
+            except (AttributeError, ValueError, OverflowError, OSError):
+                continue
+        if not normalized:
+            return pl.DataFrame()
+        df = normalize_daily(normalized, source=self.name)
+        if df["date"].n_unique() != df.height:
+            raise FuyaoError("全A日K返回重复交易日")
+        return df.sort("date")
+
     def get_daily(
         self,
         symbols: list[str],
@@ -1161,6 +1225,13 @@ class FuyaoProvider:
 
     # ---- 测试(设置页试拉) ----
     def test_dataset(self, dataset: str, symbols: list[str] | None = None) -> dict:
+        if dataset == "ths_index":
+            try:
+                rows = self.get_ths_index_quotes()
+            except FuyaoError:
+                return {"provider": self.name, "dataset": dataset, "rows": 0, "error": "全A指数行情暂不可用"}
+            return {"provider": self.name, "dataset": dataset, "rows": len(rows),
+                    "columns": list(rows[0]) if rows else [], "preview": rows}
         if dataset in ("daily", "adj_factor"):
             syms = [s for s in (symbols or [])][:3] or ["000001.SZ"]
             try:

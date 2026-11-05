@@ -614,6 +614,7 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
     depth5: prefs.data?.depth5_data_provider || 'tickflow',
     financial: prefs.data?.financial_data_provider || 'tickflow',
     overseas: prefs.data?.overseas_data_provider || 'yahoo_overseas',
+    ths_index: prefs.data?.ths_index_data_provider || 'fuyao',
   }
   const servingDatasets = (name: string) =>
     Object.entries(effProvider).filter(([, v]) => v === name).map(([k]) => k)
