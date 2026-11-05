@@ -32,7 +32,8 @@ from app.price_limits import (
     is_risk_warning_name,
     price_limit_pct,
 )
-from app.services import huichun_coverage, huichun_research
+from app.services import huichun_coverage, huichun_daily_runs, huichun_research
+from app.services.data_integrity import CLOSE_CUTOFF
 from app.services.fs_utils import atomic_write_text
 from app.services.huichun_audit import (
     FACTOR_SCHEMA,
@@ -180,10 +181,25 @@ class HuichunModeService:
             ]
             self._calendar_path = next((path for path in candidates if path.exists()), None)
         self._config = self._read_config()
-        state = self._read("snapshot.json", {"job": _idle_job(), "scan": None})
+        with _WRITE_LOCK:
+            state = self._read("snapshot.json", {"job": _idle_job(), "scan": None})
+            initialize = "daily_runs" not in state
+            if initialize:
+                # Persist activation even when the app subsequently stays offline for days.
+                state["daily_runs"] = {"since": str(_now().date()), "days": {}}
+            interrupted = state["job"]["status"] == "running"
+            if interrupted:
+                message = "上次任务因服务重启中断，请重新运行"
+                job = state["job"]
+                job.update(status="failed", error=message)
+                if job.get("target_date"):
+                    huichun_daily_runs.record_waiting(
+                        state, date.fromisoformat(job["target_date"]), job.get("rule_revision", self._config.revision),
+                        "scan_failed", message, _now(),
+                    )
+            if initialize or interrupted:
+                self._write("snapshot.json", state)
         self._snapshot = state
-        if state["job"]["status"] == "running":
-            state["job"].update(status="failed", error="上次任务因服务重启中断，请重新运行")
 
     def _read(self, name: str, default: dict) -> dict:
         path = self.root / name
@@ -242,6 +258,107 @@ class HuichunModeService:
         with self._lock, _WRITE_LOCK:
             data = self._research_state()
         return {**data, "limitations": huichun_research.LIMITATIONS}
+
+    def get_daily_runs(self, limit: int = 20) -> dict:
+        with self._lock, _WRITE_LOCK:
+            ledger = copy.deepcopy(self._snapshot["daily_runs"])
+            revision = self._read_config().revision
+        return huichun_daily_runs.daily_summary(ledger, self._calendar_path, _now().date(), revision, limit)
+
+    def daily_preflight(self, day: date) -> dict:
+        """Inspect only the current and preceding session before any expensive scan or repair."""
+        now = _now()
+        result = {"publication_status": "skip", "previous_date": None, "needs_symbols": [], "reason": None}
+        if self._stop.is_set() or day != now.date():
+            return result
+        if self._calendar_path is None:
+            sessions = []
+        else:
+            try:
+                sessions = load_market_calendar(self._calendar_path, start=day - timedelta(days=28), end=day)
+            except (OSError, ValueError):
+                sessions = []
+        if len(sessions) < 2:
+            return {**result, "publication_status": "calendar_unverified", "reason": "独立交易日历不可用"}
+        if day != sessions[-1] or now.time() < CLOSE_CUTOFF:
+            return result
+        previous = sessions[-2]
+        result["previous_date"] = str(previous)
+        if not _table_exists(self.repo, "kline_daily"):
+            return {**result, "publication_status": "stale", "reason": "尚无日线数据"}
+        raw = self._raw(None, day, start=previous)
+        universe = [s for s in raw["symbol"].unique() if isinstance(s, str) and _screening_stock(s)]
+        raw = raw.filter(pl.col("symbol").is_in(universe))
+        counts, missing = huichun_coverage.daily_check(raw, day, previous, now)
+        issue, issue_symbols = huichun_coverage.known_raw_issues(self.repo.store.data_dir, day)
+        observed = raw["date"].max()
+        quality = huichun_coverage.publication_status(day, day, observed, counts, issue)
+        if observed != day:
+            quality = "stale"
+        coverage = {"publication_status": quality, "publication_checks": {**counts, "known_raw_issue": issue}}
+        return {**result, "publication_status": quality,
+                "needs_symbols": sorted(set(missing) | {s for s in issue_symbols if _screening_stock(s)}),
+                "reason": None if quality == "ready" else huichun_daily_runs.quality_reason(coverage)}
+
+    def record_daily_waiting(self, day: date, reason: str, *, status: str = "incomplete", recheck=False) -> None:
+        now = _now()
+        if day != now.date() or self._stop.is_set():
+            return
+        with self._lock, _WRITE_LOCK:
+            pending = {**self._snapshot, "daily_runs": copy.deepcopy(self._snapshot["daily_runs"])}
+            changed = huichun_daily_runs.record_waiting(
+                pending, day, self._read_config().revision, status, reason, now, recheck=recheck,
+            )
+            if changed:
+                self._write("snapshot.json", pending)
+                self._snapshot = pending
+
+    def _auto_state(self, day: date) -> str | None:
+        if self._stop.is_set() or day != _now().date():
+            return "skip"
+        return "retry" if self._snapshot["job"]["status"] == "running" else None
+
+    def _completion_token(self, day):
+        row = self._snapshot["daily_runs"]["days"].get(str(day), {})
+        revision = self._read_config().revision
+        archived = row.get("completed", {}).get(str(revision), {})
+        return revision, archived.get("input_digest"), row.get("attempt", {}).get("recheck", False)
+
+    def try_auto_archive(self, trade_date: date) -> str:
+        """Return done, retry (worker active), waiting (data needs repair) or skip."""
+        with self._lock, _WRITE_LOCK:
+            state = self._auto_state(trade_date)
+            if state:
+                return state
+            token = self._completion_token(trade_date)
+        try:
+            if (token[1] and not token[2]
+                    and token[1] == _digest(self._input_signature(trade_date))
+                    and not huichun_coverage.known_raw_issue(self.repo.store.data_dir, trade_date)):
+                with self._lock, _WRITE_LOCK:
+                    return "done" if token == self._completion_token(trade_date) else "retry"
+            check = self.daily_preflight(trade_date)
+        except Exception:
+            logger.exception("Huichun close preflight failed")
+            self.record_daily_waiting(trade_date, "日线核准读取失败，等待重试", status="check_failed")
+            return "retry"
+        quality = check["publication_status"]
+        if quality == "skip":
+            return "skip"
+        if quality != "ready":
+            with self._lock, _WRITE_LOCK:
+                if self._auto_state(trade_date) or token != self._completion_token(trade_date):
+                    return "retry"
+                self.record_daily_waiting(trade_date, check["reason"], status=quality, recheck=bool(token[1]))
+                return "waiting"
+        with self._lock, _WRITE_LOCK:
+            state = self._auto_state(trade_date)
+            if state:
+                return state
+            if token[:2] != self._completion_token(trade_date)[:2]:
+                return "retry"
+            self._start("scan", HuichunScanRequest(start_date=trade_date, end_date=trade_date), automatic=True)
+            return "retry"
 
     def _research_state(self) -> dict:
         slot = self._snapshot.get("research_slot")
@@ -338,7 +455,7 @@ class HuichunModeService:
     def start_tracking_refresh(self) -> dict:
         return self._start("tracking", None)
 
-    def _start(self, kind: str, request: HuichunScanRequest | None) -> dict:
+    def _start(self, kind: str, request: HuichunScanRequest | None, *, automatic: bool = False) -> dict:
         with self._lock, _WRITE_LOCK:
             if self._stop.is_set():
                 raise ValueError("服务正在关闭")
@@ -355,6 +472,10 @@ class HuichunModeService:
                 "status": "running",
                 "started_at": _now().isoformat(),
             }
+            if automatic:
+                job["trigger"] = "daily_sync"
+                job["target_date"] = str(request.end_date)
+                job["rule_revision"] = config.revision
             pending = {**self._snapshot, "job": job}
             self._write("snapshot.json", pending)
             self._snapshot = pending
@@ -455,6 +576,12 @@ class HuichunModeService:
                     pending["research_slot"] = slot
                 if scan is not None:
                     pending["scan"] = scan
+                    scan_end = date.fromisoformat(scan["end_date"])
+                    input_digest = _digest([item for item in after if _within_daily_cutoff(item[0], scan_end)])
+                    huichun_daily_runs.record_scan(
+                        pending, scan, controls, _now(), self._calendar_path, self._read_config().revision,
+                        input_digest, trigger=pending["job"].get("trigger", "manual"),
+                    )
                 pending["job"].update(status="completed", finished_at=_now().isoformat())
                 self._write("snapshot.json", pending)
                 self._snapshot = pending
@@ -467,6 +594,10 @@ class HuichunModeService:
                 self._snapshot["job"].update(
                     status="failed", error=message, finished_at=_now().isoformat()
                 )
+                if self._snapshot["job"].get("target_date") == str(_now().date()):
+                    huichun_daily_runs.record_waiting(
+                        self._snapshot, _now().date(), config.revision, "scan_failed", message, _now(),
+                    )
                 try:
                     self._write("snapshot.json", self._snapshot)
                 except OSError:
@@ -571,20 +702,29 @@ class HuichunModeService:
 
     def _raw(self, symbols, end, *, start=None) -> pl.DataFrame:
         columns = [*RAW_COLUMNS]
-        available = {r[0] for r in self.repo.execute_all("DESCRIBE kline_daily")}
+        available = {r[0]: r[1] for r in self.repo.execute_all("DESCRIBE kline_daily")}
         if "quote_ts" in available:
             columns.append("quote_ts")
-        marks = ",".join("?" for _ in symbols)
-        lower = " AND date >= ?" if start is not None else ""
+        if available.get("daily_batch_finalized") == "BOOLEAN":
+            columns.append("daily_batch_finalized")
+        clauses, args = ["date <= ?"], [end]
+        if start is not None:
+            clauses.append("date >= ?")
+            args.append(start)
+        if symbols is not None:
+            marks = ",".join("?" for _ in symbols)
+            clauses.append(f"symbol IN ({marks})")
+            args.extend(symbols)
         rows = self.repo.execute_all(
-            f"SELECT {','.join(columns)} FROM kline_daily WHERE date <= ?{lower} "
-            f"AND symbol IN ({marks}) ORDER BY symbol,date",
-            [end, *([start] if start is not None else []), *symbols],
+            f"SELECT {','.join(columns)} FROM kline_daily WHERE {' AND '.join(clauses)} ORDER BY symbol,date",
+            args,
         )
         schema = {
             c: pl.String if c == "symbol" else pl.Date if c == "date" else pl.Float64
             for c in columns
         }
+        if "daily_batch_finalized" in schema:
+            schema["daily_batch_finalized"] = pl.Boolean
         return pl.DataFrame(rows, schema=schema, orient="row")
 
     @staticmethod

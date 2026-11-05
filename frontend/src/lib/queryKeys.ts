@@ -22,6 +22,8 @@ export const MINUTE_DATA_QUERY_PREFIXES = new Set([
   'minute-gaps', 'minute-batch', 'kline-minute', 'kline-minute-range', 'zzshare-theme-intraday',
 ])
 
+const firstBoardRankingsDay = (day: string) => ['first-board', 'first-alert-rankings', day] as const
+
 export const QK = {
   etfObservation: (window: EtfFlowWindow, asOf?: string) => ['etf-observation', window, asOf ?? 'latest'] as const,
   etfObservationDetail: (symbol: string, window: EtfFlowWindow, asOf?: string) =>
@@ -31,6 +33,7 @@ export const QK = {
   huichun: ['huichun'] as const,
   huichunConfig: ['huichun', 'config'] as const,
   huichunSnapshot: ['huichun', 'snapshot'] as const,
+  huichunDailyRuns: ['huichun', 'daily-runs'] as const,
   huichunTracking: ['huichun', 'tracking'] as const,
   huichunResearch: ['huichun', 'research'] as const,
   huichunChart: (body: HuichunChartRequest) => ['huichun', 'chart', body] as const,
@@ -39,6 +42,9 @@ export const QK = {
   firstBoardConfig: ['first-board', 'config'] as const,
   firstBoardSnapshot: ['first-board', 'snapshot'] as const,
   firstBoardEvents: (day: string, filters: FirstBoardEventFilters = {}) => ['first-board', 'events', day, filters] as const,
+  firstBoardRankingsDay,
+  firstBoardFirstAlertRankings: (day: string, revision: number | null, topN: 3 | 5 | null, offset: number) =>
+    [...firstBoardRankingsDay(day), revision, topN, offset] as const,
   firstBoardVersions: ['first-board', 'versions'] as const,
   firstBoardResearchRuns: ['first-board', 'research-runs'] as const,
   firstBoardTradeValidationRuns: ['first-board', 'trade-validation-runs'] as const,
@@ -170,6 +176,8 @@ export const QK = {
   monitorRuleOptions:   ['monitor-rule-options'] as const,
   lots:                 ['lots'] as const,
   lotsKline:            (symbols: string) => ['lots-kline', symbols] as const,
+  holdingAnalysisAll:   ['holding-analysis'] as const,
+  holdingAnalysisOverview: (source: 'lots' | 'position_t', account: string) => ['holding-analysis', 'overview', source, account] as const,
   positionTAll:         ['position-t'] as const,
   positionTOverview:    (account: string) => ['position-t', 'overview', account] as const,
   positionTPlan:        (id: string) => ['position-t', 'plan', id] as const,

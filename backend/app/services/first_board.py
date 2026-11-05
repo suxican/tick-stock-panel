@@ -30,6 +30,7 @@ from app.services.first_board_context import (
     load_environment,
     load_sector_members,
 )
+from app.services.first_board_data_status import build_data_status, radar_clocks
 from app.services.first_board_feedback import FirstBoardFeedback, empty_feedback, expire_feedback
 from app.services.first_board_observations import FirstBoardObservationStore
 from app.services.first_board_portfolio import (
@@ -41,6 +42,7 @@ from app.services.first_board_portfolio import (
 )
 from app.services.first_board_priority import candidate_priority, expire_priority
 from app.services.first_board_radar import FirstBoardRadar
+from app.services.first_board_technical import FirstBoardTechnical
 from app.services.fs_utils import atomic_write_text
 from app.services.index_const import CORE_INDEX_SYMBOLS
 from app.strategy import paper
@@ -83,8 +85,8 @@ def _quote_age(stamp: str | None, now: datetime) -> float:
         return math.inf
 
 
-def _continuous(now: datetime) -> bool:
-    if not in_first_board_session(now):
+def _trading_day(now: datetime) -> bool | None:
+    if now.weekday() >= 5:
         return False
     from app.services import data_integrity
 
@@ -92,7 +94,11 @@ def _continuous(now: datetime) -> bool:
         calendar = data_integrity._CAL[1]
         if calendar and min(calendar) <= now.date() <= max(calendar):
             return now.date() in calendar
-    return True
+    return None
+
+
+def _continuous(now: datetime) -> bool:
+    return in_first_board_session(now) and _trading_day(now) is not False
 
 
 class FirstBoardConfig(BaseModel):
@@ -146,6 +152,8 @@ class FirstBoardService:
         self._pending_lock = threading.Lock()
         self._process_lock = threading.Lock()
         self._research_lock = threading.Lock()
+        self._rankings_lock = threading.Lock()
+        self._rankings_cache: tuple[tuple, dict] | None = None
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -161,6 +169,7 @@ class FirstBoardService:
         self._latest_prices: dict[str, float] = {}
         self._latest_quote_times: dict[str, str] = {}
         self._attention_data = AttentionData(repo)
+        self._technical = FirstBoardTechnical(repo)
         self._radar = FirstBoardRadar(repo.store.data_dir)
         self._last_priorities: dict[tuple[str, str], dict] = {}
         self._priority_session: tuple[date, int] | None = None
@@ -229,21 +238,24 @@ class FirstBoardService:
         # 配置只整体替换不可变模型; 行情线程读取引用不等待候选评估和写盘。
         return self._config.enabled
 
-    def _realtime_block_reason(self) -> str | None:
+    def _realtime_state(self) -> tuple[bool | None, str | None]:
         if self._quote_service is None:
-            return None
+            return None, None
         try:
             status = self._quote_service.status()
             if not status.get("enabled"):
-                return "全局实时行情未启用, 请在实时行情设置中开启后继续盯盘"
+                return status.get("enabled"), "全局实时行情未启用, 请在实时行情设置中开启后继续盯盘"
             if status.get("realtime_allowed") is False or status.get("mode") == "none":
-                return "当前数据源缺少实时行情能力, 买卖提示已暂停"
+                return True, "当前数据源缺少实时行情能力, 买卖提示已暂停"
             if status.get("paused"):
-                return "全局实时行情暂时暂停, 请等待行情恢复"
+                return True, "全局实时行情暂时暂停, 请等待行情恢复"
         except Exception:  # noqa: BLE001 - 能力探测失败必须关闭交易提示
             logger.warning("首板读取实时行情状态失败", exc_info=True)
-            return "无法确认实时行情状态, 买卖提示已暂停"
-        return None
+            return None, "无法确认实时行情状态, 买卖提示已暂停"
+        return True, None
+
+    def _realtime_block_reason(self) -> str | None:
+        return self._realtime_state()[1]
 
     def _assert_config_current(self) -> None:
         disk, _ = self._load_config()
@@ -379,6 +391,8 @@ class FirstBoardService:
         environment["history_validation"] = validation
         if not validation["allowed"]:
             environment.update(allowed=False, reason=validation["reason"])
+        candidates = self._technical.attach(candidates, as_of=as_of,
+                                            reference=reference if validation["allowed"] else None)
         sectors = load_sector_members(self.repo)
         self._attention_data.prepare(universe=config.rules.universe)
         self._candidates, self._environment, self._sectors = candidates, environment, sectors
@@ -683,7 +697,7 @@ class FirstBoardService:
         self._attention_sampling = sampling
         with self._lock:
             if self._snapshot is snapshot and self._config.revision == config.revision and not self._stop.is_set():
-                snapshot["attention_sampling"] = dict(sampling)
+                snapshot["attention_sampling"] = {**sampling, "trade_date": str(now.date()), "revision": config.revision}
 
     def process_snapshot(self, current: pl.DataFrame, as_of: date, *, now: datetime | None = None) -> None:
         with self._process_lock:
@@ -735,6 +749,8 @@ class FirstBoardService:
             except Exception:  # noqa: BLE001 - optional radar must not disable the original buy gate
                 logger.warning("首板雷达暂不可用", exc_info=True)
                 radar = {}
+            status_inputs = {"clocks": radar_clocks(radar), "minute": dict(self._attention_input),
+                             "membership_reason": self._attention_data.reason}
             messages: list[dict] = []
             with self._lock:
                 if self._stop.is_set() or config.revision != self._config.revision:
@@ -852,8 +868,10 @@ class FirstBoardService:
                 # 无法计算涨幅的行保留数据无效原因, 不获得买入权限。
                 visible_rows = [row for row in rows if row["change_pct"] is None
                                 or meets_min_change(row["change_pct"], config.rules.min_change_pct)]
+                previous_sampling = self._snapshot.get("attention_sampling", {})
                 self._snapshot = {
                     "status": status, "message": message, "as_of": str(as_of), "observed_at": now.isoformat(),
+                    "_data_status_inputs": status_inputs,
                     "revision": config.revision,
                     "rows": sorted(visible_rows, key=lambda row: (not row["can_buy"], row["symbol"], row["pattern"])),
                     "environment": dict(self._environment),
@@ -864,6 +882,10 @@ class FirstBoardService:
                     "limitations": list(_LIMITATIONS),
                     "paper": portfolio_snapshot(self.repo.store.data_dir, config.paper_account_id, prices),
                 }
+                # Publishing and the subsequent research write are separate. Keep
+                # the latest established count during that window for this identity.
+                if previous_sampling.get("trade_date") == str(as_of) and previous_sampling.get("revision") == config.revision:
+                    self._snapshot["attention_sampling"] = dict(previous_sampling)
                 snapshot = self._snapshot
             try:
                 self._publish_pending(as_of)
@@ -903,8 +925,9 @@ class FirstBoardService:
         now = _beijing(_now())
         expire_feedback(result["yesterday_feedback"], now=now,
                         max_quote_age_seconds=config.max_quote_age_seconds)
-        realtime_blocked = self._realtime_block_reason()
-        continuous = _continuous(now)
+        realtime_enabled, realtime_blocked = self._realtime_state()
+        trading_day = _trading_day(now)
+        continuous = in_first_board_session(now) and trading_day is not False
         fresh_count = sum(0 <= _quote_age(stamp, now) <= config.max_quote_age_seconds
                           for stamp in quote_times.values())
         same_day = result.get("as_of") == str(now.date())
@@ -920,6 +943,7 @@ class FirstBoardService:
             result.update(status="waiting", message=realtime_blocked)
         elif result.get("as_of") is not None and (not same_day or not fresh_count):
             result.update(status="stale", message="缺少当日新鲜行情, 买入提示已暂停。")
+        fresh_candidates = set()
         for row in result["rows"]:
             age = _quote_age(row.get("quote_time"), now)
             if not usable or not 0 <= age <= config.max_quote_age_seconds or result["status"] == "error":
@@ -931,9 +955,22 @@ class FirstBoardService:
                 if row.get("priority_score"):
                     expire_priority(row["priority_score"], "行情已过期或当前不在有效观察时段")
                 row["sector_shadow_eligible"] = False
+            else:
+                fresh_candidates.add(row["symbol"])
+        sampling = result.get("attention_sampling") or {}
+        if (not same_day or sampling.get("trade_date") != result.get("as_of")
+                or sampling.get("revision") != result["revision"]):
+            sampling = {"status": "waiting", "last_sample_at": None, "sample_count": 0,
+                        "trade_date": str(now.date()), "revision": result["revision"]}
         if not usable or result["status"] == "error":
-            result["attention_sampling"] = {**result.get("attention_sampling", self._attention_sampling),
-                                            "status": "paused", "reason": "有效盘中盯盘恢复后继续采样"}
+            sampling = {**sampling, "status": "paused", "reason": "有效盘中盯盘恢复后继续采样"}
+        result["attention_sampling"] = sampling
+        inputs = result.pop("_data_status_inputs", {})
+        result["data_status"] = build_data_status(
+            result, now=now, fresh=fresh_candidates, clocks=inputs.get("clocks", {}), minute=inputs.get("minute", {}),
+            membership_reason=inputs.get("membership_reason"), enabled=config.enabled, realtime_enabled=realtime_enabled,
+            realtime_reason=realtime_blocked, in_session=continuous, trading_day=trading_day,
+            max_age=config.max_quote_age_seconds)
         return result
 
     def events(self, day: date | None = None) -> list[dict]:
@@ -947,6 +984,52 @@ class FirstBoardService:
                 return []
             doc = self._read_day(path, day)
             return doc["events"][::-1]
+
+    def first_alert_rankings(self, day: date, *, revision: int | None = None,
+                             top_n: int | None = None, offset: int = 0, limit: int = 100) -> dict:
+        """Read one immutable event-ledger snapshot, then filter and page its global seats."""
+        from app.backtest.first_board_execution import rank_first_alerts
+        from app.services.huichun_calendar import BUNDLED_CALENDAR_PATH, load_market_calendar
+
+        if type(day) is not date or day > _beijing(_now()).date():
+            raise ValueError("首次提示排名只支持当日及历史日期")
+        if ((revision is not None and (type(revision) is not int or revision < 0))
+                or (top_n is not None and (type(top_n) is not int or top_n not in (3, 5)))
+                or type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 500):
+            raise ValueError("首次提示排名的版本、名额或分页范围无效")
+        path = self._validation_path("events", f"{day}.json")
+        # Ranking readers can share a report without holding the quote/state lock.
+        # Both the event archive and the calendar can be corrected between polls.
+        with self._rankings_lock:
+            signature = self._file_signature(path)
+            fallback = self._config.revision
+            key = (day, revision, signature, self._file_signature(BUNDLED_CALENDAR_PATH), fallback)
+            if self._rankings_cache is not None and self._rankings_cache[0] == key:
+                report = self._rankings_cache[1]
+            else:
+                records = self._read_day(path, day)["events"] if signature is not None else []
+                available = sorted({r["revision"] for r in records}, reverse=True)
+                if revision is None:
+                    selected = max((r["revision"] for r in records if r["event_type"] == "buy_candidate"),
+                                   default=available[0] if available else fallback)
+                elif revision in available or (not available and revision == fallback):
+                    selected = revision
+                else:
+                    raise ValueError("所选日期没有这个规则版本的记录")
+                try:
+                    sessions = load_market_calendar(BUNDLED_CALENDAR_PATH, start=day - timedelta(days=32), end=day)
+                except (ValueError, TypeError, OSError, OverflowError):
+                    sessions = []
+                previous = sessions[-2] if len(sessions) >= 2 and sessions[-1] == day else None
+                report = rank_first_alerts(records, day=day, revision=selected, reference_session=previous)
+                report["available_revisions"] = available
+                self._rankings_cache = (key, report)
+
+        rows = report["rows"]
+        if top_n is not None:
+            rows = [r for r in rows if any(rank["day"] <= top_n for rank in r["ranks"].values() if rank)]
+        return copy.deepcopy({**report, "top_n": top_n, "matched": len(rows), "offset": offset, "limit": limit,
+                              "rows": rows[offset:offset + limit]})
 
     def place_order(self, event_id: str, side: str, *, amount: float | None = None,
                     qty: int | None = None, now: datetime | None = None) -> dict:
@@ -1081,6 +1164,18 @@ class FirstBoardService:
             raise ValueError("交易验证路径超出首板数据目录")
         return path
 
+    def _validation_events(self, start: date, end: date):
+        count = 0
+        for offset in range((end - start).days + 1):
+            day = start + timedelta(days=offset)
+            path = self._validation_path("events", f"{day}.json")
+            if path.exists():
+                events = self._read_day(path, day)["events"]
+                count += len(events)
+                if count > 100_000:
+                    raise ValueError("交易验证事件超过 100000 条, 请缩小日期区间")
+                yield from events
+
     def trade_validation(self, *, mode: str, start: date, end: date, revision: int | None = None,
                          account_id: str | None = None, options=None) -> dict:
         """Explicit bounded research, never called by quote callbacks or order execution."""
@@ -1111,7 +1206,8 @@ class FirstBoardService:
                     raise ValueError("成交回放不读取指定模拟账户")
                 execution = ExecutionOptions.model_validate(options or {})
                 result = run_execution_validation(self.repo, self._observation_store, start=start, end=end,
-                                                  revision=selected_revision, options=execution, through=completed)
+                                                  revision=selected_revision, options=execution, through=completed,
+                                                  events=self._validation_events(start, end))
                 account_id, parameters, through = None, execution.model_dump(mode="json"), completed
             else:
                 from app.services.first_board_trade_audit import build_paper_trade_audit
@@ -1121,14 +1217,7 @@ class FirstBoardService:
                 account_id = account_id if account_id is not None else selected.get("paper_account_id")
                 if account_id is not None:
                     paper.validate_account_id(account_id)
-                records = []
-                for offset in range((end - start).days + 1):
-                    day = start + timedelta(days=offset)
-                    path = self._validation_path("events", f"{day}.json")
-                    if path.exists():
-                        records.extend(self._read_day(path, day)["events"])
-                    if len(records) > 100_000:
-                        raise ValueError("交易验证事件超过 100000 条, 请缩小日期区间")
+                records = list(self._validation_events(start, end))
                 result = build_paper_trade_audit(self.repo.store.data_dir, account_id, events=records,
                                                 start=start, end=end, revision=selected_revision)
                 parameters, through = None, end

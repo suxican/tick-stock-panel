@@ -57,9 +57,11 @@ def test_config_success_conflict_and_empty_reads(huichun_client):
 ])
 def test_invalid_http_inputs_are_rejected_without_persistence(huichun_client, method, path, body):
     client, service = huichun_client
+    initial = (service.root / "snapshot.json").read_bytes()
     response = client.request(method, f"/api/huichun{path}", json=body)
     assert response.status_code == 422
-    assert not service.root.exists()
+    assert list(service.root.iterdir()) == [service.root / "snapshot.json"]
+    assert (service.root / "snapshot.json").read_bytes() == initial
 
 
 def test_unknown_scan_and_tracking_return_client_errors(huichun_client):
@@ -98,7 +100,6 @@ def test_tracking_refresh_without_records_is_an_accepted_completed_job(huichun_c
 def test_tracking_membership_add_and_remove_use_the_persisted_scan(huichun_client):
     client, service = huichun_client
     scan_id = "a" * 32
-    service.root.mkdir(parents=True)
     (service.root / f"scan-{scan_id}.json").write_text(json.dumps({
         "rule_revision": 0, "rules": service.get_config()["rules"], "candidates": [{
             "id": "candidate", "symbol": "600001.SH", "name": "测试股票",
@@ -156,6 +157,7 @@ def test_storage_failure_returns_sanitized_503(huichun_client, monkeypatch):
 
 def test_chart_is_read_only_and_does_not_fall_back_without_data(huichun_client):
     client, service = huichun_client
+    initial = (service.root / "snapshot.json").read_bytes()
     response = client.post("/api/huichun/chart", json={
         "symbol": "600000.SH", "as_of": "2026-10-12", "rules": {}, "rule_revision": 0,
     })
@@ -167,7 +169,8 @@ def test_chart_is_read_only_and_does_not_fall_back_without_data(huichun_client):
     assert chart["huichun"]["as_of"] == "2026-10-12"
     assert chart["huichun"]["data_status"] == "no_valid_data"
     assert client.get("/api/huichun/snapshot").json()["scan"] is None
-    assert not service.root.exists()
+    assert list(service.root.iterdir()) == [service.root / "snapshot.json"]
+    assert (service.root / "snapshot.json").read_bytes() == initial
 
 
 def test_chart_maps_future_cutoff_and_storage_errors(huichun_client, monkeypatch):
@@ -189,6 +192,7 @@ def test_chart_maps_future_cutoff_and_storage_errors(huichun_client, monkeypatch
 
 def test_chart_serializes_real_a0_indicators_and_frozen_custom_rules(huichun_client):
     client, service = huichun_client
+    initial = (service.root / "snapshot.json").read_bytes()
     days = [date(2026, 10, day) for day in (12, 13, 14)]
     raw = pl.DataFrame({
         "symbol": ["600000.SH"] * 3, "date": days,
@@ -211,7 +215,8 @@ def test_chart_serializes_real_a0_indicators_and_frozen_custom_rules(huichun_cli
     assert result["huichun"]["rules"]["ma_window"] == 90
     assert result["huichun"]["rule_revision"] == 7
     assert service.get_config()["rules"]["ma_window"] == 60
-    assert not service.root.exists()
+    assert list(service.root.iterdir()) == [service.root / "snapshot.json"]
+    assert (service.root / "snapshot.json").read_bytes() == initial
 
 
 def test_chart_reports_unready_service():

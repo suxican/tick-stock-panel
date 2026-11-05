@@ -112,6 +112,10 @@ class JobStore:
         self._store_dir.mkdir(parents=True, exist_ok=True)
         self._reap_orphans()
 
+    @property
+    def directory(self) -> Path:
+        return self._store_dir
+
     # ===== persistence =====
 
     def _write_file(self, job: dict[str, Any]) -> None:

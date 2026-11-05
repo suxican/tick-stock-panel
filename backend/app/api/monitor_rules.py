@@ -343,6 +343,8 @@ def save_rule(req: RuleModel, request: Request):
             raise HTTPException(status_code=400, detail=str(e)) from e
     # 编辑现有规则时, 保留原 created_at (避免按时间排序时位置跳动)
     existing = monitor_rules.load_one(_data_dir(request), rule["id"])
+    if existing and existing.get("holding_plan_id"):
+        raise HTTPException(status_code=409, detail="该规则由持仓研究计划托管，请在持仓分析与计划页操作")
     # 批次派生规则由「持仓提醒」页托管, 监控中心只读 (启停/改/删均回持仓页)
     if existing and existing.get("lot_id"):
         raise HTTPException(status_code=409, detail="该规则由「持仓提醒」页托管, 请在持仓提醒页修改")
@@ -404,6 +406,8 @@ def delete_rule(rule_id: str, request: Request):
         raise HTTPException(status_code=400, detail="规则 id 非法")
     # 批次派生规则由「持仓提醒」页托管, 删除需在持仓页操作 (级联清理派生规则)
     existing = monitor_rules.load_one(_data_dir(request), rule_id)
+    if existing and existing.get("holding_plan_id"):
+        raise HTTPException(status_code=409, detail="该规则由持仓研究计划托管，请在持仓分析与计划页作废计划")
     if existing and existing.get("lot_id"):
         raise HTTPException(status_code=409, detail="该规则由「持仓提醒」页托管, 请在持仓提醒页删除批次")
     deleted = monitor_rules.delete_one(_data_dir(request), rule_id)

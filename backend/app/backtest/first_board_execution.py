@@ -9,7 +9,10 @@ import hashlib
 import json
 import math
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import date, datetime, time, timedelta
+from itertools import groupby, pairwise
+from operator import itemgetter
 
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
@@ -26,7 +29,7 @@ MAX_SIGNALS = 5000
 MAX_DETAILS = 500
 MINUTE_COLUMNS = {"symbol", "datetime", "open", "high", "low", "close", "volume", "amount"}
 LIMITATIONS = [
-    "验证对象仅为五分钟采样保存的首个可买候选; 不恢复采样间信号, can_buy包含当时账户预算门控。",
+    "成交明细与原优先分对照使用五分钟采样的首个可买候选；均线与 MACD 对照单独使用当日首个买入候选事件。两者均包含当时账户预算门控。",
     "使用后续完整分钟收盘价代理及不利滑点, 不代表下一分钟开盘、真实成交或涨跌停排队撮合。",
     "独立等额交易忽略资金竞争和组合仓位, 不计算组合收益、年化或最大回撤, 不推导盈利结论。",
     "缺行情、原价证据、交易日历或公司行动现金流时保留不可验证状态; 仅闭合交易参与收益统计。",
@@ -82,13 +85,15 @@ def _trade(sample: dict, row: dict, revision: int, candidates: list[dict], *, sh
     group = context.get("group")
     stamp = _stamp(sample["observed_at"])
     identity = f"{revision}:{stamp.isoformat()}:{row['symbol']}"
-    scores = [c["priority_score"] for c in candidates if isinstance(c.get("priority_score"), dict)
-              and c["priority_score"].get("version") == "priority-v1"
-              and c["priority_score"].get("status") in ({"shadow"} if shadow else {"ready", "partial"})]
+    scored_candidates = [c for c in candidates if isinstance(c.get("priority_score"), dict)
+                         and c["priority_score"].get("version") == "priority-v1"
+                         and c["priority_score"].get("status") in ({"shadow"} if shadow else {"ready", "partial"})]
     base_scores, full_scores = [], []
     hot_known = False
     role = "unknown"
-    for score in scores:
+    priority_candidate = None
+    for candidate in scored_candidates:
+        score = candidate["priority_score"]
         total, known = score.get("score"), score.get("known_max")
         parts = score.get("parts")
         pop = parts.get("popularity") if isinstance(parts, dict) else None
@@ -98,11 +103,20 @@ def _trade(sample: dict, row: dict, revision: int, candidates: list[dict], *, sh
         hot = pop["points"]
         if hot is not None and (type(hot) not in (int, float) or not 0 <= hot <= min(10, total)):
             continue
-        if not full_scores or total > max(full_scores):
+        highest = max(full_scores, default=-1)
+        if total > highest:
             role = score.get("role", "unknown")
+            priority_candidate = candidate
+        elif total == highest and str(candidate.get("pattern")) < str(priority_candidate.get("pattern")):
+            # A stock may satisfy several patterns. Select its representative
+            # without consulting technical coverage, support, or future outcomes.
+            priority_candidate = candidate
         base_scores.append(round(total - (hot or 0), 1))
         full_scores.append(total)
         hot_known |= hot is not None
+    # All shapes for this symbol come from one quote. A partially archived
+    # batch can still supply its change; conflicting observations cannot.
+    changes = {_number(c.get("change_pct")) for c in candidates} - {None}
     return {
         "signal_id": hashlib.sha256(identity.encode()).hexdigest()[:24],
         "symbol": row["symbol"], "name": row.get("name"), "date": str(stamp.date()), "revision": revision,
@@ -118,7 +132,8 @@ def _trade(sample: dict, row: dict, revision: int, candidates: list[dict], *, sh
         "_config": sample.get("metadata", {}).get("config"), "_candidates": candidates,
         "_shadow": shadow, "_role": role, "_base_score": max(base_scores, default=None),
         "_full_score": max(full_scores, default=None), "_hot_known": hot_known,
-        "_baseline": _number(candidates[0].get("change_pct")) if candidates else None,
+        "_priority_candidate": priority_candidate,
+        "_baseline": next(iter(changes)) if len(changes) == 1 else None,
         "_entry_factor": None, "_previous_close": None, "_exit_sessions": 0,
     }
 
@@ -180,6 +195,43 @@ def _collect_signals(store, start: date, end: date, revision: int, digest) -> tu
 def _invalidate(trade: dict, reason: str) -> None:
     trade["status"] = "unverifiable"
     trade["reasons"].append(reason)
+
+
+def _first_alert_trades(events: Iterable[dict], start: date, end: date, revision: int, digest=None) -> list[dict]:
+    """Freeze the earliest actual alert, including same-snapshot shapes and legacy unknowns."""
+    earliest: dict[tuple[str, str], list[dict]] = {}
+    for event in events:
+        if event.get("revision") != revision or event.get("event_type") != "buy_candidate":
+            continue
+        ts = event.get("ts")
+        if type(ts) is not int:
+            raise ValueError("买入候选事件缺少有效时刻")
+        try:
+            at = datetime.fromtimestamp(ts / 1000, CN_TZ)
+        except (ValueError, OverflowError, OSError) as exc:
+            raise ValueError("买入候选事件时刻无效") from exc
+        if not start <= at.date() <= end or str(at.date()) != event["date"] or not _continuous(at):
+            raise ValueError("买入候选事件时刻与记录交易日或观察时段不符")
+        key = (event["date"], event["symbol"])
+        prior = earliest.get(key)
+        if prior is None or ts < prior[0]["ts"]:
+            earliest[key] = [event]
+            if len(earliest) > MAX_SIGNALS:
+                raise ValueError("技术对照最多5000个股票日信号，请缩小区间")
+        elif ts == prior[0]["ts"]:
+            prior.append(event)
+
+    trades = []
+    for key in sorted(earliest):
+        batch = sorted(earliest[key], key=lambda event: (event.get("pattern", ""), event["id"]))
+        event = batch[0]
+        if digest is not None:
+            _digest(digest, batch)
+        stamp = datetime.fromtimestamp(event["ts"] / 1000, CN_TZ)
+        sample = {"observed_at": stamp.isoformat(), "metadata": {"config": event.get("config")}}
+        candidates = [{**item, "priority_score": item["evidence"].get("priority_score")} for item in batch]
+        trades.append(_trade(sample, event, revision, candidates, shadow=False))
+    return trades
 
 
 def _minute_rows(frame: pl.DataFrame, symbol: str, day: date, marker: bool) -> tuple[list[dict], str | None]:
@@ -407,6 +459,12 @@ def _rank_outcomes(rows: list[dict]) -> dict:
             "filled": sum(r.get("entry_at") is not None for r in rows), "worst_net_return": min(closed, default=None)}
 
 
+def _priority_day(items: Iterable[dict], key: str) -> list[dict]:
+    # Arrival time consumes the available daily slots. A score can only order
+    # candidates on the same observation, with the symbol resolving equal scores.
+    return sorted(items, key=lambda r: (r["signal_at"], r[key] is None, -(r[key] or 0), r["symbol"]))
+
+
 def _priority_comparison(trades: list[dict], shadows: list[dict]) -> dict:
     days = defaultdict(list)
     for trade in trades:
@@ -416,9 +474,7 @@ def _priority_comparison(trades: list[dict], shadows: list[dict]) -> dict:
     cutoff = dates[max(1, int(len(dates) * .7))] if len(dates) >= 2 else None
     groups = []
     for variant, key in (("baseline", "_baseline"), ("sector", "_base_score"), ("popularity", "_full_score")):
-        # A day's earliest slots cannot be displaced by a higher score seen later.
-        ranked = {day: sorted(items, key=lambda r: (r["signal_at"], r[key] is None, -(r[key] or 0), r["symbol"]))
-                  for day, items in days.items()}
+        ranked = {day: _priority_day(items, key) for day, items in days.items()}
         for n in (3, 5):
             for window in ("all", "holdout"):
                 picked = [r for day in dates if window == "all" or (cutoff and day >= cutoff)
@@ -438,17 +494,196 @@ def _priority_comparison(trades: list[dict], shadows: list[dict]) -> dict:
             "holdout_start": cutoff, "groups": groups, "shadow": _rank_outcomes(shadows)}
 
 
+TECHNICAL_VERSION = "ma-macd-shadow-v1"
+SCORE_TOLERANCE = 2.
+TECHNICAL_VARIANTS = ("baseline", "ma", "macd", "combined")
+TECHNICAL_PATTERNS = ("platform", "trend", "oversold")
+
+
+def _technical_signals(trade: dict) -> tuple[bool | None, bool | None]:
+    """Read only the winning baseline pattern's contemporaneous, frozen votes."""
+    candidate = trade["_priority_candidate"]
+    if not candidate:
+        return None, None
+    facts = candidate.get("evidence")
+    shadow = facts.get("technical_shadow") if isinstance(facts, dict) else None
+    previous = trade.get("_reference_session")
+    if (not isinstance(shadow, dict) or shadow.get("version") != TECHNICAL_VERSION
+            or candidate.get("pattern") not in TECHNICAL_PATTERNS
+            or shadow.get("pattern") != candidate["pattern"]
+            or not previous or previous >= trade["date"] or shadow.get("reference_date") != previous
+            or (facts.get("reference_date") is not None and facts["reference_date"] != previous)):
+        return None, None
+    ma, macd = shadow.get("ma_support"), shadow.get("macd_support")
+    if shadow.get("status") == "ready" and type(ma) is bool and type(macd) is bool:
+        return ma, macd
+    if shadow.get("status") == "partial" and (
+        (type(ma) is bool and macd is None) or (ma is None and type(macd) is bool)
+    ):
+        return ma, macd
+    return None, None
+
+
+def _technical_day(items: list[tuple[dict, bool, bool]]) -> tuple[dict[str, list[dict]], dict[int, set[str]]]:
+    # Keep earlier events' places and each pattern's original slots. Anchor a
+    # band at its highest baseline score so pairwise near-ties cannot chain.
+    items = sorted(items, key=lambda item: (item[0]["signal_at"], -item[0]["_full_score"], item[0]["symbol"]))
+    baseline = [trade for trade, _, _ in items]
+    rankings = {variant: list(baseline) for variant in TECHNICAL_VARIANTS}
+    pattern_slots = defaultdict(list)
+    for index, trade in enumerate(baseline):
+        pattern_slots[trade["signal_at"], trade["_priority_candidate"]["pattern"]].append(index)
+    bands = []
+    for slots in pattern_slots.values():
+        band = []
+        for slot in slots:
+            if band and baseline[band[0]]["_full_score"] - baseline[slot]["_full_score"] > SCORE_TOLERANCE + 1e-9:
+                bands.append(band)
+                band = []
+            band.append(slot)
+        bands.append(band)
+    opportunities = {n: {baseline[band[0]]["_priority_candidate"]["pattern"] for band in bands
+                         if band[0] < n <= band[-1]} for n in (3, 5)}
+    votes = {"ma": [ma for _, ma, _ in items], "macd": [macd for _, _, macd in items],
+             "combined": [ma + macd for _, ma, macd in items]}
+    for band in bands:
+        if len(band) < 2:
+            continue
+        for variant, support in votes.items():
+            # Stable sort preserves the original score and symbol order on tied votes.
+            ordered = sorted(band, key=lambda i: -support[i])
+            for slot, source in zip(band, ordered, strict=True):
+                rankings[variant][slot] = baseline[source]
+    return rankings, opportunities
+
+
+def _archived_popularity(candidate: dict) -> dict:
+    score = candidate.get("priority_score") or {}
+    part = score.get("parts", {}).get("popularity", {})
+    radar = score.get("radar")
+    pop = radar.get("popularity") if isinstance(radar, dict) else None
+    pop = pop if isinstance(pop, dict) else {}
+    rank, gain, status = pop.get("rank"), pop.get("rank_gain"), pop.get("status")
+    rank = rank if status == "ready" and type(rank) is int and 1 <= rank <= 100 else None
+    points = part.get("points")
+    maximum = part.get("known_max")
+    return {"rank": rank, "rank_gain": gain if rank and type(gain) is int and abs(gain) < 100 else None,
+            "status": status if rank or status == "unranked" else None, "points": points,
+            "known_max": maximum if type(maximum) in (int, float) and (points or 0) <= maximum <= 10 else None}
+
+
+def rank_first_alerts(events: Iterable[dict], *, day: date, revision: int, reference_session: date | None) -> dict:
+    """Full compact one-day result. Service filters top seats and pages after ranking."""
+    if (type(day) is not date or type(revision) is not int or revision < 0
+            or (reference_session is not None and (type(reference_session) is not date or reference_session >= day))):
+        raise ValueError("首次提示排名需要有效交易日、规则版本与早于当日的参考交易日")
+    alerts = _first_alert_trades(events, day, day, revision)
+    reference = str(reference_session) if reference_session else None
+    rows = {}
+    complete = []
+    for trade in alerts:
+        trade["_reference_session"] = reference
+        ma, macd = _technical_signals(trade)
+        if ma is not None and macd is not None:
+            complete.append((trade, ma, macd))
+        candidate = trade["_priority_candidate"] or {}
+        rows[trade["symbol"]] = {
+            "symbol": trade["symbol"], "name": trade["name"], "signal_at": trade["signal_at"],
+            "patterns": trade["patterns"], "pattern": candidate.get("pattern"),
+            "change_pct": trade["_baseline"], "base_score": trade["_base_score"], "priority_score": trade["_full_score"],
+            "popularity": _archived_popularity(candidate), "popularity_known": trade["_hot_known"],
+            "ma_support": ma, "macd_support": macd, "ranks": {},
+        }
+    # Individual evidence coverage differs for legacy alerts. Never convert
+    # missing scores to bottom places; compare technical variants on common rows.
+    ranked = {variant: _priority_day((t for t in alerts if t[key] is not None), key)
+              for variant, key in (("change", "_baseline"), ("base", "_base_score"), ("priority", "_full_score"))}
+    technical, _ = _technical_day(complete)
+    ranked.update({("technical_baseline" if variant == "baseline" else variant): items
+                   for variant, items in technical.items()})
+    for variant, items in ranked.items():
+        before = 0
+        for _, batch in groupby(items, key=itemgetter("signal_at")):
+            group = list(batch)
+            for position, trade in enumerate(group, 1):
+                rows[trade["symbol"]]["ranks"][variant] = {
+                    "batch": position, "batch_total": len(group), "day": before + position,
+                }
+            before += len(group)
+    def display_order(row: dict) -> tuple:
+        ranks = row["ranks"]
+        # Old alerts often have no score. Display their strongest recorded
+        # move first within that batch, while leaving their score seats empty.
+        first = ranks.get("priority") or ranks.get("change") or {}
+        return row["signal_at"], "priority" not in ranks, first.get("batch", math.inf), row["symbol"]
+
+    return {"source": "first_buy_candidate", "date": str(day), "reference_date": reference, "revision": revision,
+            "total": len(rows), "coverage": {"batches": len({r["signal_at"] for r in alerts}),
+                "change_known": len(ranked["change"]), "priority_known": len(ranked["priority"]),
+                "popularity_known": sum(t["_hot_known"] for t in alerts), "technical_known": len(complete)},
+            "rows": sorted(rows.values(), key=display_order)}
+
+
+def _technical_outcomes(day_picks: list[tuple[list[dict], set[str], set[str]]], pattern: str | None = None) -> dict:
+    picks = []
+    replacements = changed_days = opportunity_days = 0
+    for selection, base_symbols, opportunities in day_picks:
+        subset = selection if pattern is None else [r for r in selection if r["_priority_candidate"]["pattern"] == pattern]
+        swaps = sum(r["symbol"] not in base_symbols for r in subset)
+        replacements += swaps
+        changed_days += swaps > 0
+        opportunity_days += bool(opportunities) if pattern is None else pattern in opportunities
+        picks.extend(subset)
+    t1 = [r["net_return"] for r in picks if r["status"] == "closed" and r["_exit_sessions"] == 1]
+    return {**_rank_outcomes(picks), "changed_days": changed_days, "replacements": replacements,
+            "opportunity_days": opportunity_days, "t1_closed": len(t1),
+            "t1_net_return_mean": sum(t1) / len(t1) if t1 else None}
+
+
+def _technical_comparison(trades: list[dict]) -> dict:
+    """Ablate frozen MA and MACD votes in one common complete-case cohort."""
+    days = defaultdict(list)
+    priority_known = ma_known = macd_known = 0
+    for trade in trades:
+        priority_known += trade["_priority_candidate"] is not None
+        ma, macd = _technical_signals(trade)
+        ma_known += ma is not None
+        macd_known += macd is not None
+        if ma is not None and macd is not None:
+            days[trade["date"]].append((trade, ma, macd))
+    dates = sorted(days)
+    cutoff = dates[max(1, int(len(dates) * .7))] if len(dates) >= 2 else None
+    ranked = {day: _technical_day(items) for day, items in days.items()}
+    groups = []
+    for n in (3, 5):
+        for window, selected_dates in (("all", dates), ("holdout", [d for d in dates if cutoff and d >= cutoff])):
+            for variant in TECHNICAL_VARIANTS:
+                day_picks = []
+                for day in selected_dates:
+                    rankings, opportunities = ranked[day]
+                    base_symbols = {row["symbol"] for row in rankings["baseline"][:n]}
+                    day_picks.append((rankings[variant][:n], base_symbols, opportunities[n]))
+                groups.append({"variant": variant, "window": window, "top_n": n, **_technical_outcomes(day_picks),
+                               "by_pattern": {p: _technical_outcomes(day_picks, p) for p in TECHNICAL_PATTERNS}})
+    scored = sum(map(len, days.values()))
+    return {"version": TECHNICAL_VERSION, "baseline": "priority-v1", "score_tolerance": SCORE_TOLERANCE,
+            "eligible": len(trades), "priority_known": priority_known, "ma_known": ma_known,
+            "macd_known": macd_known, "scored": scored, "unscored": len(trades) - scored,
+            "holdout_start": cutoff, "groups": groups}
+
+
 def run_execution_validation(repo, store, *, start: date, end: date, revision: int,
-                             options: ExecutionOptions, through: date) -> dict:
+                             options: ExecutionOptions, through: date, events: Iterable[dict] = ()) -> dict:
     if (type(start) is not date or type(end) is not date or type(through) is not date
             or start > end or end > through or (end - start).days >= 92
             or type(revision) is not int or revision < 0):
         raise ValueError("成交验证需要有效规则版本及不超过92个自然日的已完成区间")
     options = ExecutionOptions.model_validate(options)
     digest = hashlib.sha256()
-    _digest(digest, {"version": 2, "start": start, "end": end, "revision": revision,
+    _digest(digest, {"version": 3, "start": start, "end": end, "revision": revision,
                      "through": through, "options": options.model_dump()})
     trades, coverage, names = _collect_signals(store, start, end, revision, digest)
+    alerts = _first_alert_trades(events, start, end, revision, digest)
     load_end = min(through, end + timedelta(days=45))
     calendar_start = start - timedelta(days=32)
     try:
@@ -464,7 +699,15 @@ def run_execution_validation(repo, store, *, start: date, end: date, revision: i
         for trade in trades:
             _invalidate(trade, "calendar_unavailable")
     else:
-        symbols = sorted({row["symbol"] for row in trades})
+        previous = {str(day): str(prior) for prior, day in pairwise(calendar)}
+        simulated = list(trades)
+        for alert in alerts:
+            alert["_reference_session"] = previous.get(alert["date"])
+            if all(value is not None for value in _technical_signals(alert)):
+                simulated.append(alert)
+                if isinstance(alert["name"], str) and alert["name"].strip():
+                    names.add((alert["symbol"], date.fromisoformat(alert["date"]), alert["name"].strip()))
+        symbols = sorted({row["symbol"] for row in simulated})
         try:
             # Exit-day names are historical dimension facts, not added signals.
             # A separate <=45-day read keeps both store ranges bounded to 92d.
@@ -492,13 +735,13 @@ def run_execution_validation(repo, store, *, start: date, end: date, revision: i
             _frame_digest(digest, daily)
         except (ValueError, TypeError, KeyError, pl.exceptions.PolarsError):
             facts = {}
-        for trade in trades:
+        for trade in simulated:
             if date.fromisoformat(trade["date"]) not in sessions:
                 _invalidate(trade, "signal_day_not_in_calendar")
         marker = minute_basis_is_raw(repo.store.data_dir)
         _digest(digest, {"legacy_raw_marker": marker})
         for day in sessions:
-            active = [row for row in trades if (row["status"] == "pending_entry" and row["date"] == str(day))
+            active = [row for row in simulated if (row["status"] == "pending_entry" and row["date"] == str(day))
                       or (row["status"] == "open_position" and row["date"] < str(day)
                           and row["_exit_sessions"] < options.max_exit_sessions)]
             if not active:
@@ -509,21 +752,23 @@ def run_execution_validation(repo, store, *, start: date, end: date, revision: i
             except (OSError, ValueError, TypeError, pl.exceptions.PolarsError):
                 frame = pl.DataFrame()
             coverage["minute_days_read"] += 1
-            for trade in active:
-                daily_row = facts.get((trade["symbol"], day))
+            # The anchor and the actual alert may request the same stock-day.
+            # Share its bars but simulate each order at its own signal time.
+            for symbol, orders in groupby(sorted(active, key=itemgetter("symbol")), key=itemgetter("symbol")):
+                daily_row = facts.get((symbol, day))
                 daily_facts, issue = _day_facts(daily_row)
-                if trade["status"] == "pending_entry" and daily_facts is not None:
-                    _board_outcomes(trade, daily_row, daily_facts[0])
-                rows, minute_issue = _minute_rows(frame, trade["symbol"], day, marker)
-                if issue or minute_issue:
-                    _invalidate(trade, issue or minute_issue)
-                    continue
-                if trade["status"] == "pending_entry":
-                    _entry(trade, rows, daily_facts, options)
-                else:
-                    trade["_exit_sessions"] += 1
-                    _exit(trade, rows, daily_facts, options)
-        for trade in trades:
+                rows, minute_issue = _minute_rows(frame, symbol, day, marker)
+                for trade in orders:
+                    if trade["status"] == "pending_entry" and daily_facts is not None:
+                        _board_outcomes(trade, daily_row, daily_facts[0])
+                    if issue or minute_issue:
+                        _invalidate(trade, issue or minute_issue)
+                    elif trade["status"] == "pending_entry":
+                        _entry(trade, rows, daily_facts, options)
+                    else:
+                        trade["_exit_sessions"] += 1
+                        _exit(trade, rows, daily_facts, options)
+        for trade in simulated:
             if trade["status"] == "pending_entry":
                 _invalidate(trade, "entry_session_missing")
             elif trade["status"] == "open_position":
@@ -539,6 +784,7 @@ def run_execution_validation(repo, store, *, start: date, end: date, revision: i
                       "options": options.model_dump()},
             "coverage": coverage, "summary": summary,
             "priority_comparison": _priority_comparison(trades, shadows),
+            "technical_comparison": _technical_comparison(alerts),
             "by_group": {group: _summary([row for row in trades if row["group"] == group]) for group in GROUPS},
             "trades": [{key: value for key, value in row.items() if not key.startswith("_")}
                        for row in trades[:MAX_DETAILS]],

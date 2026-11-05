@@ -1585,6 +1585,96 @@ export interface PositionTReplay extends PositionTReview {
 }
 
 // 批次登记只作旧监控规则生成的载体，不自动转为账户库存。
+export type HoldingAnalysisSource = 'lots' | 'position_t'
+export interface HoldingAnalysisProfile {
+  opened_on: string | null
+  horizon: 'short' | 'swing'
+  thesis: string
+  invalidation: string
+  max_loss_pct: number | null
+  deep_loss_pct: number
+  new_position_days: number
+  max_holding_days: number
+  primary_sector_id: string
+}
+export interface HoldingAnalysisScenario {
+  key: 'base' | 'bull' | 'bear'
+  title: string
+  action: string
+  conditions: string[]
+  price_trigger: { op: '<=' | '>='; value: number } | null
+  invalidation: string
+}
+export interface HoldingAnalysisRow {
+  key: string
+  symbol: string
+  name: string
+  asset_type: string
+  qty: number | null
+  cost_price: number | null
+  cost_method: string
+  opened_on: string | null
+  profile: HoldingAnalysisProfile
+  pnl_ratio: number | null
+  age_days: number | null
+  age_state: 'new' | 'holding' | 'overdue' | 'unknown'
+  pnl_state: 'deep_loss' | 'loss' | 'flat' | 'profit' | 'unknown'
+  trend: 'up' | 'range' | 'down' | 'unknown'
+  relative_strength: 'stronger' | 'inline' | 'weaker' | 'unknown'
+  price: { value: number | null; date: string | null; market_at: string | null; source: 'quote' | 'daily' | 'unknown'; fresh: boolean }
+  technicals: { support: number | null; resistance: number | null; ma20: number | null; ma60: number | null; atr14: number | null; return5: number | null; return20: number | null }
+  sectors: { key: string; name: string; kind: string; source_id: string; member_count: number; valid_count: number; coverage_ratio: number; change_ratio: number | null; valid: boolean }[]
+  evidence: string[]
+  warnings: string[]
+  constraints: { sellable_qty: number | null; active_t_plan: boolean; can_size: boolean }
+  plan: { summary: string; priority: 'risk' | 'protect' | 'observe'; scenarios: HoldingAnalysisScenario[]; expires_on: string | null; can_adopt: boolean }
+}
+export interface HoldingAnalysisReport {
+  id: string
+  profile_version: string
+  source: HoldingAnalysisSource
+  account_id: string | null
+  accounts: { id: string; name: string }[]
+  input_version: string
+  generated_at: string
+  as_of_date: string
+  rows: HoldingAnalysisRow[]
+  warnings: string[]
+}
+export interface HoldingAnalysisInterpretation {
+  report_id: string
+  generated_at: string
+  interpretation: {
+    summary: string
+    observations: { key: string; text: string; evidence_indices: number[] }[]
+    limitations: string[]
+  }
+}
+export interface HoldingAnalysisSavedPlan {
+  id: string
+  version: number
+  status: 'adopted' | 'invalidated'
+  created_at: string
+  expires_on: string | null
+  report_id: string
+  row: HoldingAnalysisRow
+  input_version: string
+  needs_review: boolean
+  alert_rule_ids: string[]
+  alert_bindings?: Record<string, 'pending' | 'active'>
+}
+export interface HoldingAnalysisOverview {
+  source: HoldingAnalysisSource
+  account_id: string | null
+  accounts: { id: string; name: string }[]
+  input_version: string
+  positions: { key: string; symbol: string; name: string; qty: number | null; cost_price: number | null; opened_on: string | null }[]
+  profiles: Record<string, { profile: HoldingAnalysisProfile; version: number }>
+  report: HoldingAnalysisReport | null
+  plans: HoldingAnalysisSavedPlan[]
+  warnings: string[]
+}
+
 export interface Lot {
   id: string
   symbol: string
@@ -3210,6 +3300,7 @@ export const api = {
     method: 'PUT', body: JSON.stringify(body), quiet: true,
   }),
   huichunSnapshot: () => request<HuichunSnapshot>('/api/huichun/snapshot', { quiet: true }),
+  huichunDailyRuns: () => request<HuichunDailyRuns>('/api/huichun/daily-runs', { quiet: true }),
   huichunChart: (body: HuichunChartRequest) => request<HuichunChartResponse>('/api/huichun/chart', {
     method: 'POST', body: JSON.stringify(body), quiet: true,
   }),
@@ -3231,6 +3322,12 @@ export const api = {
   }),
   firstBoardSnapshot: () => request<FirstBoardSnapshot>('/api/first-board/snapshot', { quiet: true }),
   firstBoardRefresh: () => request<FirstBoardSnapshot>('/api/first-board/refresh', { method: 'POST', quiet: true }),
+  firstBoardFirstAlertRankings: (day: string, revision: number | null, topN: 3 | 5 | null, offset: number) => {
+    const query = new URLSearchParams({ day, offset: String(offset), limit: '100' })
+    if (revision !== null) query.set('revision', String(revision))
+    if (topN !== null) query.set('top_n', String(topN))
+    return request<FirstBoardFirstAlertRankings>(`/api/first-board/first-alert-rankings?${query}`, { quiet: true })
+  },
   firstBoardEvents: (day?: string, filters: FirstBoardEventFilters = {}) => {
     const query = new URLSearchParams()
     if (day) query.set('day', day)
@@ -5389,6 +5486,22 @@ export const api = {
     request<{ replay: PositionTReplay }>('/api/position-t/replays', { method: 'POST', body: JSON.stringify(body), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, quiet: true }),
   positionTCapabilities: () => request<{ manual: boolean; simulation: boolean; broker: boolean; auto_order: boolean; reasons?: string[] }>('/api/position-t/capabilities', { quiet: true }),
 
+  // ===== 持仓研究（冻结报告和条件提醒，不写入执行账本） =====
+  holdingAnalysisOverview: (source: HoldingAnalysisSource, account_id = '') =>
+    request<HoldingAnalysisOverview>(`/api/holding-analysis/overview?source=${source}&account_id=${encodeURIComponent(account_id)}`, { quiet: true }),
+  holdingAnalysisAnalyze: (body: { source: HoldingAnalysisSource; account_id: string }) =>
+    request<HoldingAnalysisReport>('/api/holding-analysis/analyze', { method: 'POST', body: JSON.stringify(body), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, quiet: true }),
+  holdingAnalysisInterpret: (reportId: string) =>
+    request<HoldingAnalysisInterpretation>(`/api/holding-analysis/reports/${encodeURIComponent(reportId)}/interpret`, { method: 'POST', timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, quiet: true }),
+  holdingAnalysisProfileSave: (key: string, body: { source: HoldingAnalysisSource; account_id: string; expected_version: number; profile: HoldingAnalysisProfile }) =>
+    request<{ profile: HoldingAnalysisProfile; version: number }>(`/api/holding-analysis/profiles/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify(body), quiet: true }),
+  holdingAnalysisAdopt: (body: { report_id: string; row_key: string; expected_input_version: string }) =>
+    request<{ plan: HoldingAnalysisSavedPlan }>('/api/holding-analysis/plans', { method: 'POST', body: JSON.stringify(body), quiet: true }),
+  holdingAnalysisInvalidate: (id: string, body: { expected_version: number; status: 'invalidated' }) =>
+    request<{ plan: HoldingAnalysisSavedPlan }>(`/api/holding-analysis/plans/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body), quiet: true }),
+  holdingAnalysisAlert: (id: string, body: { expected_version: number; scenario_key: 'bull' | 'bear' }) =>
+    request<{ plan: HoldingAnalysisSavedPlan; rule_id: string }>(`/api/holding-analysis/plans/${encodeURIComponent(id)}/alerts`, { method: 'POST', body: JSON.stringify(body), quiet: true }),
+
   // ===== Lots (批次登记, 页面名"持仓提醒"; 保存/删除自动同步监控规则) =====
   lotsList: () =>
     request<{ lots: Lot[] }>('/api/lots'),
@@ -6111,6 +6224,27 @@ export interface FirstBoardAttentionSampling {
   sample_count: number
   reason?: string
 }
+export interface FirstBoardTechnicalShadow {
+  version: string
+  reference_date: string | null
+  pattern: FirstBoardPattern
+  status: 'ready' | 'partial' | 'unavailable'
+  ma_support: boolean | null
+  macd_support: boolean | null
+  close: number | null
+  ma5: number | null
+  ma10: number | null
+  ma20: number | null
+  prev_close: number | null
+  prev_ma5: number | null
+  prev_ma20: number | null
+  macd_dif: number | null
+  macd_dea: number | null
+  macd_hist: number | null
+  prev_macd_hist: number | null
+  ma_reason: string
+  macd_reason: string
+}
 export interface FirstBoardCandidate {
   symbol: string
   name: string
@@ -6124,7 +6258,7 @@ export interface FirstBoardCandidate {
   distance_to_limit_pct: number | null
   turnover_rate: number | null
   reasons: string[]
-  evidence: Record<string, unknown>
+  evidence: Record<string, unknown> & { technical_shadow?: FirstBoardTechnicalShadow }
   can_buy: boolean
   blocked_reasons: string[]
   quote_time: string | null
@@ -6253,6 +6387,7 @@ export interface FirstBoardFeedback {
   sectors: FirstBoardFeedbackSector[]
 }
 export interface FirstBoardSnapshot {
+  data_status?: FirstBoardDataStatus
   status: 'disabled' | 'waiting' | 'ready' | 'stale' | 'closed' | 'error'
   message: string
   as_of: string | null
@@ -6270,6 +6405,58 @@ export interface FirstBoardEventFilters {
   pattern?: FirstBoardPattern | 'exit'
   event_type?: 'watch' | 'approaching' | 'buy_candidate' | 'sealed' | 'broken' | 'invalid' | 'exit_candidate'
 }
+export type FirstBoardDataMetric = 'quotes' | 'industry' | 'concept' | 'minute' | 'popularity' | 'theme' | 'ma' | 'macd' | 'priority'
+export interface FirstBoardDataStatus {
+  version: number
+  trade_date: string | null
+  observed_at: string | null
+  checked_at: string
+  phase: 'live' | 'closed' | 'stale' | 'paused' | 'waiting' | 'error'
+  monitor_enabled: boolean
+  realtime_enabled?: boolean | null
+  trading_day?: boolean | null
+  realtime_status: 'available' | 'blocked' | 'unknown'
+  realtime_reason: string | null
+  in_session: boolean
+  same_day: boolean
+  quote_max_age_seconds: number
+  symbol_count: number
+  metrics: Record<FirstBoardDataMetric, {
+    status: 'ready' | 'partial' | 'missing' | 'inactive' | 'empty'
+    known: number; total: number; detail: string
+  }>
+  sampling: { status: string; last_sample_at: string | null; sample_count: number; reason?: string; trade_date?: string | null; revision?: number | null }
+}
+export type FirstBoardFirstAlertMethod = 'change' | 'base' | 'priority' | 'technical_baseline' | 'ma' | 'macd' | 'combined'
+export interface FirstBoardFirstAlertRow {
+  symbol: string
+  name: string | null
+  signal_at: string
+  pattern: FirstBoardPattern | null
+  patterns: FirstBoardPattern[]
+  change_pct: number | null
+  base_score: number | null
+  priority_score: number | null
+  popularity_known: boolean
+  popularity?: { rank: number | null; rank_gain: number | null; points: number | null; known_max: number | null; status: 'ready' | 'unranked' | null }
+  ma_support: boolean | null
+  macd_support: boolean | null
+  ranks: Partial<Record<FirstBoardFirstAlertMethod, { batch: number; batch_total: number; day: number }>>
+}
+export interface FirstBoardFirstAlertRankings {
+  date: string
+  revision: number
+  available_revisions: number[]
+  source: 'first_buy_candidate'
+  reference_date: string | null
+  top_n: 3 | 5 | null
+  offset: number
+  limit: number
+  matched: number
+  total: number
+  coverage: { batches: number; change_known: number; priority_known: number; popularity_known: number; technical_known: number }
+  rows: FirstBoardFirstAlertRow[]
+}
 export interface FirstBoardEvent {
   id: string
   ts: string | number
@@ -6283,7 +6470,7 @@ export interface FirstBoardEvent {
   message: string
   price: number | null
   revision: number
-  evidence: Record<string, unknown> & { priority_score?: FirstBoardPriority }
+  evidence: Record<string, unknown> & { priority_score?: FirstBoardPriority; technical_shadow?: FirstBoardTechnicalShadow }
   blocked_reasons: string[]
   quote_time: string | null
 }
@@ -6443,6 +6630,24 @@ export interface FirstBoardReplayValidation extends FirstBoardValidationBase {
     })[]
     shadow: FirstBoardRankOutcomes
   }
+  technical_comparison?: {
+    version: string
+    baseline: string
+    eligible: number
+    scored: number
+    unscored: number
+    priority_known: number
+    ma_known: number
+    macd_known: number
+    score_tolerance: number
+    holdout_start: string | null
+    groups: (FirstBoardTechnicalOutcomes & {
+      variant: 'baseline' | 'ma' | 'macd' | 'combined'
+      top_n: 3 | 5
+      window: 'all' | 'holdout'
+      by_pattern?: Partial<Record<FirstBoardPattern, FirstBoardTechnicalOutcomes>>
+    })[]
+  }
   trades: {
     signal_id: string; symbol: string; name: string | null; date: string; revision: number; patterns: string[]
     group: 'S0F0' | 'S1F0' | 'S0F1' | 'S1F1' | 'unknown'
@@ -6461,6 +6666,13 @@ export interface FirstBoardReplayValidation extends FirstBoardValidationBase {
 export interface FirstBoardRankOutcomes extends FirstBoardExecutionSummary {
   outcomes: number; touched: number; sealed: number; broken: number; filled: number
   worst_net_return: number | null
+}
+export interface FirstBoardTechnicalOutcomes extends FirstBoardRankOutcomes {
+  opportunity_days: number
+  changed_days: number
+  replacements: number
+  t1_closed: number
+  t1_net_return_mean: number | null
 }
 export type FirstBoardTradeValidation = FirstBoardReplayValidation | FirstBoardPaperValidation
 export interface FirstBoardTradeValidationRun {
@@ -6535,6 +6747,26 @@ export interface HuichunCandidate {
   factor_status?: HuichunFactorStatus
   rule_revision: number
 }
+export interface HuichunDailyRun {
+  date: string
+  status: 'completed' | 'waiting' | 'missed'
+  trigger: 'daily_sync' | 'manual' | null
+  publication_status: string | null
+  reason: string | null
+  rule_revision: number | null
+  confirmed_count: number | null
+  control_count: number | null
+  pending_count: number | null
+  completed_at: string | null
+  correction_count: number
+  last_attempt_at: string | null
+  backfilled_at: string | null
+}
+export interface HuichunDailyRuns {
+  tracking_since: string | null
+  calendar_status: 'verified' | 'unavailable'
+  records: HuichunDailyRun[]
+}
 export interface HuichunCoverage {
   stage_counts?: { universe: number; valid_close: number; warmup_ready: number; qualified_waiting_first_cross: number;
     first_cross_today: number; first_cross_rejected_today: number; confirmed_today: number; pending_today: number }
@@ -6543,7 +6775,7 @@ export interface HuichunCoverage {
   expected_daily_date?: string | null
   publication_status?: 'ready' | 'historical' | 'stale' | 'incomplete' | 'calendar_unverified'
   publication_checks?: { active_symbols: number; previous_active_symbols: number; previous_date: string | null;
-    min_coverage_ratio: number; unfinalized_symbols: number; known_raw_issue: boolean }
+    min_coverage_ratio: number; unfinalized_symbols: number; finalized_symbols?: number; known_raw_issue: boolean }
   universe?: 'sh_sz_a_shares'
   st_filter?: 'current_instrument_name' | 'not_applied_historical_status_unknown'
   st_excluded_count?: number

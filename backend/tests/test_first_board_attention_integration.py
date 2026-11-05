@@ -96,6 +96,33 @@ def samples(rig):
             for path in sorted(rig.root.glob("*/*/[0-9][0-9][0-9][0-9].json.gz"))]
 
 
+def test_technical_shadow_frozen_in_first_and_later_events_and_sample(rig):
+    # Reuse the live service and immutable sample publisher. Evidence is
+    # frozen even when a later pool preparation revises the historical input.
+    row = rig.candidates[0]
+    shadow = {"version": "ma-macd-shadow-v1", "reference_date": str(row["reference_date"]),
+              "pattern": "platform", "status": "ready", "ma_support": True, "macd_support": False}
+    row["technical_shadow"] = shadow
+    rig.svc.process_snapshot(quotes(), NOW.date(), now=NOW)
+    first = next(r for r in rig.svc.snapshot()["rows"] if r["symbol"] == row["symbol"])
+    assert first["can_buy"] and first["evidence"]["technical_shadow"] == shadow
+    assert any(c["evidence"].get("technical_shadow") == shadow
+               for s in samples(rig)[0]["rows"] for c in s["candidates"])
+    updated = {**shadow, "ma_support": False}
+    row["technical_shadow"] = updated
+    later = NOW + timedelta(minutes=1)
+    rig.clock["now"] = later
+    rig.svc.process_snapshot(quotes(later, price=10.3), NOW.date(), now=later)
+    events = {e["event_type"]: e for e in rig.svc.events(NOW.date()) if e["symbol"] == row["symbol"]}
+    assert events["buy_candidate"]["evidence"]["technical_shadow"] == shadow
+    assert events["watch"]["evidence"]["technical_shadow"] == updated
+    count = len(events)
+    rig.clock["now"] = NOW.replace(hour=15, minute=10)
+    rig.svc.process_snapshot(quotes(rig.clock["now"]), NOW.date(), now=rig.clock["now"])
+    assert not any(r["can_buy"] for r in rig.svc.snapshot()["rows"])
+    assert len([e for e in rig.svc.events(NOW.date()) if e["symbol"] == row["symbol"]]) == count
+
+
 def test_strong_attention_never_promotes_a_watch_candidate_to_a_buy(rig):
     rig.svc.process_snapshot(quotes(price=10.5), NOW.date(), now=NOW)
     rows = rig.svc.snapshot()["rows"]

@@ -204,6 +204,9 @@ The project has repository caches, enriched history caches, realtime aggregation
 
 ## 7. Frontend Requirements
 
+- For all new or modified UI pages, prioritize the user's current task: emphasize key information and primary actions, minimize unnecessary or redundant content, and reduce visual clutter.
+- Avoid repeating the same meaning in headings, descriptions, badges, or summary cards. Show secondary explanations, advanced options, and diagnostic details on demand through details, expandable sections, or help entries.
+- Use clear visual hierarchy, grouping, and spacing to keep the page easy to scan. Preserve information needed for correct decisions, such as units, data dates, critical statuses, risk notices, and actionable errors; simplification must not make these harder to find.
 - Reuse the request wrappers and types in `frontend/src/lib/api.ts`. Components must not scatter request URLs directly.
 - Use centrally defined TanStack Query keys. Parameters that affect results — asset type, date, timeframe, etc. — must be part of the query key.
 - After switching stock, ETF, date, or strategy, cached results from the previous context must not be treated as current results.
@@ -277,6 +280,7 @@ The PR description must include:
 Author self-check before submitting:
 
 - [ ] The change only addresses the problem described in the PR, with no unrelated cleanup.
+- [ ] UI changes emphasize key information and primary actions, minimize redundant content, and keep essential decision information easy to find.
 - [ ] The complete call chain and all affected caches have been checked.
 - [ ] Units, adjustment, trading days, time zones, and asset types have been verified.
 - [ ] The provider abstraction is not bypassed, and behavior is explicit when a capability is missing.
@@ -639,6 +643,9 @@ The measure of following this guide is not how much documentation is written, bu
 
 ## 7. 前端改动要求
 
+- 所有新建或修改的 UI 页面都应围绕用户当前任务，突出重点信息和主要操作，尽量减少非必要的冗余信息，降低页面的凌乱感。
+- 避免标题、说明、徽章、汇总卡片重复表达同一含义；次要说明、高级选项和诊断详情通过详情、折叠区或帮助入口按需展示。
+- 使用清晰的视觉层级、分组与留白，便于用户扫读；保留正确判断所需的单位、数据日期、关键状态、风险提示和可操作的错误信息，精简后仍须易于发现。
 - 复用 `frontend/src/lib/api.ts` 中的请求封装和类型，禁止组件直接散落请求地址。
 - TanStack Query 查询键使用集中定义；资产类型、日期、周期等影响结果的参数必须进入查询键。
 - 切换股票、ETF、日期或策略后，不得把上一上下文的缓存结果当作当前结果。
@@ -712,6 +719,7 @@ PR 描述必须包含：
 提交前作者自检：
 
 - [ ] 改动只解决 PR 描述的问题，没有夹带无关整理。
+- [ ] UI 改动突出重点信息和主要操作，减少冗余内容，且影响用户判断的必要信息仍易于发现。
 - [ ] 已检查完整调用链和所有受影响缓存。
 - [ ] 已核对单位、复权、交易日、时区和资产类型。
 - [ ] 未绕过 provider abstraction，缺少能力时行为明确。

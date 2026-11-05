@@ -2,8 +2,9 @@
 import logging
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from functools import partial
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -14,6 +15,8 @@ from app.services.huichun_mode import (
     HuichunScanRequest,
     HuichunTrackRequest,
 )
+from app.services.huichun_schedule import HuichunArchiveSchedule, repair_daily_evidence
+from app.services.pipeline_jobs import job_store
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +25,9 @@ logger = logging.getLogger(__name__)
 async def _lifespan(app: FastAPI):
     # include_router 合并生命周期: 此时核心仓库已就绪, 退出时先停止本服务。
     service = None
+    schedule = None
     app.state.huichun_mode_service = None
+    app.state.huichun_archive_schedule = None
     try:
         repo = getattr(app.state, "repo", None)
         store = getattr(app.state, "datastore", None)
@@ -33,12 +38,23 @@ async def _lifespan(app: FastAPI):
                 HuichunModeService, repo, data_dir=store.data_dir, **publish_options,
             )
             app.state.huichun_mode_service = service
+            schedule = HuichunArchiveSchedule(
+                service, repair=partial(repair_daily_evidence, service, app.state),
+            )
+            app.state.huichun_archive_schedule = schedule
+            # The shared pipeline job store belongs to the configured data root.
+            # An embedded router using another store must not replay its receipts.
+            if (store.data_dir / "job_store").resolve() == job_store.directory.resolve():
+                schedule.resume(await run_in_threadpool(job_store.list_recent, limit=50))
     except Exception:
         logger.exception("回春模式初始化失败, 其他功能继续运行")
     try:
         yield
     finally:
+        app.state.huichun_archive_schedule = None
         app.state.huichun_mode_service = None
+        if schedule is not None:
+            await run_in_threadpool(schedule.close)
         if service is not None:
             await run_in_threadpool(service.close)
 
@@ -80,6 +96,11 @@ def save_config(request: Request, body: ConfigRequest):
 @router.get("/snapshot")
 def snapshot(request: Request):
     return _call(request, "get_snapshot")
+
+
+@router.get("/daily-runs")
+def daily_runs(request: Request, limit: int = Query(default=20, ge=1, le=120)):
+    return _call(request, "get_daily_runs", limit)
 
 
 @router.post("/scan", status_code=202)

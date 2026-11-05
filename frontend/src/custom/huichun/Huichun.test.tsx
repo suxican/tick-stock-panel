@@ -13,7 +13,7 @@ import extension from './extension'
 const calls = vi.hoisted(() => ({
   huichunConfig: vi.fn(), huichunSaveConfig: vi.fn(), huichunSnapshot: vi.fn(), huichunScan: vi.fn(),
   huichunTracking: vi.fn(), huichunAddTracking: vi.fn(), huichunRefreshTracking: vi.fn(), huichunRemoveTracking: vi.fn(),
-  huichunResearch: vi.fn(), marketSnapshotForSymbols: vi.fn(),
+  huichunResearch: vi.fn(), huichunDailyRuns: vi.fn(), marketSnapshotForSymbols: vi.fn(),
   extDataList: vi.fn(), extDataRows: vi.fn(),
 }))
 vi.mock('@/lib/api', () => ({ api: calls }))
@@ -63,6 +63,7 @@ beforeEach(() => {
   Object.values(calls).forEach(call => call.mockReset())
   calls.huichunConfig.mockResolvedValue(config())
   calls.huichunSnapshot.mockResolvedValue(snapshot())
+  calls.huichunDailyRuns.mockResolvedValue({ calendar_status: 'verified', tracking_since: null, records: [] })
   calls.huichunScan.mockResolvedValue(snapshot())
   calls.huichunTracking.mockResolvedValue({ records: [], updated_at: null })
   calls.huichunResearch.mockResolvedValue({ records: [], updated_at: null, limitations: [] })
@@ -105,6 +106,31 @@ function trackingCell(row: HTMLTableRowElement, label: string) {
 function previewContext() {
   return JSON.parse(host.querySelector('[role="dialog"]')?.getAttribute('data-chart-context') ?? 'null')
 }
+
+it('distinguishes a verified zero from a waiting day and a missed day with a historical backfill', async () => {
+  calls.huichunDailyRuns.mockResolvedValue({ calendar_status: 'verified', tracking_since: '2026-11-03', records: [
+    { date: '2026-11-05', status: 'waiting', reason: '部分日线尚待核准' },
+    { date: '2026-11-04', status: 'completed', confirmed_count: 0, control_count: 1, pending_count: 0, rule_revision: 3 },
+    { date: '2026-11-03', status: 'missed', backfilled_at: '2026-11-05T17:00:00+08:00' },
+  ] })
+  await render()
+  const rows = [...host.querySelectorAll('[aria-label="盘后扫描记录"] tbody tr')].map(row => row.textContent)
+  expect(rows[0]).toContain('等待收盘数据')
+  expect(rows[0]).toContain('部分日线尚待核准')
+  expect(rows[1]).toContain('已扫描，零信号')
+  expect(rows[2]).toContain('当日漏扫')
+  expect(rows[2]).toContain('历史补扫')
+})
+
+it('keeps the empty candidate list provisional until closing data has been verified', async () => {
+  const state = observationSnapshot([])
+  state.scan!.candidates = []
+  state.scan!.coverage.publication_status = 'incomplete'
+  calls.huichunSnapshot.mockResolvedValue(state)
+  await render()
+  expect(host.textContent).toContain('候选数量待收盘数据核准')
+  expect(host.textContent).not.toContain('暂无符合当前规则的候选')
+})
 
 it('explains a dated empty scan using terminal counts and clustered factor failures', async () => {
   const state = observationSnapshot([])

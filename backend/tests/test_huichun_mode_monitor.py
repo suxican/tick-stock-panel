@@ -40,6 +40,7 @@ def watch_environment(tmp_path, monkeypatch):
                 "close": value,
                 "volume": 10000.0,
                 "amount": value * 1000000.0,
+                "daily_batch_finalized": True,
             }
             for symbol, prices in [("600001.SH", values), ("600002.SH", [10.0] * len(days))]
             for day, value in zip(days, prices, strict=True)
@@ -232,7 +233,7 @@ def test_monitor_requires_current_final_daily_batch(watch_environment, monkeypat
     assert calls == []
 
 
-def test_at_final_cutoff_snapshot_can_notify_over_the_weekend(watch_environment, monkeypatch):
+def test_snapshot_timestamp_at_final_cutoff_cannot_certify_the_daily_bar(watch_environment, monkeypatch):
     svc, raw, _, days, _ = watch_environment
     friday = days[349]
     assert friday.weekday() == 4
@@ -246,9 +247,9 @@ def test_at_final_cutoff_snapshot_can_notify_over_the_weekend(watch_environment,
     calls = []
     svc._publish = calls.extend
     result = scan(svc, days[:350])
-    assert result["coverage"]["publication_status"] == "ready"
+    assert result["coverage"]["publication_status"] == "incomplete"
     assert result["coverage"]["expected_daily_date"] == str(friday)
-    assert [e["date"] for e in calls] == [str(friday)]
+    assert calls == []
 
 
 def test_mid_scan_session_close_suppresses_old_day_publication(watch_environment, monkeypatch):
@@ -555,7 +556,6 @@ def test_default_calendar_is_bundled_and_user_override_has_priority(tmp_path):
         service.close()
 
     override = tmp_path / "user_data" / "huichun" / "market_calendar.json"
-    override.parent.mkdir(parents=True)
     override.write_bytes(BUNDLED_CALENDAR_PATH.read_bytes())
     service = HuichunModeService(object(), data_dir=tmp_path)
     try:

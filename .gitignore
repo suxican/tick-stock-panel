@@ -86,6 +86,7 @@ CLAUDE.md
 # ===== 私人脚本(不开源) =====
 docs/zhihu/
 docs/策略
+tmp/*
 
 # ===== 用户自定义策略(私有,不开源) =====
 data/strategies/custom/

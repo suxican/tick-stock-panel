@@ -216,6 +216,45 @@ def test_new_events_freeze_complete_execution_configuration():
     assert event["config"] == config.model_dump(mode="json")
 
 
+def test_technical_comparison_uses_first_actual_alert_even_between_sampling_anchors(client):
+    svc = client.app.state.first_board_service
+    day = date(2026, 10, 19)
+    config = fb.FirstBoardConfig()
+    evidence = {"limit_up_price": 11., "technical_shadow": {
+        "version": "ma-macd-shadow-v1", "reference_date": "2026-10-16", "pattern": "oversold",
+        "status": "ready", "ma_support": True, "macd_support": False,
+    }}
+    score = {"version": "priority-v1", "status": "partial", "score": 52., "known_max": 80.,
+             "parts": {"popularity": {"points": None}}}
+
+    def event(symbol, minute, *, legacy=False):
+        now = datetime(2026, 10, 19, 10, minute, tzinfo=CN_TZ)
+        row = {"symbol": symbol, "name": "样本", "pattern": "oversold", "pattern_label": "超跌反弹",
+               "state": "approaching", "evidence": {} if legacy else evidence,
+               "quote_time": now.isoformat(), "change_pct": .08}
+        if not legacy:
+            row["priority_score"] = score
+        return svc._event(row, "buy_candidate", config, now)
+
+    # The first alert for 600001 has no technical record. A later,
+    # better documented alert cannot replace the evidence available at entry.
+    events = [event("600001.SH", 7), event("600002.SH", 3), event("600001.SH", 1, legacy=True)]
+    svc._write_day(day, {"schema_version": 1, "date": str(day), "last": {}, "events": events})
+    from app.tickflow.repository import DataStore, KlineRepository
+    svc.repo = KlineRepository(DataStore(svc.repo.store.data_dir))
+    response = client.post("/api/first-board/trade-validation", json=body(end=str(day)))
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["summary"]["signals"] == result["coverage"]["sample_count"] == 0
+    comparison = result["technical_comparison"]
+    assert (comparison["scored"], comparison["unscored"], comparison["eligible"]) == (1, 1, 2)
+    baseline = next(g for g in comparison["groups"]
+                    if (g["variant"], g["top_n"], g["window"]) == ("baseline", 3, "all"))
+    assert baseline["signals"] == baseline["unverifiable"] == 1
+    assert baseline["outcomes"] == baseline["t1_closed"] == 0
+    assert client.get("/api/first-board/trade-validation-runs").json()["runs"][0]["result"] == result
+
+
 def test_replay_http_reads_immutable_samples_and_real_parquet_then_reopens_report(client, tmp_path):
     from app.services.kline_sync import _write_minute_partition
     from app.tickflow.repository import DataStore, KlineRepository
@@ -238,6 +277,7 @@ def test_replay_http_reads_immutable_samples_and_real_parquet_then_reopens_repor
     pl.DataFrame([{"symbol": symbol, "date": day,
                    **{key: 10.2 if day == days[1] else 10.
                       for key in ("open", "high", "low", "close", "raw_close", "raw_high", "raw_low")},
+                   "quote_ts": int(datetime(day.year, day.month, day.day, 15, tzinfo=CN_TZ).timestamp() * 1000),
                    "volume": 1_000_000., "amount": 1_000_000_000.}
                   for day in [date(2026, 10, 16), *days]]).write_parquet(
                       tmp_path / "kline_daily_enriched" / "part.parquet")
@@ -253,7 +293,17 @@ def test_replay_http_reads_immutable_samples_and_real_parquet_then_reopens_repor
             now=observed, rule_revision=0, membership_version=None,
             metadata={"config": svc.get_config()},
         )
-    sources = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.suffix in {".parquet", ".gz"}}
+    alert = svc._event(
+        {"symbol": symbol, "name": "样本", "pattern": "platform", "pattern_label": "平台突破",
+         "state": "approaching", "evidence": {"limit_up_price": 11., "technical_shadow": {
+             "version": "ma-macd-shadow-v1", "reference_date": "2026-10-16", "pattern": "platform",
+             "status": "ready", "ma_support": False, "macd_support": False}},
+         "priority_score": {"version": "priority-v1", "status": "partial", "score": 50., "known_max": 90.,
+                            "parts": {"popularity": {"points": None}}}},
+        "buy_candidate", fb.FirstBoardConfig(), datetime(2026, 10, 19, 10, 2, tzinfo=CN_TZ))
+    svc._write_day(days[0], {"schema_version": 1, "date": str(days[0]), "last": {}, "events": [alert]})
+    sources = {p: p.read_bytes() for p in tmp_path.rglob("*")
+               if p.suffix in {".parquet", ".gz"} or p.name == "2026-10-19.json"}
     response = client.post("/api/first-board/trade-validation", json=body(end="2026-10-19"))
     assert response.status_code == 200, response.text
     result = response.json()
@@ -263,6 +313,11 @@ def test_replay_http_reads_immutable_samples_and_real_parquet_then_reopens_repor
     assert trade["entry_at"] == "2026-10-19T10:03:00+08:00"
     assert trade["exit_at"] == "2026-10-20T10:33:00+08:00"
     assert trade["net_return"] < trade["gross_return"]
+    groups = result["technical_comparison"]["groups"]
+    for group in (g for g in groups if g["window"] == "all"):
+        assert (group["signals"], group["outcomes"], group["sealed"], group["filled"]) == (1, 1, 0, 1)
+        assert group["replacements"] == 0 and group["t1_closed"] == 1
+        assert group["t1_net_return_mean"] == pytest.approx(trade["net_return"])
     assert client.get("/api/first-board/trade-validation-runs").json()["runs"][0]["result"] == result
     assert {p: p.read_bytes() for p in sources} == sources
 

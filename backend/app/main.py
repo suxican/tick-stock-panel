@@ -520,6 +520,18 @@ async def _application_lifespan(app: FastAPI):
     except Exception:
         logger.exception("持仓做 T 服务未启动，其他功能继续运行")
 
+    # Research alert validity is checked off the quote callback thread.
+    app.state.holding_alert_guard = None
+    try:
+        from app.services.holding_alert_guard import HoldingAlertGuard
+
+        holding_alert_guard = HoldingAlertGuard(repo, qs, getattr(app.state, "position_t_service", None))
+        monitor_engine.set_holding_alert_guard(holding_alert_guard.allow)
+        holding_alert_guard.start()
+        app.state.holding_alert_guard = holding_alert_guard
+    except Exception:
+        logger.exception("持仓研究提醒守卫未启动，相关提醒保持暂停")
+
     # 源码内二次开发启动钩子: 仅暴露稳定只读上下文, 单个扩展失败不影响核心启动。
     extension_registry = app.state.extension_registry
     start_backend_extensions(
@@ -530,6 +542,9 @@ async def _application_lifespan(app: FastAPI):
         yield
     finally:
         repo._on_refresh_done = None  # noqa: SLF001
+        holding_alert_guard = getattr(app.state, "holding_alert_guard", None)
+        if holding_alert_guard:
+            holding_alert_guard.stop()
         position_t_service = getattr(app.state, "position_t_service", None)
         if position_t_service:
             position_t_service.stop()

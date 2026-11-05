@@ -12,6 +12,7 @@ vi.mock('@/lib/api', () => ({ api: {
   lotDelete: vi.fn(),
 } }))
 vi.mock('./PositionTMonitor', () => ({ PositionTMonitor: () => <div>持仓做 T 监控</div> }))
+vi.mock('./HoldingAnalysis', () => ({ HoldingAnalysis: () => <div>持仓研究工作区</div> }))
 vi.mock('@/components/StockPreviewDialog', () => ({ StockPreviewDialog: () => null }))
 
 let host: HTMLDivElement
@@ -66,6 +67,11 @@ it('opens the registered lots route with position T and retains access to batch 
   expect(host.textContent).not.toContain('持仓做 T 监控')
   expect(mocks.lots).toHaveBeenCalledTimes(1)
   expect(host.querySelector('button[aria-current="page"]')?.textContent).toBe('批次提醒')
+
+  await click('持仓分析与计划')
+  expect(host.textContent).toContain('持仓研究工作区')
+  expect(host.textContent).not.toContain('新增批次')
+  expect(host.textContent).not.toContain('持仓做 T 监控')
 
   await click('持仓做 T')
   expect(host.textContent).toContain('持仓做 T 监控')

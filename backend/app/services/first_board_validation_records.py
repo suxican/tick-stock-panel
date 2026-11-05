@@ -149,6 +149,59 @@ class _PriorityComparison(_Contract):
     shadow: _PriorityOutcomes
 
 
+class _TechnicalOutcomes(_PriorityOutcomes):
+    changed_days: Count
+    opportunity_days: Count
+    replacements: Count
+    t1_closed: Count
+    t1_net_return_mean: Value
+
+    @model_validator(mode="after")
+    def comparison_counts(self):
+        if (self.changed_days > self.opportunity_days or not self.changed_days <= self.replacements <= self.signals
+                or self.t1_closed > self.closed or (self.t1_closed == 0) != (self.t1_net_return_mean is None)):
+            raise ValueError("invalid technical comparison outcomes")
+        return self
+
+
+class _TechnicalGroup(_TechnicalOutcomes):
+    variant: Literal["baseline", "ma", "macd", "combined"]
+    top_n: Literal[3, 5]
+    window: Literal["all", "holdout"]
+    by_pattern: dict[Literal["platform", "trend", "oversold"], _TechnicalOutcomes] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def selection_counts(self):
+        if self.variant == "baseline" and self.replacements:
+            raise ValueError("baseline has no replacements")
+        if self.by_pattern and (self.signals != sum(v.signals for v in self.by_pattern.values())
+                                or self.replacements != sum(v.replacements for v in self.by_pattern.values())):
+            raise ValueError("invalid technical pattern counts")
+        return self
+
+
+class _TechnicalComparison(_Contract):
+    version: Literal["ma-macd-shadow-v1"]
+    baseline: Literal["priority-v1"]
+    score_tolerance: Literal[2.0]
+    eligible: Count
+    priority_known: Count
+    ma_known: Count
+    macd_known: Count
+    scored: Count
+    unscored: Count
+    holdout_start: Day | None
+    groups: list[_TechnicalGroup]
+
+    @model_validator(mode="after")
+    def coverage_counts(self):
+        if (self.scored + self.unscored != self.eligible or self.priority_known > self.eligible
+                or not self.scored <= self.ma_known <= self.priority_known
+                or not self.scored <= self.macd_known <= self.priority_known):
+            raise ValueError("invalid technical comparison coverage")
+        return self
+
+
 class _BaseResult(_Contract):
     id: Identifier
     created_at: Timestamp
@@ -166,6 +219,7 @@ class _ReplayResult(_BaseResult):
     summary: _ReplaySummary
     by_group: dict[str, _ReplaySummary]
     priority_comparison: _PriorityComparison | None = None
+    technical_comparison: _TechnicalComparison | None = None
     trades: list[_ReplayTrade]
     total_trades: Count
     trades_truncated: bool

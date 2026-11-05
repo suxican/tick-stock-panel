@@ -15,6 +15,7 @@ import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { toNavItems } from '@/lib/listNav'
 import { boardTag } from '@/components/stock-table/primitives'
 import { PositionTMonitor } from './PositionTMonitor'
+import { HoldingAnalysis } from './HoldingAnalysis'
 
 const emptyDraft = (): Lot => ({
   id: '',
@@ -47,23 +48,23 @@ function CostPnL({ close, cost }: { close?: number; cost: number }) {
 }
 
 export function Lots() {
-  const [view, setView] = useState<'position-t' | 'batches'>('position-t')
+  const [view, setView] = useState<'position-t' | 'batches' | 'analysis'>('position-t')
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader title="持仓提醒" subtitle="按核对持仓监控日内价差机会，跟踪两笔交易与未完成敞口" />
-      <div className="flex shrink-0 gap-2 border-b border-border px-5 py-3" aria-label="持仓提醒视图">
-        {([['position-t', '持仓做 T'], ['batches', '批次提醒']] as const).map(([key, label]) => (
+      <div className="flex shrink-0 gap-2 overflow-x-auto border-b border-border px-5 py-3" aria-label="持仓提醒视图">
+        {([['position-t', '持仓做 T'], ['batches', '批次提醒'], ['analysis', '持仓分析与计划']] as const).map(([key, label]) => (
           <button
             key={key}
             aria-current={view === key ? 'page' : undefined}
             onClick={() => setView(key)}
-            className={cn('rounded-btn px-4 py-2 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent', view === key ? 'bg-accent/10 text-accent' : 'text-secondary hover:bg-elevated')}
+            className={cn('shrink-0 rounded-btn px-4 py-2 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent', view === key ? 'bg-accent/10 text-accent' : 'text-secondary hover:bg-elevated')}
           >
             {label}
           </button>
         ))}
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">{view === 'position-t' ? <PositionTMonitor /> : <BatchLots />}</div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">{view === 'position-t' ? <PositionTMonitor /> : view === 'analysis' ? <HoldingAnalysis /> : <BatchLots />}</div>
     </div>
   )
 }
@@ -118,6 +119,7 @@ function BatchLots() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: QK.lots })
       qc.invalidateQueries({ queryKey: QK.monitorRules })
+      qc.invalidateQueries({ queryKey: QK.holdingAnalysisAll })
       setConfirmId(null)
     },
   })
@@ -306,6 +308,7 @@ function LotDialog({ lot, onClose }: { lot: Lot; onClose: () => void }) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: QK.lots })
       qc.invalidateQueries({ queryKey: QK.monitorRules })
+      qc.invalidateQueries({ queryKey: QK.holdingAnalysisAll })
       onClose()
     },
     onError: err => setError(String((err as any)?.message ?? err)),

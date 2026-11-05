@@ -106,6 +106,65 @@ def test_empty_data_responses(client):
     assert client.post("/api/first-board/refresh").json()["rows"] == []
 
 
+def test_first_alert_endpoint_ranks_whole_day_then_filters_and_pages(client, monkeypatch):
+    # Older events retain their original change ranking. Scores from a later
+    # alert for the same stock or from another revision must not fill the gaps.
+    clock = datetime(2026, 10, 16, 10, tzinfo=CN_TZ)
+    monkeypatch.setattr(fb, "_now", lambda: clock + timedelta(hours=1))
+    service = client.app.state.first_board_service
+    day = clock.date()
+
+    def alert(i, when, rev=4):
+        return service._event({"symbol": f"60000{i}.SH", "name": f"候选{i}", "pattern": "platform",
+                               "pattern_label": "平台突破", "state": "approaching", "change_pct": .01 * i,
+                               "evidence": {}}, "buy_candidate", fb.FirstBoardConfig(revision=rev), when)
+
+    events = [alert(i, clock) for i in range(1, 5)]
+    events += [alert(1, clock + timedelta(minutes=1)), alert(5, clock + timedelta(minutes=2), rev=5)]
+    # A newer version with only a watch event remains selectable, while the
+    # default opens the latest version with an actual buy alert.
+    events += [{**alert(6, clock + timedelta(minutes=3), rev=6), "event_type": "watch"}]
+    state = {"schema_version": 1, "date": str(day), "last": {}, "events": events}
+    service._write_day(day, state)
+    base = f"/api/first-board/first-alert-rankings?day={day}"
+    latest = client.get(base)
+    assert latest.status_code == 200, latest.text
+    assert latest.json()["available_revisions"] == [6, 5, 4]
+    assert latest.json()["revision"] == 5 and latest.json()["total"] == 1
+    assert client.get(base + "&revision=6").json()["total"] == 0
+    assert client.get(base + "&revision=2").status_code == 400
+
+    filtered = client.get(base + "&revision=4&top_n=3&limit=1&offset=1")
+    assert filtered.status_code == 200, filtered.text
+    report = filtered.json()
+    assert (report["total"], report["matched"], report["top_n"], len(report["rows"])) == (4, 3, 3, 1)
+    assert report["coverage"]["change_known"] == 4
+    assert report["rows"][0]["ranks"]["change"]["day"] == 2
+    front = client.get(base + "&revision=4&top_n=3").json()["rows"]
+    assert [row["ranks"]["change"]["day"] for row in front] == [1, 2, 3]
+    # Replacing the archive must invalidate a cached page, even across process
+    # boundaries. Reading the corrected report never mutates the input file.
+    state["events"].append(alert(7, clock + timedelta(minutes=4), rev=4))
+    service._write_day(day, state)
+    path = service.root / "events" / f"{day}.json"
+    saved = path.read_bytes()
+    after = client.get(base + "&revision=4").json()
+    assert after["total"] == after["matched"] == 5 and after["rows"][-1]["ranks"]["change"]["day"] == 5
+    assert path.read_bytes() == saved
+
+
+def test_first_alert_endpoint_reports_empty_future_and_invalid_queries(client, monkeypatch):
+    monkeypatch.setattr(fb, "_now", lambda: datetime(2026, 10, 16, 10, tzinfo=CN_TZ))
+    base = "/api/first-board/first-alert-rankings?day=2026-10-16"
+    empty = client.get(base)
+    assert empty.status_code == 200
+    assert empty.json()["available_revisions"] == [] and empty.json()["rows"] == []
+    assert empty.json()["revision"] == 0 and empty.json()["total"] == empty.json()["matched"] == 0
+    assert client.get(base.replace("10-16", "10-17")).status_code == 400
+    for query in ("limit=0", "limit=501", "offset=-1", "revision=-1", "top_n=4"):
+        assert client.get(base + "&" + query).status_code == 422
+
+
 def test_events_filter_before_limit_and_preserve_order(client, monkeypatch):
     records = [{"id": str(i), "pattern": "platform", "event_type": "watch"} for i in range(5001)]
     records += [

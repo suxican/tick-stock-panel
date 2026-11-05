@@ -22,9 +22,11 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from app.config import settings
 from app.indicators.pipeline import filter_halt_days, run_pipeline
-from app.market_time import cn_today
+from app.market_time import CN_TZ, cn_now, cn_today
+from app.parquet import DAILY_STORAGE_SCHEMA, scan_daily_parquet, scan_enriched_parquet
 from app.services import index_sync, instrument_sync, kline_sync
 from app.services import preferences as _prefs
+from app.services.daily_confirmation import FINALIZED
 from app.tickflow.capabilities import Cap, CapabilitySet
 from app.tickflow.pools import get_pool
 from app.tickflow.repository import KlineRepository
@@ -76,13 +78,12 @@ def _prune_partial_enriched_partitions(daily_dir: Path, enriched_dir: Path) -> l
 def _prune_stale_price_partitions(
     daily_dir: Path, enriched_dir: Path, max_dates: int = 5
 ) -> list[str]:
-    """删除收盘价与官方日线不一致的 enriched 日期分区。
+    """检查最近交易日的成交量额、不复权价格和实时快照来源，按官方日线重建。
 
     实时 flush 写入的当日分区行数与 daily 相同, 但收盘价可能停留在收盘集合
     竞价前的快照 (实测: TickFlow 实时端点收盘后仍长期返回旧价, 3392/5554 只
     股票当日收盘价与官方日线不符), #223 的行数校验识别不到。对最近若干交易日
-    做值级比对: enriched.raw_close 与 daily.close 任一标的差超过半个最小报价
-    单位即删分区, 由后续增量重算按官方日线全市场重建。
+    比较 OHLC（半个最小报价单位容差）及成交量额；涉及已核准日线时还必须清除旧快照来源。
     """
     import shutil
 
@@ -97,18 +98,29 @@ def _prune_stale_price_partitions(
     pruned: list[str] = []
     for ds in common:
         try:
-            daily = pl.read_parquet(
-                daily_dir / f"date={ds}" / "*.parquet", columns=["symbol", "close"]
-            )
-            enr = pl.read_parquet(
-                enriched_dir / f"date={ds}" / "*.parquet", columns=["symbol", "raw_close"]
-            )
+            daily = scan_daily_parquet(
+                daily_dir / f"date={ds}" / "*.parquet", schema={**DAILY_STORAGE_SCHEMA, FINALIZED: pl.Boolean},
+            ).select(
+                "symbol", "open", "high", "low", "close", "volume", "amount", FINALIZED,
+            ).collect()
+            enr = scan_enriched_parquet(enriched_dir / f"date={ds}" / "*.parquet").select(
+                "symbol", "raw_close", "raw_high", "raw_low", "volume", "amount", "quote_ts",
+                (pl.col("open") * pl.col("raw_close") / pl.col("close")).alias("raw_open"),
+            ).collect()
         except Exception:
             continue  # 列缺失/不可读 → 交给既有完整性检查兜底
-        joined = enr.join(daily, on="symbol", how="inner").drop_nulls()
+        joined = enr.join(daily, on="symbol", how="inner")
         if joined.is_empty():
             continue
-        bad = joined.filter((pl.col("raw_close") - pl.col("close")).abs() > 0.005)
+        bad = joined.filter(pl.any_horizontal(
+            *[(pl.col(f"raw_{field}") - pl.col(field)).abs() > 0.005
+              for field in ("open", "high", "low", "close")],
+            pl.col("volume") != pl.col("volume_right"), pl.col("amount") != pl.col("amount_right"),
+            pl.col(FINALIZED) & (
+                pl.col("quote_ts").is_not_null() |
+                pl.any_horizontal(pl.col(c).is_null() for c in ("raw_open", "raw_high", "raw_low", "raw_close", "volume", "amount"))
+            ),
+        ))
         if not bad.is_empty():
             shutil.rmtree(enriched_dir / f"date={ds}", ignore_errors=True)
             pruned.append(ds)
@@ -267,6 +279,7 @@ def run_now(
     # A 股日K拉取开关(默认开);关闭时跳过日K同步,保留已有数据。
     # 数据修正(override_start_date)时即使关闭开关也强制拉取 — 修正就是来补数据的。
     pull_a_share = _prefs.get_pipeline_pull_a_share()
+    written_daily = 0
     if not pull_a_share and not override_start_date:
         emit("sync_daily", 45, "已跳过 A 股日K同步(拉取内容未勾选)")
         logger.info("sync_daily: skipped (pipeline_pull_a_share=False)")
@@ -286,8 +299,8 @@ def run_now(
         repair_failed_symbols: list[str] = []
         written_daily = kline_sync.sync_and_persist_daily_batch(
             symbols_for_repair, repo, capset,
-            start_date=_dt.combine(start_date, _dt.min.time()),
-            end_date=_dt.combine(today, _dt.min.time()),
+            start_date=_dt.combine(start_date, _dt.min.time(), CN_TZ),
+            end_date=_dt.combine(today, _dt.max.time(), CN_TZ),
             on_chunk_done=_daily_chunk_progress,
             failed_out=repair_failed_symbols,
         )
@@ -311,10 +324,11 @@ def run_now(
     elif (
         today_exists
         and stale_day is None
+        and cn_now().time() < kline_sync.CLOSE_CUTOFF
         and capset.has(Cap.QUOTE_POOL)
         and _prefs.get_daily_data_provider() == "tickflow"
     ):
-        # 付费档:今天有数据(QuoteService 已落盘)→ 实时行情覆写,确保最新。
+        # 付费档盘中可用当日实时行情刷新。15:30 起必须走日K来源逐只核准。
         # stale_day 非空时禁用本分支: "只刷今天"会让停机日的盘中快照永久留存,
         # 降级到下方 batch 路径从坏日起重拉。
         # free/none 档无 quote.pool 能力,即便今天已有数据(如从 expert 降级),
@@ -341,8 +355,8 @@ def run_now(
                  f"日K 批次 {cur}/{tot}", stage_pct=int(100 * cur / tot), skip_log=True)
         written_daily = kline_sync.sync_and_persist_daily_batch(
             universe, repo, capset,
-            start_date=_dt.combine(start_date, _dt.min.time()),
-            end_date=_dt.combine(today, _dt.min.time()),
+            start_date=_dt.combine(start_date, _dt.min.time(), CN_TZ),
+            end_date=_dt.combine(today, _dt.max.time(), CN_TZ),
             on_chunk_done=_daily_chunk_progress,
         )
         gap_days = (today - start_date).days
@@ -361,8 +375,8 @@ def run_now(
                  f"日K 批次 {cur}/{tot}", stage_pct=int(100 * cur / tot), skip_log=True)
         written_daily = kline_sync.sync_and_persist_daily_batch(
             universe, repo, capset,
-            start_date=_dt.combine(start_date, _dt.min.time()),
-            end_date=_dt.combine(today, _dt.min.time()),
+            start_date=_dt.combine(start_date, _dt.min.time(), CN_TZ),
+            end_date=_dt.combine(today, _dt.max.time(), CN_TZ),
             on_chunk_done=_daily_chunk_progress,
         )
         new_daily_days = 365
@@ -806,6 +820,10 @@ def run_now(
 
     result = {
         "universe_size": len(universe),
+        # An empty response still needs post-close verification. daily_days is
+        # a range length and cannot identify a successful refresh of today's data.
+        "stock_daily_sync_date": today.isoformat() if pull_a_share and not override_start_date else None,
+        "stock_daily_written_rows": written_daily,
         "daily_days": new_daily_days,
         "adj_factor_symbols": len(affected_symbols),
         "enriched_days": written_enriched,
@@ -1071,7 +1089,21 @@ def _run_tracked(fn, job_label: str) -> bool:
         job_store.fail(job_id, f"scheduled {job_label} failed")
     finally:
         release_run_slot(job_id)
+    if succeeded and job_label == "daily_pipeline":
+        offer_huichun_after_sync(job_store, job_id)
     return succeeded
+
+
+def offer_huichun_after_sync(store, job_id: str) -> None:
+    """Wake an installed Huichun extension after the pipeline slot has been released."""
+    try:
+        schedule = getattr(_get_app_state(), "huichun_archive_schedule", None)
+        if schedule is not None:
+            job = store.get(job_id)
+            if job and job["status"] == "succeeded":
+                schedule.offer(job)
+    except Exception:
+        logger.exception("回春归档调度失败，日线同步结果已保留")
 
 
 def _scheduled_pipeline_task(pipeline_fn) -> None:

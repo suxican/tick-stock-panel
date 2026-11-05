@@ -1466,6 +1466,45 @@ class KlineRepository:
             df = cache.clear() if df.is_empty() else df.select(existing)
         return df.sort(["symbol", "date"])
 
+    def get_first_board_technical_closes(
+        self, symbols: list[str], sessions: list[date], cached_signature: tuple | None = None,
+    ) -> tuple[pl.DataFrame | None, tuple]:
+        """Narrow completed-day input. A cache hit omits the frame, never its identity.
+
+        The general chart history cache projects out quote_ts. Read the dated
+        partitions themselves so an explicit intraday close cannot lose its stamp.
+        """
+        if (not 1 <= len(sessions) <= 120 or any(type(d) is not date for d in sessions)
+                or sessions != sorted(set(sessions))):
+            raise ValueError("技术影子需要最多120个有序且唯一的交易日")
+        self._assert_daily_usable(symbols=symbols, end=sessions[-1])
+        root = self.store.data_dir
+        paths = [root / "kline_daily_enriched" / f"date={d}" / "part.parquet" for d in sessions]
+
+        def identity() -> tuple:
+            if enriched_publication_incomplete(root, "stock"):
+                raise EnrichedGenerationUnavailableError("enriched publication is incomplete")
+            versions = []
+            for d, path in zip(sessions, paths, strict=True):
+                try:
+                    stat = path.stat()
+                    versions.append((d, stat.st_mtime_ns, stat.st_size))
+                except FileNotFoundError:
+                    versions.append((d, None, None))
+            return tuple(sorted(set(symbols))), tuple(versions)
+
+        signature = identity()
+        if signature == cached_signature:
+            return None, signature
+        existing = [p for p, (_, stamp, _) in zip(paths, signature[1], strict=True) if stamp is not None]
+        columns = ["symbol", "date", "close", "raw_close", "quote_ts"]
+        frame = guarded_collect(scan_enriched_parquet(existing).select(columns).filter(
+            pl.col("symbol").is_in(symbols) & pl.col("date").is_in(sessions)
+        ), priority="background") if existing and symbols else pl.DataFrame()
+        if identity() != signature:
+            raise EnrichedGenerationUnavailableError("技术影子读取期间日线已更新")
+        return frame, signature
+
     def get_first_board_history_signature(self, sessions: list[date]) -> tuple:
         """Identity of three completed stock partitions, independent of live writes.
 
@@ -2940,6 +2979,8 @@ class KlineRepository:
         publication: EnrichedPublication | None,
         *,
         retries: int = 3,
+        live_stock_day: date | None = None,
+        on_commit: Callable[[], None] | None = None,
     ) -> None:
         """单分区 merge-upsert: polars 读/合并/排序在 _write_lock 外, 锁内只做
         指纹校验 + 原子替换 + commit。
@@ -2956,19 +2997,47 @@ class KlineRepository:
                 subset=["symbol", "date"], keep="last"
             ).sort(["symbol", "date"])
 
+        def commit(merged: pl.DataFrame, base: pl.DataFrame) -> None:
+            if self._stock_day_has_confirmed_close(live_stock_day):
+                return
+            self._write_partition_locked(out, merged, base, publication)
+            if on_commit is not None:
+                on_commit()
+
         for _ in range(retries):
-            existing = pl.read_parquet(out) if out.exists() else pl.DataFrame()
             base_fp = self._partition_fingerprint(out)
+            existing = pl.read_parquet(out) if base_fp is not None else pl.DataFrame()
             merged = _merge(existing)
             with self._write_lock:
                 if self._partition_fingerprint(out) != base_fp:
                     continue  # 基底被并发写入者改过, 出锁重读重算
-                self._write_partition_locked(out, merged, existing, publication)
+                commit(merged, existing)
             return
         # 乐观重试耗尽 (罕见: 高频并发写同一分区): 退回锁内全量模式保证正确性
         with self._write_lock:
             existing = pl.read_parquet(out) if out.exists() else pl.DataFrame()
-            self._write_partition_locked(out, _merge(existing), existing, publication)
+            commit(_merge(existing), existing)
+
+    def _stock_day_has_confirmed_close(self, day: date | None) -> bool:
+        if day is None:
+            return False
+        from app.services.data_integrity import CLOSE_CUTOFF
+
+        if datetime.now(CN_TZ) < datetime.combine(day, CLOSE_CUTOFF, CN_TZ):
+            return False
+        # A delayed full-market snapshot would also drop confirmed rows absent
+        # from its payload. Once close reconciliation starts, batch owns the day.
+        import pyarrow.compute as pc
+        import pyarrow.parquet as pq
+
+        from app.services.daily_confirmation import FINALIZED
+
+        partition = self.store.data_dir / "kline_daily" / f"date={day}"
+        for path in partition.glob("*.parquet"):
+            with pq.ParquetFile(path) as part:
+                if FINALIZED in part.schema_arrow.names and pc.any(part.read(columns=[FINALIZED])[0]).as_py():
+                    return True
+        return False
 
     def _write_partition_locked(
         self,
@@ -3012,7 +3081,7 @@ class KlineRepository:
         ds = dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
         out = base / f"date={ds}" / "part.parquet"
         out.parent.mkdir(parents=True, exist_ok=True)
-        self._optimistic_upsert_partition(out, df, None)
+        self._optimistic_upsert_partition(out, df, None, live_stock_day=dt if asset_type == "stock" else None)
 
     def _with_instrument_metadata(self, asset_type: str, df: pl.DataFrame) -> pl.DataFrame:
         """补齐实时内存缓存所需的维表字段；这些字段不会写入 enriched 分区。"""
@@ -3069,17 +3138,10 @@ class KlineRepository:
             if asset_type in {"stock", "etf"}
             else None
         )
-        self._optimistic_upsert_partition(out, df_storage, publication)
-
-        if asset_type == "stock":
-            self._enriched_cache = merged_cache
-            self._enriched_cache_date = dt
-        elif asset_type == "etf":
-            self._etf_enriched_cache = merged_cache
-            self._etf_enriched_cache_date = dt
-        elif asset_type == "index":
-            self._index_enriched_cache = merged_cache
-            self._index_enriched_cache_date = dt
+        self._optimistic_upsert_partition(
+            out, df_storage, publication, live_stock_day=dt if asset_type == "stock" else None,
+            on_commit=lambda: self._set_live_enriched_cache(asset_type, merged_cache, dt),
+        )
 
     def flush_live_daily(self, df: pl.DataFrame) -> None:
         """覆写当天 kline_daily 分区 (实时行情落盘, 非merge)。"""
@@ -3106,6 +3168,8 @@ class KlineRepository:
         # 覆写语义: 排序在锁外, 锁内只做原子替换。
         df_sorted = df.sort(["symbol", "date"])
         with self._write_lock:
+            if asset_type == "stock" and self._stock_day_has_confirmed_close(dt):
+                return
             self._atomic_write_parquet(df_sorted, out)
 
     def flush_live_enriched(self, df: pl.DataFrame) -> None:
@@ -3146,8 +3210,12 @@ class KlineRepository:
         # 冗余覆写, 不影响正确性); 锁内只做替换 + commit。
         existing = pl.read_parquet(out) if out.exists() else pl.DataFrame()
         with self._write_lock:
+            if asset_type == "stock" and self._stock_day_has_confirmed_close(dt):
+                return
             self._write_partition_locked(out, df_storage, existing, publication)
+            self._set_live_enriched_cache(asset_type, cache_df, dt)
 
+    def _set_live_enriched_cache(self, asset_type: str, cache_df: pl.DataFrame, dt: date) -> None:
         if asset_type == "stock":
             self._enriched_cache = cache_df
             self._enriched_cache_date = dt

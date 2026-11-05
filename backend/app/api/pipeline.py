@@ -44,10 +44,11 @@ async def trigger_pipeline_job(repo, capset, quote_service=None) -> dict:
     return await _submit_job(
         repo, quote_service,
         lambda progress: (lambda: daily_pipeline.run_now(repo, capset, on_progress=progress)),
+        post_close_archive=True,
     )
 
 
-async def _submit_job(repo, quote_service, make_run) -> dict:
+async def _submit_job(repo, quote_service, make_run, *, post_close_archive: bool = False) -> dict:
     """任务化执行公共机制: 单飞 create → 重任务槽 → 行情暂停 → 缓存失效。
 
     make_run(progress) 返回实际执行闭包(阻塞 IO + CPU, 在 executor 里跑)。
@@ -77,6 +78,7 @@ async def _submit_job(repo, quote_service, make_run) -> dict:
             return
         # 任务运行期间暂停实时行情取数, 防止覆写同一批 parquet 竞态
         qs = quote_service
+        succeeded = False
         try:
             loop = asyncio.get_event_loop()
 
@@ -92,6 +94,7 @@ async def _submit_job(repo, quote_service, make_run) -> dict:
             result = await loop.run_in_executor(_long_task_executor, run_with_capacity, job_id, _run)
             job_store.succeed(job_id, result)
             invalidate_storage_cache()
+            succeeded = True
         except JobCancelledError:
             # 已被 reap/手动取消终止: job 状态已由 terminate() 写为 failed,
             # 拉取线程在分块回调处自行退出, 这里无需(也无法)再写状态。
@@ -102,6 +105,8 @@ async def _submit_job(repo, quote_service, make_run) -> dict:
             invalidate_storage_cache()
         finally:
             release_run_slot(job_id)
+        if succeeded and post_close_archive:
+            await asyncio.to_thread(daily_pipeline.offer_huichun_after_sync, job_store, job_id)
 
     asyncio.create_task(task())
     return {"job_id": job_id, "reused": False}

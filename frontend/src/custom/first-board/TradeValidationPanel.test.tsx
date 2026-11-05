@@ -70,6 +70,7 @@ it('submits exact model costs and shows complete denominators with a traceable c
   expect(host.textContent).toContain('未知股票日 3')
   expect(host.textContent).toContain('signal-replay')
   expect(host.textContent).toContain('成交价已包含滑点')
+  expect(host.textContent).toContain('此报告未记录均线与 MACD 排序对照')
   expect(host.querySelector('table[aria-label="交易验证明细"]')?.parentElement?.className).toContain('overflow-x-auto')
   await click('模型样本'); expect(openStock).toHaveBeenCalledWith('600000.SH', '模型样本')
 })
@@ -102,6 +103,59 @@ it('renders only frozen ranking samples and keeps unavailable outcomes unknown',
   expect(table.textContent).toContain('再加入个股人气')
   expect(table.querySelectorAll('tbody td')[2].textContent).toBe('—')
   expect(host.textContent).toContain('人气可核验 0 个')
+})
+
+it('compares technical variants on their own frozen event coverage and preserves missing T+1 outcomes', async () => {
+  const result = replay()
+  result.summary.signals = 0
+  const outcome = { ...result.summary, signals: 3, outcomes: 2, touched: 1, sealed: 1, broken: 0, filled: 1,
+    worst_net_return: .012, opportunity_days: 1, changed_days: 0, replacements: 0, t1_closed: 0, t1_net_return_mean: null }
+  result.technical_comparison = {
+    version: 'ma-macd-shadow-v1', baseline: 'priority-v1', eligible: 12, scored: 8, unscored: 4,
+    priority_known: 10, ma_known: 9, macd_known: 8, score_tolerance: 2, holdout_start: '2026-10-19',
+    groups: [
+      { ...outcome, variant: 'baseline', top_n: 3, window: 'all' },
+      { ...outcome, variant: 'ma', top_n: 3, window: 'all', changed_days: 1, replacements: 1 },
+      { ...outcome, variant: 'macd', top_n: 5, window: 'all' },
+      { ...outcome, variant: 'combined', top_n: 5, window: 'holdout', t1_closed: 1, t1_net_return_mean: -.0132,
+        by_pattern: { platform: { ...outcome, signals: 1, outcomes: 1 } } },
+    ],
+  }
+  calls.firstBoardTradeValidation.mockResolvedValue(result)
+  await render(); await click('运行交易验证')
+  expect(host.textContent).toContain('完整可比 8 / 12 个股票日')
+  expect(host.textContent).toContain('原优先分可核验 10 个')
+  expect(host.textContent).toContain('五分钟采样成交回放没有可验证的已记录信号')
+  const table = () => host.querySelector('table[aria-label="均线与 MACD 影子排序结果"]')!
+  expect(table().parentElement?.className).toContain('overflow-x-auto')
+  expect(table().querySelectorAll('tbody tr')).toHaveLength(2)
+  const cells = table().querySelectorAll('tbody tr:nth-child(2) td')
+  expect([...cells].map(cell => cell.textContent)).toEqual(['3', '1', '1', '1', '2', '50.00%', '50.00%', '0.00%', '1 / 1', '1.20%', '1.20%', '0', '—'])
+  await change('技术影子排序每日名额', '5')
+  expect(table().textContent).toContain('加入 MACD')
+  await change('技术影子排序样本区间', 'holdout')
+  expect(table().textContent).toContain('均线与 MACD')
+  expect(table().textContent).toContain('-1.32%')
+  await change('技术影子排序入选形态', 'platform')
+  expect(table().querySelector('tbody td')?.textContent).toBe('1')
+  expect(table().querySelector('tbody td:last-child')?.textContent).toBe('—')
+  expect(host.textContent).toContain('先按全体候选取每日前 5 只，再统计入选的平台突破股票日')
+  await change('技术影子排序入选形态', 'oversold')
+  expect(table().textContent).toContain('该组未记录所选形态')
+  await change('技术影子排序每日名额', '3')
+  expect(host.textContent).toContain('该区间与名额暂无可比样本')
+})
+
+it('shows how many technical samples were excluded while there is no common cohort', async () => {
+  const result = replay()
+  result.technical_comparison = { version: 'ma-macd-shadow-v1', baseline: 'priority-v1', eligible: 4,
+    scored: 0, unscored: 4, priority_known: 2, ma_known: 1, macd_known: 0, score_tolerance: 2,
+    holdout_start: null, groups: [] }
+  calls.firstBoardTradeValidation.mockResolvedValue(result)
+  await render(); await click('运行交易验证')
+  expect(host.textContent).toContain('完整可比 0 / 4 个股票日，证据不足 4 个')
+  expect(host.textContent).toContain('尚无同时记录原优先分、均线与 MACD 的可比样本')
+  expect(host.querySelector('[aria-label="技术影子排序每日名额"]')).toBeNull()
 })
 
 it('translates known execution reasons while retaining evidence suffixes and unknown codes', async () => {

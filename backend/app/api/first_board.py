@@ -2,7 +2,7 @@
 from datetime import date
 from typing import Literal, Self
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.backtest.first_board_execution import ExecutionOptions
@@ -119,6 +119,21 @@ def events(
                if (pattern is None or record.get("pattern") == pattern)
                and (event_type is None or record.get("event_type") == event_type)]
     return {"events": records[:5000], "day": str(day), "total": len(records)}
+
+
+@router.get("/first-alert-rankings")
+def first_alert_rankings(
+    request: Request, day: date,
+    revision: int | None = Query(None, ge=0),
+    top_n: Literal["3", "5"] | None = None,
+    offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500),
+):
+    try:
+        return _service(request).first_alert_rankings(
+            day, revision=revision, top_n=int(top_n) if top_n else None, offset=offset, limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.post("/research")

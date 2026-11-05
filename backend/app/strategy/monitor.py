@@ -325,6 +325,7 @@ class MonitorRuleEngine:
 
     def __init__(self, alert_handler: Callable[[dict], None] | None = None):
         self._alert_handler = alert_handler
+        self._holding_alert_guard: Callable[[dict, float], bool] | None = None
         self._rules: dict[str, dict] = {}  # rule_id → rule
         # (rule_id, symbol, event_type) → 上次触发时间戳(秒)。用于 cooldown 去重。
         self._last_fire: dict[tuple[str, str, str], float] = {}
@@ -1229,8 +1230,19 @@ class MonitorRuleEngine:
             f"接近度{closeness * 100:.0f}%, {state}"
         )
 
+    def set_holding_alert_guard(self, guard: Callable[[dict, float], bool]) -> None:
+        """Inject the research worker's nonblocking, in-memory admission check."""
+        self._holding_alert_guard = guard
+
     def _evaluate_rule(self, df: pl.DataFrame, rule: dict, now: float) -> list[dict]:
         """评估单条规则,返回触发的 events。"""
+        if rule.get("holding_plan_id"):
+            if self._holding_alert_guard is None or not self._holding_alert_guard(rule, now):
+                return []
+            if "raw_close" not in df.columns:
+                return []
+            # Research thresholds and displayed event prices share the unadjusted price domain.
+            df = df.with_columns(pl.col("raw_close").alias("close"))
         # 1. 按 scope 过滤作用域
         scoped = self._apply_scope(df, rule)
         if scoped.is_empty():

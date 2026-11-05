@@ -334,6 +334,8 @@ def evaluate_candidates(
             "platform_range", "trend_return", "oversold_drawdown", "first_board_count", "history_bars")}
         evidence["reference_date"] = str(candidate.get("reference_date") or "")
         evidence["experimental"] = True
+        if not historical and isinstance(candidate.get("technical_shadow"), dict):
+            evidence["technical_shadow"] = candidate["technical_shadow"]
         row.update(state="invalid", price=None, change_pct=None, distance_to_limit_pct=None,
                    turnover_rate=None, reasons=[], evidence=evidence)
         if not universe.fullmatch(symbol):

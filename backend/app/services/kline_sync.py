@@ -13,6 +13,7 @@ import shutil
 import threading
 import time
 import uuid
+from collections import Counter
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -24,6 +25,13 @@ from app.data_providers.base import AssetType, ProviderRequestError
 from app.indicators.pipeline import filter_halt_days
 from app.market_time import CN_TZ, cn_now, cn_today
 from app.services import minute_adjust, preferences
+from app.services.daily_confirmation import (
+    BAR_VALUES,
+    FINALIZED,
+    PENDING_REFRESH,
+    valid_official_bar,
+)
+from app.services.data_integrity import CLOSE_CUTOFF
 from app.tickflow.capabilities import Cap, CapabilitySet
 from app.tickflow.client import get_client
 from app.tickflow.rate_limits import chunked, resolve_limit, sleep_between_batches
@@ -107,6 +115,28 @@ def _atomic_write_parquet(df: pl.DataFrame, out) -> None:
 CANONICAL_DAILY_COLS = [
     "symbol", "date", "open", "high", "low", "close", "volume", "amount",
 ]
+
+
+def _stamp_daily_batch(frame, symbols, first: date, last: date, started: datetime, *, staged=False) -> pl.DataFrame:
+    """Bind proof to the returned row, never to a quote timestamp or a whole partition."""
+    if frame.is_empty():
+        return frame
+    if not {"symbol", "date"}.issubset(frame.columns):
+        logger.warning("日K分块缺少股票代码或交易日，跳过 %d 行未核准数据", frame.height)
+        return frame.clear()
+    frame = frame.with_columns(
+        pl.col("date").cast(pl.Date, strict=False),
+        *[pl.col(c).cast(pl.Float64, strict=False) for c in BAR_VALUES if c in frame.columns],
+    ).filter(
+        pl.col("date").is_between(first, min(last, started.date())) & pl.col("symbol").is_in(symbols)
+    )
+    completed = (pl.col("date") < started.date()) | pl.lit(started.time() >= CLOSE_CUTOFF)
+    marked = frame.with_columns(pl.when(valid_official_bar(frame)).then(completed).alias(FINALIZED))
+    # Private staging retains rejected keys so a malformed duplicate in another
+    # chunk cannot turn an ambiguous reply into a verified stock/date.
+    return marked if staged else marked.filter(
+        pl.col(FINALIZED).is_not_null() & ~pl.struct("symbol", "date").is_duplicated()
+    )
 
 
 def _normalize_daily(df_in, default_symbol: str | None = None) -> pl.DataFrame:
@@ -308,6 +338,7 @@ def iter_custom_daily_frames(provider, symbols, *, asset_type="stock", **kwargs)
 def iter_daily_frames(
     symbols: list[str], capset: CapabilitySet, *,
     start_time: datetime, end_time: datetime, asset_type: str = "stock", on_chunk_done=None,
+    failed_out: list[str] | None = None,
 ):
     """只取标准日K帧, 不写正式数据、不计算指标; 调用方决定校验和发布边界。"""
     if asset_type not in {"stock", "etf", "index"}:
@@ -340,8 +371,10 @@ def iter_daily_frames(
         symbols, start_time=start_time, end_time=end_time,
         batch_size=limit.batch, rpm=limit.rpm, on_chunk_done=on_chunk_done, failed_out=failures,
     )
-    if failures:
+    if failures and failed_out is None:
         raise RuntimeError(f"日K获取失败: {', '.join(failures[:10])}")
+    if failed_out is not None:
+        failed_out.extend(failures)
     if not frame.is_empty():
         yield frame
 
@@ -372,6 +405,8 @@ def sync_and_persist_daily_batch(
     skipped_bare: list[str] = []
 
     def _finalize(written: int) -> int:
+        if written:
+            repo.refresh_view("kline_daily", f"{repo.store.data_dir.as_posix()}/kline_daily/**/*.parquet")
         if failed_out is not None and failed_syms:
             # 单票失败上浮给调用方 (daily_pipeline 汇入 stage_errors, #514)
             failed_out.extend(failed_syms)
@@ -396,45 +431,35 @@ def sync_and_persist_daily_batch(
     if not symbols:
         return _finalize(0)
 
+    started = cn_now()
+    end_time = _as_beijing(end_date or started).astimezone(CN_TZ)
+    start_time = _as_beijing(start_date or (end_time - timedelta(days=count or 365))).astimezone(CN_TZ)
+
+    def stamp(frame, *, staged=False):
+        return _stamp_daily_batch(frame, symbols, start_time.date(), end_time.date(), started, staged=staged)
+
     provider_name = preferences.get_daily_data_provider()
     if provider_name != "tickflow":
         from app.data_providers import custom as custom_sources
         if custom_sources.provider_has_dataset(provider_name, "daily"):
             provider = custom_sources.get_provider(provider_name)
-            end_time = end_date or datetime.now()
-            days = count or 365
-            start_time = start_date or (end_time - timedelta(days=days))
             iter_daily = getattr(provider, "iter_daily", None)
             if callable(iter_daily):
 
-                def _tracking_chunks(chunks):
-                    for df in chunks:
-                        if not df.is_empty() and "symbol" in df.columns:
-                            seen.update(df["symbol"].cast(pl.Utf8).unique().to_list())
-                        yield df
-
-                return _finalize(_persist_daily_chunks(
-                    _tracking_chunks(iter_daily(
-                        symbols,
-                        start_time=start_time,
-                        end_time=end_time,
-                        on_chunk_done=on_chunk_done,
-                    )),
-                    repo,
-                ))
+                chunks = iter_daily(symbols, start_time=start_time, end_time=end_time, on_chunk_done=on_chunk_done)
+                return _finalize(_persist_daily_chunks((stamp(df, staged=True) for df in chunks), repo, seen))
             df = provider.get_daily(
                 symbols,
                 start_time=start_time,
                 end_time=end_time,
                 on_chunk_done=on_chunk_done,
             )
+            df = stamp(df)
             if df.is_empty():
                 return _finalize(0)
             if "symbol" in df.columns:
                 seen.update(df["symbol"].cast(pl.Utf8).unique().to_list())
             repo.append_daily(df)
-            d = repo.store.data_dir.as_posix()
-            repo.refresh_view("kline_daily", f"{d}/kline_daily/**/*.parquet")
             return _finalize(df.height)
         # 自定义源未配置 daily → 回退 TickFlow
 
@@ -444,15 +469,13 @@ def sync_and_persist_daily_batch(
 
     limit = resolve_limit(capset, Cap.KLINE_DAILY_BATCH, default_batch=100)
 
-    end_time = end_date or datetime.now()
-    start_time = start_date or (end_time - timedelta(days=365))
-
     df = sync_daily_batch(
         symbols, count=count, batch_size=limit.batch, rpm=limit.rpm,
         start_time=start_time, end_time=end_time,
         on_chunk_done=on_chunk_done,
         failed_out=failed_syms,
     )
+    df = stamp(df)
 
     if not df.is_empty() and "symbol" in df.columns:
         seen.update(df["symbol"].cast(pl.Utf8).unique().to_list())
@@ -461,56 +484,76 @@ def sync_and_persist_daily_batch(
         return _finalize(0)
 
     repo.append_daily(df)
-
-    d = repo.store.data_dir.as_posix()
-    repo.refresh_view("kline_daily", f"{d}/kline_daily/**/*.parquet")
-
     return _finalize(df.height)
 
 
-def _persist_daily_chunks(chunks, repo: KlineRepository) -> int:
+def _persist_daily_chunks(chunks, repo: KlineRepository, seen: set[str]) -> int:
     """先把流式 provider 结果写入私有 staging,完整取数后再提交正式分区。"""
     staging_base = repo.store.data_dir / ".daily_sync_staging"
     _sweep_stale_daily_staging(staging_base)
     root = staging_base / uuid.uuid4().hex
-    written = 0
+    counts = Counter()
+    review = set()
+    staged_days = set()
     try:
         for index, df in enumerate(chunks):
             if df.is_empty():
                 continue
+            symbols = dict(df.group_by("symbol").len().rows())
+            overlap = not counts.keys().isdisjoint(symbols)
+            counts.update(symbols)
+            check_chunk = df[FINALIZED].null_count() or df.select(pl.struct("symbol", "date").is_duplicated().any()).item()
             for date_df in df.partition_by("date"):
                 dt = date_df["date"][0]
                 ds = dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
+                if check_chunk or (overlap and ds in staged_days):
+                    review.add(ds)
+                staged_days.add(ds)
                 out = root / f"date={ds}" / f"part-{index}.parquet"
                 out.parent.mkdir(parents=True, exist_ok=True)
                 date_df.write_parquet(out)
-                written += date_df.height
 
         for date_dir in sorted(root.glob("date=*")):
             files = sorted(date_dir.glob("*.parquet"))
             if not files:
                 continue
+            incoming = None
+            if date_dir.name[5:] in review:
+                staged = pl.concat([pl.read_parquet(p) for p in files], how="diagonal_relaxed")
+                reject = pl.col(FINALIZED).is_null() | pl.col("symbol").is_duplicated()
+                counts.subtract(dict(staged.filter(reject).group_by("symbol").len().rows()))
+                incoming = staged.filter(~reject)
+                if incoming.is_empty():
+                    continue
             target_dir = repo.store.data_dir / "kline_daily" / date_dir.name
             target_dir.mkdir(parents=True, exist_ok=True)
-            existing = sorted(target_dir.glob("*.parquet"))
-            if not existing:
-                for index, staged in enumerate(files):
-                    replace_with_retry(staged, target_dir / f"part-stream-{index}.parquet")
-                continue
-            base = pl.scan_parquet(existing).collect(engine="streaming")
-            incoming = pl.scan_parquet(files).collect(engine="streaming")
-            merged = pl.concat([base, incoming], how="diagonal_relaxed").unique(
-                subset=["symbol", "date"], keep="last"
-            )
-            repo.append_daily(merged)
-            for part in target_dir.glob("part-stream-*.parquet"):
+            with repo._write_lock:
+                existing = sorted(target_dir.glob("*.parquet"))
+                if not existing and incoming is None:
+                    for index, staged in enumerate(files):
+                        replace_with_retry(staged, target_dir / f"part-stream-{index}.parquet")
+                    continue
+            if incoming is None:
+                incoming = pl.concat([pl.read_parquet(p) for p in files], how="diagonal_relaxed")
+            streams = [p for p in existing if p.name != "part.parquet"]
+            if streams:
+                # Existing canonical data is merged optimistically by the repository.
+                # Fold older stream fragments in only for keys absent there.
+                extra = pl.concat([pl.read_parquet(p) for p in streams], how="diagonal_relaxed")
+                canonical = target_dir / "part.parquet"
+                if canonical.exists():
+                    extra = extra.join(pl.read_parquet(canonical, columns=["symbol"]), on="symbol", how="anti")
+                incoming = pl.concat([extra, incoming], how="diagonal_relaxed").unique("symbol", keep="last")
+            repo.append_daily(incoming)
+            for part in streams:
                 part.unlink(missing_ok=True)
     finally:
         shutil.rmtree(root, ignore_errors=True)
         with contextlib.suppress(OSError):
             root.parent.rmdir()
 
-    return written
+    seen.update(symbol for symbol, count in counts.items() if count > 0)
+    return sum(counts.values())
 
 
 def _sweep_stale_daily_staging(staging_base, max_age_s: int = 24 * 60 * 60) -> None:
@@ -526,14 +569,80 @@ def _sweep_stale_daily_staging(staging_base, max_age_s: int = 24 * 60 * 60) -> N
             logger.warning("failed to clean stale daily staging: %s", run_dir)
 
 
+def confirm_daily_session(
+    repo: KlineRepository, capset: CapabilitySet, day: date, symbols: list[str], *, on_chunk_done=None,
+) -> int:
+    """Re-fetch only the requested session's unresolved stocks, using the active daily route."""
+    from app.data_providers import custom
+    from app.indicators.pipeline import recompute_daily_symbols
+    from app.services import daily_health
+    from app.services.data_integrity import IntegrityIssue
+    from app.services.huichun_calendar import BUNDLED_CALENDAR_PATH, load_market_calendar
+    from app.services.repair_daily import _refresh_repair_dependents
+
+    if not symbols:
+        return 0
+    started = cn_now()
+    root = repo.store.data_dir
+    calendar = root / "user_data/huichun/market_calendar.json"
+    if not calendar.exists():
+        calendar = BUNDLED_CALENDAR_PATH
+    if (started < datetime.combine(day, CLOSE_CUTOFF, CN_TZ)
+            or load_market_calendar(calendar, start=day, end=day) != [day]):
+        raise ValueError("目标日期尚未收盘或不在已核验的交易日历内")
+    provider = preferences.get_daily_data_provider()
+    if provider != "tickflow" and not custom.provider_has_dataset(provider, "daily"):
+        raise ValueError("当前日线数据源不可用，请检查配置")
+    # A single session bounds memory even for a full-market retry. Do the
+    # duplicate check across chunks before granting any stock its proof.
+    targets = sorted(set(symbols))
+    failures: list[str] = []
+    frames = [
+        _stamp_daily_batch(frame, targets, day, day, started, staged=True)
+        for frame in iter_daily_frames(
+            targets, capset, start_time=datetime.combine(day, datetime.min.time(), CN_TZ),
+            end_time=datetime.combine(day, datetime.max.time(), CN_TZ),
+            on_chunk_done=on_chunk_done, failed_out=failures,
+        )
+    ]
+    if not any(not frame.is_empty() for frame in frames):
+        return 0
+    verified = pl.concat(frames, how="diagonal_relaxed").filter(
+        pl.col(FINALIZED) & ~pl.col("symbol").is_duplicated() & ~pl.col("symbol").is_in(failures)
+    )
+    if verified.is_empty():
+        return 0
+    verified = verified.select(*CANONICAL_DAILY_COLS, FINALIZED)
+    received = sorted(verified["symbol"].to_list())
+    if on_chunk_done:
+        on_chunk_done(len(received), len(targets))
+    # A process interruption between the raw and derived writes leaves a durable,
+    # symbol-scoped repair obligation. Other incomplete stocks stay untouched.
+    daily_health.record_issues(root, [
+        IntegrityIssue(day, "kline_daily", "snapshot", symbols=tuple(received),
+                       reason=PENDING_REFRESH)
+    ])
+    repo.replace_daily_rows(
+        "stock", day, verified, symbols=received,
+        backup_dir=root / "integrity_backups" / uuid.uuid4().hex / "kline_daily" / f"date={day}",
+    )
+    repo.refresh_view("kline_daily", str(root / "kline_daily/**/*.parquet"))
+    recompute_daily_symbols(repo, "stock", start=day, symbols=received, on_batch_done=on_chunk_done)
+    daily_health.mark_enriched_ready(root, "stock", start=day, symbols=received, days={day})
+    _refresh_repair_dependents(repo, [{"asset_type": "stock", "day": str(day)}], {"stock"}, lambda *_: None)
+    daily_health.complete(root, "stock", start=day, symbols=received, days={day})
+    from app.api.data import invalidate_data_cache
+    invalidate_data_cache("daily")
+    invalidate_data_cache("enriched")
+    return len(received)
+
+
 def sync_daily_by_quotes(repo: KlineRepository) -> int:
     """用实时行情接口拉全市场当日数据,覆写 kline_daily 今天分区。
 
     一个请求覆盖 ~5500 只股票,比 batch K-line 快几个数量级。
     返回写入的行数。
     """
-    from datetime import date as _date
-
     from app.tickflow.client import get_client
 
     tf = get_client()
@@ -548,8 +657,12 @@ def sync_daily_by_quotes(repo: KlineRepository) -> int:
         return 0
 
     records = []
+    today = cn_today()
+    start_ms = int(datetime.combine(today, datetime.min.time(), tzinfo=CN_TZ).timestamp() * 1000)
     for q in resp:
-        ext = q.get("ext") or {}
+        stamp = q.get("timestamp")
+        if not isinstance(stamp, (int, float)) or not start_ms <= stamp < start_ms + 86_400_000:
+            continue
         records.append({
             "symbol": q.get("symbol"),
             "open": q.get("open"),
@@ -570,7 +683,6 @@ def sync_daily_by_quotes(repo: KlineRepository) -> int:
 
     # 分区日期用北京交易日 (与 quote_service._build_daily 的 cn_today 一致),
     # 避免 UTC 服务器在盘中把日分区写成服务器本地日期。
-    today = cn_today()
     daily_df = df.with_columns(pl.lit(today).cast(pl.Date).alias("date"))
 
     # 过滤停牌 (open/high 为 0; close 可能被填充为前收盘价, 不能用全零判断)

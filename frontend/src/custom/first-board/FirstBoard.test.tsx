@@ -13,7 +13,7 @@ import { beijingDay } from './shared'
 
 const calls = vi.hoisted(() => ({
   firstBoardConfig: vi.fn(), firstBoardSaveConfig: vi.fn(), firstBoardSnapshot: vi.fn(), firstBoardRefresh: vi.fn(),
-  firstBoardEvents: vi.fn(), firstBoardVersions: vi.fn(), firstBoardResearch: vi.fn(), firstBoardCompare: vi.fn(),
+  firstBoardEvents: vi.fn(), firstBoardFirstAlertRankings: vi.fn(), firstBoardVersions: vi.fn(), firstBoardResearch: vi.fn(), firstBoardCompare: vi.fn(),
   firstBoardResearchRuns: vi.fn(), firstBoardPaperOrder: vi.fn(), paperAccounts: vi.fn(),
   firstBoardTradeValidation: vi.fn(), firstBoardTradeValidationRuns: vi.fn(),
 }))
@@ -80,6 +80,7 @@ beforeEach(() => {
   calls.firstBoardRefresh.mockResolvedValue(snapshot())
   calls.firstBoardVersions.mockResolvedValue({ versions: [config()] })
   calls.firstBoardEvents.mockResolvedValue({ events: [], total: 0, day: beijingDay() })
+  calls.firstBoardFirstAlertRankings.mockResolvedValue(null)
   calls.firstBoardResearchRuns.mockResolvedValue({ runs: [] })
   calls.firstBoardTradeValidationRuns.mockResolvedValue({ runs: [] })
   calls.firstBoardResearch.mockResolvedValue(study())
@@ -111,6 +112,83 @@ function candidate(name: string, values: Partial<FirstBoardCandidate> = {}): Fir
 function candidateNames() {
   return [...host.querySelectorAll('table[aria-label="首板实时候选"] tbody tr')].map(row => row.querySelector('td button')!.firstChild!.textContent)
 }
+
+it('keeps data coverage on deduplicated symbols when pattern filters change and labels retained evidence', async () => {
+  const ready = { status: 'ready', known: 1, total: 1, detail: '已核验一只股票' } as const
+  const data: FirstBoardSnapshot = { ...snapshot(), rows: [candidate('A'), candidate('A', { pattern: 'trend' })],
+    data_status: { version: 1, trade_date: beijingDay(), observed_at: '2026-09-30T10:00:00+08:00', checked_at: '2026-09-30T10:00:05+08:00',
+      phase: 'live', monitor_enabled: true, realtime_status: 'available', realtime_reason: null, in_session: true, same_day: true,
+      quote_max_age_seconds: 30, symbol_count: 1, sampling: { status: 'recorded', sample_count: 3, last_sample_at: '2026-09-30T09:55:00+08:00' },
+      metrics: { quotes: ready, industry: ready, concept: ready, minute: { status: 'missing', known: 0, total: 1, detail: '缺少当日原价分钟' },
+        popularity: ready, theme: ready, ma: ready, macd: ready, priority: ready } } }
+  calls.firstBoardSnapshot.mockResolvedValue(data)
+  await render()
+  const panel = host.querySelector('[aria-label="盘中数据状态摘要"]')!
+  expect(panel.textContent).toContain('1 只候选股')
+  expect(panel.textContent).toContain('原价分钟')
+  expect(panel.textContent).toContain('0 / 1')
+  const pattern = [...host.querySelectorAll('label')].find(el => el.firstChild?.textContent === '形态')!.querySelector('select')!
+  await act(async () => { pattern.value = 'oversold'; pattern.dispatchEvent(new Event('change', { bubbles: true })) }); await settle()
+  expect(candidateNames()).toHaveLength(0)
+  expect(panel.textContent).toContain('1 只候选股')
+  expect(panel.textContent).toContain('缺少当日原价分钟')
+  expect(panel.querySelector('a[href="/settings?tab=monitoring&highlight=minute-refresh"]')).not.toBeNull()
+  calls.firstBoardRefresh.mockRejectedValue(new Error('刷新失败'))
+  await click('刷新')
+  expect(panel.textContent).toContain('刷新失败，显示上次摘要')
+  calls.firstBoardRefresh.mockResolvedValue(snapshot())
+  calls.firstBoardSnapshot.mockResolvedValue({ ...data, status: 'closed', data_status: {
+    ...data.data_status, trade_date: '2026-09-28', same_day: false, phase: 'closed' } })
+  await click('刷新')
+  expect(panel.querySelector('header')?.textContent).toContain('2026-09-28 历史快照')
+})
+
+const technical: NonNullable<FirstBoardCandidate['evidence']['technical_shadow']> = {
+  version: 'ma-macd-shadow-v1', status: 'ready', pattern: 'platform', reference_date: '2026-09-29',
+  close: 10.12, prev_close: 10, ma5: 10.1, prev_ma5: 10, ma10: 10, ma20: 9.9, prev_ma20: 9.8,
+  ma_support: true, macd_support: true, macd_dif: .02, macd_dea: .01, macd_hist: .02, prev_macd_hist: .018,
+  ma_reason: '收盘在20日均线之上', macd_reason: 'DIF 高于 DEA',
+}
+
+async function expandTechnical(node: Element) {
+  const details = [...node.querySelectorAll('details')].find(el => el.querySelector('summary')?.textContent?.includes('上个交易日日线'))!
+  await act(async () => { details.open = true; details.dispatchEvent(new Event('toggle')) })
+}
+
+it('adds previous-session evidence without promoting supported or incomplete candidates', async () => {
+  const data = { ...snapshot(), as_of: '2026-09-30', rows: [
+    candidate('A', { change_pct: .05, evidence: { technical_shadow: technical }, can_buy: false }),
+    candidate('B', { change_pct: .07, evidence: { technical_shadow: { ...technical, status: 'partial',
+      ma_support: false, macd_support: null, macd_dif: null, macd_dea: null, macd_hist: null, prev_macd_hist: null,
+      ma_reason: '均线方向不符', macd_reason: '连续日线不足' } } }),
+    candidate('C', { change_pct: .06 }),
+  ] }
+  calls.firstBoardSnapshot.mockResolvedValue(data)
+  await render()
+  expect(candidateNames()).toEqual(['B', 'C', 'A'])
+  const rows = host.querySelectorAll('table[aria-label="首板实时候选"] tbody tr')
+  expect(rows[0].textContent).toContain('均线不符／MACD未知')
+  await expandTechnical(rows[0])
+  expect(rows[0].textContent).toContain('DIF —')
+  expect(rows[0].textContent).toContain('连续日线不足')
+  expect(rows[1].textContent).toContain('未记录前一交易日技术证据')
+  expect(rows[2].textContent).toContain('上个交易日日线 · 均线符合／MACD符合')
+  await expandTechnical(rows[2])
+  expect(rows[2].textContent).toContain('参考日 2026-09-29')
+  expect(rows[2].textContent).toContain('柱值 0.0200')
+  expect([...rows[2].querySelectorAll('button')].find(el => el.textContent === '模拟买入')?.disabled).toBe(true)
+  calls.firstBoardSnapshot.mockResolvedValue({ ...data, status: 'stale' })
+  await click('刷新')
+  expect(host.textContent).toContain('上个交易日日线（历史）')
+  calls.firstBoardSnapshot.mockResolvedValue({ ...data, rows: [
+    candidate('A', { evidence: { technical_shadow: { ...technical, reference_date: data.as_of } } }),
+    candidate('B', { evidence: { technical_shadow: { ...technical, version: 'other' } } }),
+  ] })
+  await click('刷新')
+  expect(host.textContent).toContain('上个交易日日线 · 证据不足')
+  expect(host.textContent).toContain('技术证据版本待核验')
+  expect(host.textContent).not.toContain('均线符合／MACD符合')
+})
 
 it('ranks actionable scores first and shows only historical evidence after close', async () => {
   const base: NonNullable<FirstBoardCandidate['priority_score']> = {
@@ -790,11 +868,12 @@ it('collapses monitor details without losing feedback controls or stopping snaps
   calls.firstBoardSnapshot.mockResolvedValue(refreshed)
   await click('刷新')
   expect(details.hidden).toBe(true)
-  expect(details.previousElementSibling?.textContent).toContain('数据已过期')
-  expect(details.previousElementSibling?.textContent).toContain('10:05:00')
-  expect(details.previousElementSibling?.textContent).toContain('规则版本 2')
-  expect(details.previousElementSibling?.textContent).toContain('市场环境：偏弱')
-  expect(details.previousElementSibling?.textContent).toContain('环境暂不允许提示')
+  const header = expand.closest('header')!
+  expect(header.textContent).toContain('数据已过期')
+  expect(header.textContent).toContain('10:05:00')
+  expect(header.textContent).toContain('规则版本 2')
+  expect(header.textContent).toContain('市场环境：偏弱')
+  expect(header.textContent).toContain('环境暂不允许提示')
   await act(async () => expand.click())
   expect(details.hidden).toBe(false)
   expect(details.textContent).not.toContain('市场环境')
@@ -924,14 +1003,71 @@ it('requests an ISO event date even when the browser falls back to another local
 it('renders historical events by selected date without turning them into live buys', async () => {
   calls.firstBoardEvents.mockResolvedValue({ events: [{ id: 'old1', ts: 1790720400000, date: '2026-09-30', symbol: '600000.SH', name: '历史股票',
     pattern: 'platform', pattern_label: '平台突破', state: 'approaching', event_type: 'buy_candidate', message: '历史候选信号', price: 10.8,
-    revision: 1, evidence: { priority_score: { version: 'priority-v1', status: 'partial', score: 53, known_max: 70,
+    revision: 1, evidence: { technical_shadow: technical, priority_score: { version: 'priority-v1', status: 'partial', score: 53, known_max: 70,
       parts: {}, primary_sector: null, role: 'unknown', can_buy: true, reason: '当时行情' } },
     blocked_reasons: [], quote_time: '2026-09-30T09:00:00+08:00' }], total: 1, day: beijingDay() })
   await render('events')
   expect(calls.firstBoardEvents).toHaveBeenCalledWith(beijingDay(), {})
   expect(host.textContent).toContain('历史候选信号')
   expect(host.textContent).toContain('信号时优先分 53 分')
+  expect(host.textContent).toContain('上个交易日日线（历史） · 均线符合／MACD符合')
+  await expandTechnical(host)
+  expect(host.textContent).toContain('参考日 2026-09-29')
   expect(button('模拟买入')).toBeUndefined()
+})
+it('requests unfiltered first alerts for the chosen date, version and top seats, and keeps ranks separate from buys', async () => {
+  const rank = { batch: 1, batch_total: 2, day: 4 }
+  const report = { date: beijingDay(), revision: 4, available_revisions: [4, 3], source: 'first_buy_candidate', reference_date: '2026-09-29',
+    offset: 0, limit: 100, matched: 1, total: 123, coverage: { batches: 12, change_known: 120, priority_known: 99, popularity_known: 65, technical_known: 19 },
+    rows: [{ symbol: '600001.SH', name: '排名样本', pattern: 'platform', patterns: ['platform', 'trend'], signal_at: '2026-09-30T10:00:00+08:00',
+      change_pct: .08, base_score: 53, priority_score: 61, popularity_known: true, popularity: { status: 'ready', rank: 7, rank_gain: 2, points: 8, known_max: 10 },
+      ma_support: true, macd_support: null, ranks: { change: rank, base: rank, priority: { ...rank, day: 2 } } }] }
+  calls.firstBoardFirstAlertRankings.mockImplementation(async (day, revision, top, offset) => ({ ...report,
+    date: day, revision: revision ?? 4, top_n: top, offset, matched: top == null ? 123 : 1,
+    rows: revision === 3 ? [{ ...report.rows[0], patterns: ['platform'] }] : report.rows }))
+  await render('events')
+  const panel = host.querySelector('[aria-label="首次提示排名对照"]')!
+  expect(calls.firstBoardFirstAlertRankings).toHaveBeenCalledWith(beijingDay(), null, 3, 0)
+  expect(panel.textContent).toContain('匹配 1 / 当日 123 只')
+  expect(panel.textContent).toContain('纳入人气后换入前 3')
+  expect(panel.textContent).toContain('排名样本')
+  expect(panel.querySelector('h3')?.textContent).toBe('首次提示排名对照')
+  expect(panel.querySelector('tbody details')?.textContent).toContain('两种方案各取当时得分最高的形态')
+  expect(panel.textContent).toContain('个股人气可核验 65')
+  expect(panel.textContent).toContain('第 7 名')
+  expect(panel.textContent).toContain('MACD 未知')
+  expect(panel.querySelector('table')?.parentElement?.className).toContain('overflow-x-auto')
+  async function select(label: string, value: string) {
+    const el = panel.querySelector<HTMLSelectElement>(`[aria-label="${label}"]`)!
+    await act(async () => { el.value = value; el.dispatchEvent(new Event('change', { bubbles: true })) }); await settle()
+  }
+  await select('排名规则版本', '3')
+  expect(panel.textContent).not.toContain('两种方案各取当时得分最高的形态')
+  await select('排名每日名额', '5')
+  expect(calls.firstBoardFirstAlertRankings).toHaveBeenLastCalledWith(beijingDay(), 3, 5, 0)
+  const previousReads = calls.firstBoardFirstAlertRankings.mock.calls.length
+  await click('刷新')
+  expect(calls.firstBoardFirstAlertRankings.mock.calls.length).toBeGreaterThan(previousReads)
+  expect(calls.firstBoardFirstAlertRankings).toHaveBeenLastCalledWith(beijingDay(), 3, 5, 0)
+  const rankingButton = [...panel.querySelectorAll('button')].find(el => el.textContent?.includes('排名样本'))!
+  await act(async () => rankingButton.click())
+  expect(host.querySelector('[role="dialog"]')?.getAttribute('data-symbol')).toBe('600001.SH')
+  expect(button('模拟买入')).toBeUndefined()
+  await click('关闭股票')
+  await select('排名每日名额', '')
+  await click('下一页')
+  expect(calls.firstBoardFirstAlertRankings).toHaveBeenLastCalledWith(beijingDay(), 3, null, 100)
+  await select('排名每日名额', '3')
+  expect(calls.firstBoardFirstAlertRankings).toHaveBeenLastCalledWith(beijingDay(), 3, 3, 0)
+  await numberInput('交易日期', '2026-09-30')
+  expect(calls.firstBoardFirstAlertRankings).toHaveBeenLastCalledWith('2026-09-30', null, 3, 0)
+})
+it('keeps the event log usable when a previous backend has no ranking endpoint', async () => {
+  calls.firstBoardFirstAlertRankings.mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 }))
+  await render('events')
+  expect(host.textContent).toContain('当前服务未提供首次提示排名')
+  expect(host.textContent).toContain('该日暂无首板信号')
+  expect(host.textContent).not.toContain('Not Found')
 })
 it('combines event filters, keeps them across dates and tabs, and handles empty results and refresh errors', async () => {
   const records: FirstBoardEvent[] = [

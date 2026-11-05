@@ -61,6 +61,26 @@ def test_live_enriched_cache_keeps_instrument_metadata_without_persisting_it(tmp
     assert "float_shares" not in persisted.columns
 
 
+def test_delayed_live_quotes_cannot_replace_confirmed_stock_day_or_its_cache(tmp_path):
+    repo = _repo(tmp_path)
+    day = cn_today() - timedelta(days=1)
+    original = _live_row("600000.SH", 10.0).with_columns(pl.lit(day).alias("date"))
+    repo.flush_live_enriched_asset("stock", original)
+    partition = tmp_path / "kline_daily" / f"date={day}"
+    partition.mkdir(exist_ok=True)
+    original.with_columns(pl.lit(True).alias("daily_batch_finalized")).write_parquet(partition / "part-stream-0.parquet")
+    delayed = original.with_columns(pl.lit(9.0).alias("close"))
+    repo.flush_live_daily_asset("stock", delayed)
+    repo.merge_live_daily_asset("stock", delayed)
+    repo.flush_live_enriched_asset("stock", delayed)
+    repo.merge_live_enriched_asset("stock", delayed)
+    assert not (partition / "part.parquet").exists()
+    assert repo._enriched_cache["close"].to_list() == [10.0]
+    assert pl.read_parquet(tmp_path / "kline_daily_enriched" / f"date={day}" / "part.parquet")["close"].item() == 10
+    repo.flush_live_daily_asset("etf", delayed)
+    assert (tmp_path / "kline_etf_daily" / f"date={day}" / "part.parquet").exists()
+
+
 def test_history_strategy_monitor_keeps_live_row_with_exclude_st_enabled(tmp_path):
     strategy_dir = tmp_path / "strategies"
     strategy_dir.mkdir()

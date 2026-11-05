@@ -1,5 +1,5 @@
-import type { HuichunCandidate, HuichunCoverage, HuichunObservation, HuichunSnapshot } from '@/lib/api'
-import { pct } from './shared'
+import type { HuichunCandidate, HuichunCoverage, HuichunDailyRun, HuichunDailyRuns, HuichunObservation, HuichunSnapshot } from '@/lib/api'
+import { pct, stamp } from './shared'
 
 const stages = [
   ['universe', '扫描股票'], ['valid_close', '有效收盘'], ['warmup_ready', '完成预热'],
@@ -13,6 +13,38 @@ const publicationLabels = {
   stale: '行情滞后，已暂停监控推送',
   incomplete: '收盘数据待核验，已暂停监控推送',
   calendar_unverified: '交易日历待核验，已暂停监控推送',
+}
+
+function runLabel(row: HuichunDailyRun) {
+  if (row.status === 'missed') return '当日漏扫'
+  if (row.status === 'waiting') return '等待收盘数据'
+  return row.confirmed_count === 0 ? '已扫描，零信号' : `已扫描，${row.confirmed_count} 条信号`
+}
+
+export function DailyRuns({ data }: { data: HuichunDailyRuns }) {
+  const latest = data.records[0]
+  return <details className="border-t border-border pt-3 text-xs">
+    <summary className="cursor-pointer leading-relaxed">
+      <span className="font-medium">盘后扫描记录</span>
+      {latest && <span className="ml-2 text-secondary">{latest.date} · {runLabel(latest)}</span>}
+    </summary>
+    {data.calendar_status === 'unavailable' && <p className="mt-2 text-secondary">交易日历待核验，暂时无法判断漏扫日期。</p>}
+    {!latest ? <p className="mt-2 text-secondary">尚无盘后扫描记录。{data.tracking_since && `自 ${data.tracking_since} 起记录。`}</p> :
+      <div className="mt-2 overflow-x-auto"><table aria-label="盘后扫描记录" className="w-full min-w-[480px] text-left tabular-nums">
+        <thead><tr>{['交易日', '扫描结果', '规则版本', '观察 / 对照', '备注'].map(label =>
+          <th key={label} className="py-1.5 pr-3 font-normal text-secondary">{label}</th>)}</tr></thead>
+        <tbody>{data.records.map(row => <tr key={row.date} className="border-t border-border">
+          <td className="whitespace-nowrap py-2 pr-3">{row.date}</td><td className="pr-3">{runLabel(row)}</td>
+          <td className="pr-3">{row.rule_revision ?? '—'}</td>
+          <td className="whitespace-nowrap pr-3">{row.status === 'completed' ? `${row.pending_count ?? '—'} / ${row.control_count ?? '—'}` : '—'}</td>
+          <td className="text-secondary">{[
+            row.reason, row.trigger === 'daily_sync' && '盘后自动扫描', row.trigger === 'manual' && '手动扫描',
+            row.correction_count > 0 && `结果已修订 ${row.correction_count} 次`,
+            row.backfilled_at && `历史补扫 ${stamp(row.backfilled_at)}`,
+          ].filter(Boolean).join(' · ') || '—'}</td>
+        </tr>)}</tbody>
+      </table></div>}
+  </details>
 }
 
 export function StageCounts({ coverage, day }: { coverage: HuichunCoverage; day: string }) {
@@ -41,7 +73,7 @@ export function StageCounts({ coverage, day }: { coverage: HuichunCoverage; day:
     </details>}
     {checks && coverage.publication_status === 'incomplete' && <p className="mt-3 text-xs text-secondary">
       当日有成交 {checks.active_symbols} 只，上个交易日 {checks.previous_active_symbols ?? '—'} 只，最低覆盖 {pct(checks.min_coverage_ratio)}。
-      待定版 {checks.unfinalized_symbols} 只。{checks.known_raw_issue && '原始日线待修复。'}
+      {checks.finalized_symbols != null && `已核准 ${checks.finalized_symbols} 只，`}待定版 {checks.unfinalized_symbols} 只。{checks.known_raw_issue && '原始日线待修复。'}
     </p>}
   </section>
 }

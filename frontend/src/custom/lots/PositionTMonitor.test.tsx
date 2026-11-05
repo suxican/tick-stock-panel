@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { Opportunity, PositionTMonitor } from './PositionTMonitor'
 import { PositionTExecutionForm, PositionTPositionForm } from './PositionTForms'
 import { numberValue, signalCanPlan } from './positionTShared'
+import { QK } from '@/lib/queryKeys'
 import type { PositionTAccount, PositionTOverview, PositionTPlan, PositionTPosition, PositionTSignal } from '@/lib/api'
 
 const mocks = vi.hoisted(() => ({ overview: vi.fn(), createPlan: vi.fn(), execution: vi.fn(), order: vi.fn(), savePosition: vi.fn(), planDetail: vi.fn(), syncLots: vi.fn() }))
@@ -75,6 +76,8 @@ it('never displays previous account positions while another account is loading',
   expect(host.textContent).toContain('正在读取监控账户')
 })
 it('syncs batch holdings explicitly into an empty selected account and refreshes the overview', async () => {
+  const researchKey = QK.holdingAnalysisOverview('position_t', 'a')
+  client.setQueryData(researchKey, { input_version: 'before-sync' })
   const imported = { ...position, reconciled: false, enabled: false, source: 'lots' }
   mocks.overview.mockResolvedValue(overview({ positions: [], signals: [] }))
   mocks.syncLots.mockImplementation(async () => {
@@ -84,6 +87,7 @@ it('syncs batch holdings explicitly into an empty selected account and refreshes
   await render(<PositionTMonitor />)
   expect(host.textContent).toContain('尚未添加持仓')
   expect(mocks.syncLots).not.toHaveBeenCalled()
+  expect(client.getQueryState(researchKey)?.isInvalidated).toBe(false)
   await click('从批次提醒同步')
   expect(mocks.syncLots).toHaveBeenCalledWith('a', { expected_version: 7 })
   expect(host.textContent).toContain('已同步 1 只持仓')
@@ -92,6 +96,7 @@ it('syncs batch holdings explicitly into an empty selected account and refreshes
   expect(host.textContent).toContain('未知 / 0')
   expect(host.textContent).not.toContain('尚未添加持仓')
   expect(mocks.createPlan).not.toHaveBeenCalled()
+  expect(client.getQueryState(researchKey)?.isInvalidated).toBe(true)
 })
 it('shows empty batch sync and skipped holdings as distinct outcomes', async () => {
   await render(<PositionTMonitor />)

@@ -26,7 +26,10 @@ export function PositionTMonitor() {
   const data = overview.data
   const account = data?.account
   useEffect(() => { if (!accountId && account?.id) setAccountId(account.id) }, [accountId, account?.id])
-  const refresh = () => qc.invalidateQueries({ queryKey: QK.positionTAll })
+  const refresh = () => Promise.all([
+    qc.invalidateQueries({ queryKey: QK.positionTAll }),
+    qc.invalidateQueries({ queryKey: QK.holdingAnalysisAll }),
+  ])
   const saved = () => { setDialog(null); void refresh() }
   const changeAccount = (id: string) => { setAccountId(id); setSymbol(''); setDialog(null) }
   const unfinished = (data?.plans ?? []).filter(p => !planDone(p.state))
@@ -77,7 +80,10 @@ function PositionTHoldingsToolbar({ account, count, unavailable, onAdd }: { acco
   const qc = useQueryClient()
   const sync = useMutation({
     mutationFn: () => api.positionTSyncLots(account.id, { expected_version: account.version }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: QK.positionTAll }),
+    onSuccess: () => Promise.all([
+      qc.invalidateQueries({ queryKey: QK.positionTAll }),
+      qc.invalidateQueries({ queryKey: QK.holdingAnalysisAll }),
+    ]),
   })
   return <div className="space-y-3">
     <div className="flex flex-wrap items-center justify-between gap-3">
