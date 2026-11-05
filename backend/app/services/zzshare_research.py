@@ -127,3 +127,7 @@ class ResearchReader:
         finally:
             with self._lock:
                 self._pending.pop(key, None)
+
+
+# The radar page and optional first-board enrichment share provider quota and cache.
+shared_reader = ResearchReader()

@@ -90,6 +90,20 @@ it('separates paper closed returns from partial realizations and preserves unkno
   expect(partial.querySelectorAll('td')[2].textContent).toBe('—')
   expect(partial.textContent).toContain('已退出部分的已实现净收益：92.50 元')
 })
+it('renders only frozen ranking samples and keeps unavailable outcomes unknown', async () => {
+  const result = replay()
+  const outcome = { ...result.summary, outcomes: 0, touched: 0, sealed: 0, broken: 0, filled: 1, worst_net_return: .012 }
+  result.priority_comparison = { version: 'priority-v1', scored: 5, unscored: 2, popularity_known: 0,
+    holdout_start: null, shadow: { ...outcome, signals: 0 },
+    groups: [{ ...outcome, variant: 'popularity', window: 'all', top_n: 3 }] }
+  calls.firstBoardTradeValidation.mockResolvedValue(result)
+  await render(); await click('运行交易验证')
+  const table = host.querySelector('table[aria-label="首板优先分对照"]')!
+  expect(table.textContent).toContain('再加入个股人气')
+  expect(table.querySelectorAll('tbody td')[2].textContent).toBe('—')
+  expect(host.textContent).toContain('人气可核验 0 个')
+})
+
 it('translates known execution reasons while retaining evidence suffixes and unknown codes', async () => {
   const result = replay()
   result.trades[0].reasons = ['entry_limit_blocked', 'minute_window_invalid: 缺少10:03分钟', 'future_reason']

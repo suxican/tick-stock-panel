@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 
 import polars as pl
@@ -75,13 +76,33 @@ def _frame_digest(digest, frame: pl.DataFrame) -> None:
         digest.update(frame.select(sorted(frame.columns)).hash_rows(seed=0).to_numpy().tobytes())
 
 
-def _trade(sample: dict, row: dict, revision: int) -> dict:
-    candidates = [item for item in row.get("candidates", []) if item.get("can_buy") is True]
+def _trade(sample: dict, row: dict, revision: int, candidates: list[dict], *, shadow: bool) -> dict:
     context = row.get("attention_context")
     context = context if isinstance(context, dict) else {}
     group = context.get("group")
     stamp = _stamp(sample["observed_at"])
     identity = f"{revision}:{stamp.isoformat()}:{row['symbol']}"
+    scores = [c["priority_score"] for c in candidates if isinstance(c.get("priority_score"), dict)
+              and c["priority_score"].get("version") == "priority-v1"
+              and c["priority_score"].get("status") in ({"shadow"} if shadow else {"ready", "partial"})]
+    base_scores, full_scores = [], []
+    hot_known = False
+    role = "unknown"
+    for score in scores:
+        total, known = score.get("score"), score.get("known_max")
+        parts = score.get("parts")
+        pop = parts.get("popularity") if isinstance(parts, dict) else None
+        if (type(total) not in (int, float) or type(known) not in (int, float)
+                or not 0 <= total <= known <= 100 or not isinstance(pop, dict) or "points" not in pop):
+            continue
+        hot = pop["points"]
+        if hot is not None and (type(hot) not in (int, float) or not 0 <= hot <= min(10, total)):
+            continue
+        if not full_scores or total > max(full_scores):
+            role = score.get("role", "unknown")
+        base_scores.append(round(total - (hot or 0), 1))
+        full_scores.append(total)
+        hot_known |= hot is not None
     return {
         "signal_id": hashlib.sha256(identity.encode()).hexdigest()[:24],
         "symbol": row["symbol"], "name": row.get("name"), "date": str(stamp.date()), "revision": revision,
@@ -95,6 +116,9 @@ def _trade(sample: dict, row: dict, revision: int) -> dict:
         "gross_return": None, "net_return": None, "net_pnl": None,
         "status": "pending_entry", "reasons": [],
         "_config": sample.get("metadata", {}).get("config"), "_candidates": candidates,
+        "_shadow": shadow, "_role": role, "_base_score": max(base_scores, default=None),
+        "_full_score": max(full_scores, default=None), "_hot_known": hot_known,
+        "_baseline": _number(candidates[0].get("change_pct")) if candidates else None,
         "_entry_factor": None, "_previous_close": None, "_exit_sessions": 0,
     }
 
@@ -112,7 +136,7 @@ def _collect_signals(store, start: date, end: date, revision: int, digest) -> tu
                 "negative_stock_days": 0, "unknown_stock_days": 0, "signal_count": 0,
                 "calendar_available": False, "minute_days_read": 0}
     flags: dict[tuple[date, str], bool | None] = {}
-    selected: dict[tuple[date, str], dict] = {}
+    selected: dict[tuple[date, str, bool], dict] = {}
     row_count = 0
     names = set()
     for sample in store.iter_samples(start, end, revision):
@@ -132,13 +156,24 @@ def _collect_signals(store, start: date, end: date, revision: int, digest) -> tu
                 raise ValueError("历史can_buy必须为布尔或未知")
             previous = flags.get(key, False)
             flags[key] = True if previous is True or flag is True else None if previous is None or flag is None else False
-            if flag is True and (key not in selected or stamp < _stamp(selected[key]["signal_at"])):
-                selected[key] = _trade(sample, row, revision)
+            shadow = flag is False
+            if flag is None:
+                continue
+            if shadow:
+                candidates = [c for c in row.get("candidates", []) if c.get("sector_shadow_eligible") is True
+                              and c.get("can_buy") is False and (c.get("priority_score") or {}).get("status") == "shadow"]
+            else:
+                candidates = [c for c in row.get("candidates", []) if c.get("can_buy") is True]
+            signal_key = (*key, shadow)
+            if (flag is True or candidates) and (signal_key not in selected
+                    or stamp < _stamp(selected[signal_key]["signal_at"])):
+                selected[signal_key] = _trade(sample, row, revision, candidates, shadow=shadow)
                 if len(selected) > MAX_SIGNALS:
                     raise ValueError("单次成交验证最多5000个股票日信号, 请缩小区间")
     coverage.update(stock_days=len(flags), eligible_stock_days=sum(v is True for v in flags.values()),
                     negative_stock_days=sum(v is False for v in flags.values()),
-                    unknown_stock_days=sum(v is None for v in flags.values()), signal_count=len(selected))
+                    unknown_stock_days=sum(v is None for v in flags.values()),
+                    signal_count=sum(not t["_shadow"] for t in selected.values()))
     return sorted(selected.values(), key=lambda row: (row["signal_at"], row["symbol"])), coverage, names
 
 
@@ -345,6 +380,64 @@ def _summary(trades: list[dict]) -> dict:
             "net_pnl_sum": sum(row["net_pnl"] for row in closed) if count else None}
 
 
+def _board_outcomes(trade: dict, daily: dict | None, up: float) -> None:
+    # The approaching signal requires the whole day's high so far to be below limit.
+    # A same-day pre-close snapshot cannot establish the final high/close.
+    if not daily:
+        return
+    stamp = _number(daily.get("quote_ts"))
+    day = date.fromisoformat(trade["date"])
+    close_ms = datetime.combine(day, time(15), CN_TZ).timestamp() * 1000
+    high, close = _number(daily.get("raw_high")), _number(daily.get("raw_close"))
+    if (stamp is None or not close_ms <= stamp < close_ms + 9 * 3600_000 or high is None or close is None
+            or not 0 < close <= high <= up + .005):
+        return
+    if not trade["_candidates"] or any(c.get("state") != "approaching"
+            or (limit := _number(c.get("evidence", {}).get("limit_up_price"))) is None
+            or abs(limit - up) > .005 for c in trade["_candidates"]):
+        return
+    trade["_touched"], trade["_sealed"] = high >= up - .005, close >= up - .005
+
+
+def _rank_outcomes(rows: list[dict]) -> dict:
+    known = [r for r in rows if r.get("_sealed") is not None]
+    closed = [r["net_return"] for r in rows if r["status"] == "closed"]
+    return {**_summary(rows), "outcomes": len(known), "touched": sum(r["_touched"] for r in known),
+            "sealed": sum(r["_sealed"] for r in known), "broken": sum(r["_touched"] and not r["_sealed"] for r in known),
+            "filled": sum(r.get("entry_at") is not None for r in rows), "worst_net_return": min(closed, default=None)}
+
+
+def _priority_comparison(trades: list[dict], shadows: list[dict]) -> dict:
+    days = defaultdict(list)
+    for trade in trades:
+        if trade["_full_score"] is not None:
+            days[trade["date"]].append(trade)
+    dates = sorted(days)
+    cutoff = dates[max(1, int(len(dates) * .7))] if len(dates) >= 2 else None
+    groups = []
+    for variant, key in (("baseline", "_baseline"), ("sector", "_base_score"), ("popularity", "_full_score")):
+        # A day's earliest slots cannot be displaced by a higher score seen later.
+        ranked = {day: sorted(items, key=lambda r: (r["signal_at"], r[key] is None, -(r[key] or 0), r["symbol"]))
+                  for day, items in days.items()}
+        for n in (3, 5):
+            for window in ("all", "holdout"):
+                picked = [r for day in dates if window == "all" or (cutoff and day >= cutoff)
+                          for r in ranked[day][:n]]
+                subsets = defaultdict(list)
+                for r in picked:
+                    market = "growth" if r["symbol"].startswith(("30", "688", "689")) else "main"
+                    subsets[market].append(r)
+                    subsets["hot_known" if r["_hot_known"] else "hot_unknown"].append(r)
+                    if r.get("_role") in ("leader", "follower"):
+                        subsets[r["_role"]].append(r)
+                groups.append({"variant": variant, "top_n": n, "window": window, **_rank_outcomes(picked),
+                               "segments": {k: _rank_outcomes(v) for k, v in subsets.items()}})
+    scored = sum(map(len, days.values()))
+    return {"version": "priority-v1", "scored": scored, "unscored": len(trades) - scored,
+            "popularity_known": sum(r["_hot_known"] for items in days.values() for r in items),
+            "holdout_start": cutoff, "groups": groups, "shadow": _rank_outcomes(shadows)}
+
+
 def run_execution_validation(repo, store, *, start: date, end: date, revision: int,
                              options: ExecutionOptions, through: date) -> dict:
     if (type(start) is not date or type(end) is not date or type(through) is not date
@@ -353,7 +446,7 @@ def run_execution_validation(repo, store, *, start: date, end: date, revision: i
         raise ValueError("成交验证需要有效规则版本及不超过92个自然日的已完成区间")
     options = ExecutionOptions.model_validate(options)
     digest = hashlib.sha256()
-    _digest(digest, {"version": 1, "start": start, "end": end, "revision": revision,
+    _digest(digest, {"version": 2, "start": start, "end": end, "revision": revision,
                      "through": through, "options": options.model_dump()})
     trades, coverage, names = _collect_signals(store, start, end, revision, digest)
     load_end = min(through, end + timedelta(days=45))
@@ -417,7 +510,10 @@ def run_execution_validation(repo, store, *, start: date, end: date, revision: i
                 frame = pl.DataFrame()
             coverage["minute_days_read"] += 1
             for trade in active:
-                daily_facts, issue = _day_facts(facts.get((trade["symbol"], day)))
+                daily_row = facts.get((trade["symbol"], day))
+                daily_facts, issue = _day_facts(daily_row)
+                if trade["status"] == "pending_entry" and daily_facts is not None:
+                    _board_outcomes(trade, daily_row, daily_facts[0])
                 rows, minute_issue = _minute_rows(frame, trade["symbol"], day, marker)
                 if issue or minute_issue:
                     _invalidate(trade, issue or minute_issue)
@@ -433,6 +529,8 @@ def run_execution_validation(repo, store, *, start: date, end: date, revision: i
             elif trade["status"] == "open_position":
                 trade["reasons"].append("exit_window_exhausted" if trade["_exit_sessions"] >= options.max_exit_sessions
                                         else "exit_observation_incomplete")
+    shadows = [trade for trade in trades if trade["_shadow"]]
+    trades = [trade for trade in trades if not trade["_shadow"]]
     summary = _summary(trades)
     return {"schema_version": 1, "mode": "recorded_execution",
             "status": "no_signals" if not trades else "modelled" if summary["closed"] else "insufficient_evidence",
@@ -440,6 +538,7 @@ def run_execution_validation(repo, store, *, start: date, end: date, revision: i
                       "price_proxy": "later_complete_minute_close", "signal_source": "recorded_can_buy",
                       "options": options.model_dump()},
             "coverage": coverage, "summary": summary,
+            "priority_comparison": _priority_comparison(trades, shadows),
             "by_group": {group: _summary([row for row in trades if row["group"] == group]) for group in GROUPS},
             "trades": [{key: value for key, value in row.items() if not key.startswith("_")}
                        for row in trades[:MAX_DETAILS]],

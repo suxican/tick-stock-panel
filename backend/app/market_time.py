@@ -6,7 +6,8 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time as dt_time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from datetime import time as dt_time
 
 CN_TZ = timezone(timedelta(hours=8))
 
@@ -34,6 +35,14 @@ def in_continuous_session(now: datetime | None = None) -> bool:
     return now.weekday() < 5 and (
         _MORNING_START <= now.time() <= _MORNING_END
         or _AFTERNOON_START <= now.time() <= _AFTERNOON_END
+    )
+
+
+def in_first_board_session(now: datetime) -> bool:
+    """First-board observations stop at lunch and before the closing auction (Beijing time)."""
+    clock = now.time().replace(tzinfo=None)
+    return now.weekday() < 5 and (
+        _MORNING_START <= clock < _MORNING_END or _AFTERNOON_START <= clock < dt_time(14, 57)
     )
 
 

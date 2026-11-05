@@ -7,6 +7,7 @@ minute volume is lots and amount is yuan, exactly as in intraday_features.
 from __future__ import annotations
 
 import math
+from bisect import bisect_right
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -200,14 +201,18 @@ def _sectors(quotes: pl.DataFrame, groups: list[dict]) -> list[dict]:
     if not records or quotes.is_empty():
         return output
     joined = pl.DataFrame(records).join(quotes.select("symbol", "change_pct"), on="symbol", how="inner")
-    markets = {row["_scope"]: row["market_mean"] for row in joined.unique(["_scope", "symbol"]).group_by("_scope").agg(
-        pl.col("change_pct").mean().alias("market_mean")
+    markets = {row["_scope"]: row for row in joined.unique(["_scope", "symbol"]).group_by("_scope").agg(
+        pl.col("change_pct").mean().alias("market_mean"), pl.len().alias("count")
     ).to_dicts()}
     for entry in output:
-        entry["market_mean_change_pct"] = markets.get("\x1f".join(entry["_scope"]))
+        market = markets.get("\x1f".join(entry["_scope"]), {})
+        entry["market_mean_change_pct"] = market.get("market_mean")
+        entry["_market_count"] = market.get("count", 0)
     stats = joined.group_by("_group").agg(
         pl.len().alias("valid_count"), pl.col("change_pct").mean().alias("mean_change_pct"),
         (pl.col("change_pct") > 0).mean().alias("up_ratio"),
+        (pl.col("change_pct") > 0).sum().alias("_up_count"),
+        pl.col("change_pct").sort().alias("_changes"),
     )
     scopes: dict[tuple, list[dict]] = defaultdict(list)
     for row in stats.to_dicts():
@@ -215,7 +220,7 @@ def _sectors(quotes: pl.DataFrame, groups: list[dict]) -> list[dict]:
         entry.update(row, coverage=row["valid_count"] / entry["member_count"])
         if entry["valid_count"] >= 5 and entry["coverage"] >= .8:
             scopes[entry["_scope"]].append(entry)
-    for scope, entries in scopes.items():
+    for entries in scopes.values():
         ordered = sorted(entries, key=lambda item: -item["mean_change_pct"])
         rank, previous = 0, None
         for position, entry in enumerate(ordered, 1):
@@ -224,10 +229,53 @@ def _sectors(quotes: pl.DataFrame, groups: list[dict]) -> list[dict]:
                 rank = position
             previous = mean
             strong = (rank <= math.ceil(len(entries) * .2) and mean > 0
-                      and mean > markets["\x1f".join(scope)] and entry["up_ratio"] >= .6)
+                      and mean > entry["market_mean_change_pct"] and entry["up_ratio"] >= .6)
             entry.update(rank=rank, total=len(entries), strong=strong,
                          reason="排名、上涨广度和相对同来源分类覆盖股票的强度达到实验门槛" if strong else "排名、上涨广度或相对同来源分类覆盖股票的强度未同时达标")
     return output
+
+
+def _peer_strength(groups: list[dict], ranked: dict, change: float | None) -> dict:
+    """Remove this stock from every overlapping group before comparing group means."""
+    if not _finite(change):
+        return {}
+    peers, adjusted, removed = {}, defaultdict(list), defaultdict(list)
+    for group in groups:
+        scope, group_id = group["_scope"], group["id"]
+        if group["rank"] is not None:
+            removed[scope].append(round(group["mean_change_pct"], 12))
+        size = group["member_count"] - 1
+        count = group["valid_count"] - 1
+        coverage = count / size if size else 0.
+        market_count = group["_market_count"]
+        # Persist and rank the same precision: parallel reductions can vary at
+        # the final binary digit even when all input quotes are identical.
+        mean = round((group["mean_change_pct"] * (count + 1) - change) / count, 12) if count > 0 else None
+        market = (round((group["market_mean_change_pct"] * market_count - change) / (market_count - 1), 12)
+                  if market_count > 1 else None)
+        item = {"peer_count": size, "peer_valid_count": count, "peer_coverage": coverage,
+                "peer_mean_change_pct": mean, "peer_up_ratio": (group["_up_count"] - (change > 0)) / count if count else None,
+                "peer_market_mean_change_pct": market, "peer_rank": None, "peer_total": None, "peer_strong": None,
+                "stock_group_rank": len(group["_changes"]) - bisect_right(group["_changes"], change) + 1}
+        peers[group_id] = item
+        if count >= 5 and coverage >= .8 and market is not None:
+            adjusted[scope].append((group_id, mean))
+    for scope, changed in adjusted.items():
+        # Untouched groups retain their pre-sorted means across all stocks.
+        # Replace just the buckets this stock belonged to (including coverage
+        # boundary crossings) via binary search in the baseline and two deltas.
+        original = ranked[scope]
+        old = sorted(removed[scope])
+        new = sorted(mean for _, mean in changed)
+        total = len(original) - len(old) + len(new)
+        for key, mean in changed:
+            item = peers[key]
+            at_or_below = bisect_right(original, mean) - bisect_right(old, mean) + bisect_right(new, mean)
+            rank = total - at_or_below + 1
+            strong = (rank <= math.ceil(total * .2) and mean > 0
+                      and mean > item["peer_market_mean_change_pct"] and item["peer_up_ratio"] >= .6)
+            item.update(peer_rank=rank, peer_total=total, peer_strong=strong)
+    return peers
 
 
 class AttentionEvaluator:
@@ -238,6 +286,8 @@ class AttentionEvaluator:
 
     def __init__(self) -> None:
         self._observed: dict[str, datetime] = {}
+        # Only uninterrupted, observed strong peer-groups need a pair of stamps.
+        self._strong_runs: dict[tuple[str, str], tuple[datetime, datetime | None]] = {}
         self._last_now: datetime | None = None
         self._membership_version: str | None = None
         self._minute_frame: pl.DataFrame | None = None
@@ -255,9 +305,15 @@ class AttentionEvaluator:
         denotes an unchanged batch and avoids repeated per-stock minute work.
         """
         now = now.replace(tzinfo=CN_TZ) if now.tzinfo is None else now.astimezone(CN_TZ)
+        previous_now = self._last_now
         if (self._last_now is None or now.date() != self._last_now.date() or now < self._last_now
                 or membership_version != self._membership_version):
             self._observed.clear()
+            self._strong_runs.clear()
+        if previous_now is None or now - previous_now > timedelta(minutes=10) or (now.hour >= 13) != (previous_now.hour >= 13):
+            self._strong_runs.clear()
+        previous_runs, self._strong_runs = self._strong_runs, {}
+        earliest, latest = now - timedelta(minutes=10), now - timedelta(minutes=3)
         self._last_now, self._membership_version = now, membership_version
         quotes = _quotes(current)
         lookup = {row["symbol"]: row for row in quotes.to_dicts()}
@@ -275,15 +331,35 @@ class AttentionEvaluator:
         intraday = self._minute_features
         sector_rows = _sectors(quotes, groups)
         by_symbol: dict[str, list[dict]] = defaultdict(list)
+        ranked = defaultdict(list)
         for entry in sector_rows:
+            if entry["rank"] is not None:
+                ranked[entry["_scope"]].append(round(entry["mean_change_pct"], 12))
             for symbol in symbols.intersection(entry["_members"]):
                 by_symbol[symbol].append(entry)
+        for baseline in ranked.values():
+            baseline.sort()
         output = {}
         for symbol in symbols:
             evidence = []
             minute = intraday[symbol]
+            peer_stats = _peer_strength(by_symbol[symbol], ranked, lookup.get(symbol, {}).get("change_pct"))
             for sector in by_symbol[symbol]:
                 item = {key: value for key, value in sector.items() if not key.startswith("_")}
+                item.update(peer_stats.get(sector["id"], {}))
+                strong = item.get("peer_strong")
+                item.update(peer_persistent=False if strong is False else None, peer_reference_at=None)
+                if strong is True and membership_version:
+                    key = (symbol, sector["id"])
+                    run = previous_runs.get(key)
+                    anchor, reference = run if run else (now, None)
+                    if earliest <= anchor <= latest:
+                        reference, anchor = anchor, now
+                    elif run and previous_now and earliest <= previous_now <= latest:
+                        reference, anchor = previous_now, now
+                    if reference is not None and earliest <= reference <= latest:
+                        item.update(peer_persistent=True, peer_reference_at=reference.isoformat())
+                    self._strong_runs[key] = (anchor, reference)
                 peers = [peer for peer in sector["_members"] if peer != symbol]
                 observed = sorted((self._observed[peer], peer) for peer in peers if peer in self._observed)
                 active = [(at, peer) for at, peer in observed if limits.get(peer) is True]

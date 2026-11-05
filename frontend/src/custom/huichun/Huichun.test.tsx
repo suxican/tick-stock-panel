@@ -13,7 +13,7 @@ import extension from './extension'
 const calls = vi.hoisted(() => ({
   huichunConfig: vi.fn(), huichunSaveConfig: vi.fn(), huichunSnapshot: vi.fn(), huichunScan: vi.fn(),
   huichunTracking: vi.fn(), huichunAddTracking: vi.fn(), huichunRefreshTracking: vi.fn(), huichunRemoveTracking: vi.fn(),
-  marketSnapshotForSymbols: vi.fn(),
+  huichunResearch: vi.fn(), marketSnapshotForSymbols: vi.fn(),
   extDataList: vi.fn(), extDataRows: vi.fn(),
 }))
 vi.mock('@/lib/api', () => ({ api: calls }))
@@ -65,6 +65,7 @@ beforeEach(() => {
   calls.huichunSnapshot.mockResolvedValue(snapshot())
   calls.huichunScan.mockResolvedValue(snapshot())
   calls.huichunTracking.mockResolvedValue({ records: [], updated_at: null })
+  calls.huichunResearch.mockResolvedValue({ records: [], updated_at: null, limitations: [] })
   calls.huichunSaveConfig.mockImplementation(async body => {
     const saved = { ...config(), rules: body.rules, revision: 2 }
     calls.huichunConfig.mockResolvedValue(saved)
@@ -104,6 +105,90 @@ function trackingCell(row: HTMLTableRowElement, label: string) {
 function previewContext() {
   return JSON.parse(host.querySelector('[role="dialog"]')?.getAttribute('data-chart-context') ?? 'null')
 }
+
+it('explains a dated empty scan using terminal counts and clustered factor failures', async () => {
+  const state = observationSnapshot([])
+  state.scan!.candidates = []
+  Object.assign(state.scan!.coverage, {
+    expected_daily_date: '2026-10-08', publication_status: 'stale',
+    stage_counts: { universe: 100, valid_close: 97, warmup_ready: 66, qualified_waiting_first_cross: 3,
+      first_cross_today: 1, first_cross_rejected_today: 1, confirmed_today: 0, pending_today: 0 },
+    factor_issue_dates: [{ date: '2026-09-10', count: 7 }], first_cross_rejection_reasons: { zero_distance_exceeded: 1 },
+  })
+  calls.huichunSnapshot.mockResolvedValue(state)
+  await render()
+  const coverage = host.querySelector('[aria-label="截止日筛选统计"]')!
+  expect(coverage.textContent).toContain('有效收盘97')
+  expect(coverage.textContent).toContain('首次金叉未通过1')
+  expect(coverage.textContent).toContain('2026-10-08')
+  expect(host.textContent).toContain('2026-09-10（7 只）')
+  expect(host.textContent).toContain('零轴距离超限 1')
+})
+
+it('shows the strict crossing boundary separately from near-boundary trend checks', async () => {
+  const row = observation()
+  Object.assign(row, { cross_threshold_price: 9.95, cross_threshold_return: -.005,
+    threshold_zero_pass: true, threshold_trend_pass: false })
+  calls.huichunSnapshot.mockResolvedValue(observationSnapshot([row]))
+  await render('watch')
+  expect(observationRows()[0].textContent).toContain('平收可金叉')
+  expect(observationRows()[0].textContent).toContain('9.9500')
+  expect(observationRows()[0].textContent).toContain('趋势未通过')
+})
+
+it('keeps prospective comparisons separate from backfills and calculates net differences on paired dates', async () => {
+  const base = { symbol: '600001.SH', name: '甲', signal_date: '2026-09-30', g_date: '2026-04-30', d_date: '2026-07-30',
+    rules: config().rules, rule_revision: 1, zero_distance: .018, volatility_20: .034, origin: 'forward', board: 'main', first_seen_at: '2026-09-30',
+    shape_t5: { status: 'ok', return_pct: .05 } }
+  const record = (id: string, cohort: string, net: number) => ({ ...base, id, cohort,
+    execution: { status: 'ok', entry_date: '2026-10-08', exit_date: '2026-10-09', gross_return_pct: net + .002, net_return_pct: net } })
+  calls.huichunResearch.mockResolvedValue({ updated_at: null, limitations: [],
+    records: [record('a', 'confirmed', .03), record('b', 'zero_control', .01),
+      { ...record('c', 'confirmed', .99), signal_date: '2026-09-29', origin: 'backfill' },
+      { ...record('d', 'confirmed', .85), rule_revision: 0 }] })
+  await render('research')
+  const paired = host.querySelector('[aria-label="同日净收益对照"]')!
+  expect(paired.textContent).toContain('1 个共同信号日')
+  expect(paired.textContent).toContain('+2.00 个百分点')
+  expect(host.textContent).toContain('1 对可比样本')
+  expect(host.querySelectorAll('table[aria-label="研究样本明细"] tbody tr')).toHaveLength(2)
+  expect(calls.huichunAddTracking).not.toHaveBeenCalled()
+})
+
+it('matches volatility before checking returns and preserves unpriced cases in the research denominator', async () => {
+  const row = (symbol: string, cohort: string, vol: number, net: number | null) => ({
+    id: symbol, symbol, name: symbol, cohort, origin: 'forward', board: 'main', rule_revision: 1,
+    signal_date: '2026-09-30', volatility_20: vol, zero_distance: .021, rules: config().rules,
+    shape_t5: { status: 'unknown_gap', return_pct: null },
+    execution: { status: net == null ? 'entry_blocked' : 'ok', net_return_pct: net, gross_return_pct: .01 },
+  })
+  calls.huichunResearch.mockResolvedValue({ updated_at: null, limitations: [], records: [
+    row('600001.SH', 'confirmed', .02, .03), row('600002.SH', 'zero_control', .02, null),
+    row('600003.SH', 'zero_control', .021, .01),
+  ] })
+  await render('research')
+  expect(host.textContent).toContain('0 对可比样本')
+  expect(host.textContent).toContain('开盘无法买入')
+  expect(host.querySelectorAll('table[aria-label="研究样本明细"] tbody tr')).toHaveLength(3)
+  expect(host.querySelector('[aria-label="同日净收益对照"]')!.textContent).toContain('1 个共同信号日')
+  const metric = [...host.querySelectorAll('select')].find(item => item.parentElement?.textContent?.includes('配对指标'))!
+  await act(async () => { metric.value = 'gross'; metric.dispatchEvent(new Event('change', { bubbles: true })) })
+  expect(host.querySelector('[aria-label="同日开盘报价毛收益对照"]')!.textContent).toContain('0.00 个百分点')
+  expect(host.textContent).toContain('1 对可比样本')
+})
+
+it('shows unavailable conversion separately from a resolved zero conversion rate', async () => {
+  const state = observationSnapshot([])
+  state.scan!.watch_conversion = [
+    { horizon: 1, total: 2, resolved: 1, confirmed: 0, rejected: 0, pending: 1, gap_unknown: 0 },
+    { horizon: 5, total: 2, resolved: 0, confirmed: 0, rejected: 0, pending: 1, gap_unknown: 1 },
+  ]
+  calls.huichunSnapshot.mockResolvedValue(state)
+  await render('watch')
+  const rates = host.querySelectorAll('table[aria-label="观察池转化"] tbody tr')
+  expect(rates[0].children[4].textContent).toBe('0.00%')
+  expect(rates[1].children[4].textContent).toBe('—')
+})
 
 it('keeps current ST warnings separate from historical eligibility and explains factor isolation', async () => {
   const state = snapshot()

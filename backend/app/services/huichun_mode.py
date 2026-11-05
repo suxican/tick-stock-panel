@@ -14,9 +14,11 @@ import math
 import threading
 import time
 import uuid
+from collections import Counter
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import date, datetime, timedelta
+from itertools import chain
 from pathlib import Path
 from typing import Literal
 
@@ -30,6 +32,7 @@ from app.price_limits import (
     is_risk_warning_name,
     price_limit_pct,
 )
+from app.services import huichun_coverage, huichun_research
 from app.services.fs_utils import atomic_write_text
 from app.services.huichun_audit import (
     FACTOR_SCHEMA,
@@ -41,7 +44,11 @@ from app.services.huichun_audit import (
 )
 from app.services.huichun_calendar import BUNDLED_CALENDAR_PATH, load_market_calendar
 from app.strategy.huichun_a0 import A0Params, audit_a0
-from app.strategy.huichun_watch import pending_crosses
+from app.strategy.huichun_watch import (
+    new_conversion_counts,
+    pending_crosses,
+    update_conversion_counts,
+)
 
 logger = logging.getLogger(__name__)
 _WRITE_LOCK = threading.RLock()
@@ -67,6 +74,20 @@ def _json(value: object) -> str:
 
 def _digest(value: object) -> str:
     return hashlib.sha256(_json(value).encode()).hexdigest()
+
+
+def _within_daily_cutoff(relative_path: str, cutoff: date) -> bool:
+    # Only the repository's canonical dated layout proves an entire file is
+    # outside a query. Legacy/mixed daily files and all factor tables stay guarded.
+    parts = relative_path.split("/")
+    if len(parts) != 3 or parts[0] != "kline_daily" or not parts[1].startswith("date="):
+        return True
+    label = parts[1][5:]
+    try:
+        day = date.fromisoformat(label)
+    except ValueError:
+        return True
+    return day.isoformat() != label or day <= cutoff
 
 
 def _screening_stock(symbol: str) -> bool:
@@ -214,7 +235,24 @@ class HuichunModeService:
 
     def get_snapshot(self) -> dict:
         with self._lock:
-            return copy.deepcopy({**self._snapshot, "config_revision": self._config.revision})
+            return copy.deepcopy({"scan": self._snapshot["scan"], "job": self._snapshot["job"],
+                                  "config_revision": self._config.revision})
+
+    def get_research(self) -> dict:
+        with self._lock, _WRITE_LOCK:
+            data = self._research_state()
+        return {**data, "limitations": huichun_research.LIMITATIONS}
+
+    def _research_state(self) -> dict:
+        slot = self._snapshot.get("research_slot")
+        if slot is None:
+            return {"records": [], "updated_at": None}
+        if type(slot) is not int or slot not in (0, 1):
+            raise ValueError("回春研究样本索引无效")
+        data = self._read(f"research-{slot}.json", {})
+        if not isinstance(data.get("records"), list):
+            raise ValueError("回春研究样本不可用，已保留原文件")
+        return data
 
     def get_tracking(self) -> dict:
         with self._lock, _WRITE_LOCK:
@@ -317,7 +355,7 @@ class HuichunModeService:
                 "status": "running",
                 "started_at": _now().isoformat(),
             }
-            pending = {"job": job, "scan": self._snapshot["scan"]}
+            pending = {**self._snapshot, "job": job}
             self._write("snapshot.json", pending)
             self._snapshot = pending
             self._thread = threading.Thread(
@@ -346,16 +384,19 @@ class HuichunModeService:
         if self._stop.is_set():
             raise ValueError("任务已因服务关闭中止")
 
-    def _input_signature(self) -> list:
-        signature = [
-            (
-                p.relative_to(self.repo.store.data_dir).as_posix(),
-                p.stat().st_size,
-                p.stat().st_mtime_ns,
-            )
-            for table in ("kline_daily", "adj_factor", "instruments")
-            for p in sorted((self.repo.store.data_dir / table).rglob("*.parquet"))
-        ]
+    def _input_signature(self, cutoff: date | None = None) -> list:
+        root = self.repo.store.data_dir
+        signature = []
+        for table in ("kline_daily", "adj_factor", "instruments"):
+            for path in sorted((root / table).rglob("*.parquet")):
+                key = path.relative_to(root).as_posix()
+                if cutoff is not None and not _within_daily_cutoff(key, cutoff):
+                    continue
+                try:
+                    stat = path.stat()
+                except FileNotFoundError:
+                    continue  # A concurrent removal is observed as absence.
+                signature.append((key, stat.st_size, stat.st_mtime_ns, stat.st_ino))
         if self._calendar_path and self._calendar_path.exists():
             stat = self._calendar_path.stat()
             signature.append(("calendar", stat.st_size, stat.st_mtime_ns))
@@ -365,15 +406,53 @@ class HuichunModeService:
         try:
             before = self._input_signature()
             scan = self._scan(job_id, request, config) if kind == "scan" else None
+            # Latest/undated scans depend on the latest available partition.
+            # An explicit historical scan only used prices through its cutoff;
+            # its follow-on tracking/research may legitimately read newer bars.
+            historical = (
+                scan is not None and request.end_date is not None
+                and self._latest_observed_date is not None
+                and request.end_date < self._latest_observed_date
+            )
+            follow_on_before = self._input_signature() if historical else before
             tracking = self._calculate_tracking()
+            controls = scan.pop("_research_controls", []) if scan is not None else []
+            previous = self._research_state()
+            research = huichun_research.refresh(self, previous, scan, controls, _now())
             self._check_stop()
-            if before != self._input_signature():
+            after = self._input_signature()
+            if historical:
+                cutoff = request.end_date
+                scan_changed = (
+                    [item for item in before if _within_daily_cutoff(item[0], cutoff)]
+                    != [item for item in after if _within_daily_cutoff(item[0], cutoff)]
+                )
+                refreshed = bool(tracking) or research is not None
+                changed = scan_changed or (refreshed and follow_on_before != after)
+                if not changed and before != after:
+                    # Price changes after the cutoff are irrelevant, but global session
+                    # dates still determine the historical/stale label and calendar source.
+                    calendar = self._calendar()
+                    expected = str(calendar[-1]) if self._calendar_source == "official_exchange_calendar" else None
+                    changed = (
+                        self._latest_observed_date is None or self._latest_observed_date <= cutoff
+                        or self._calendar_source != scan["coverage"]["calendar_source"]
+                        or expected != scan["coverage"]["expected_daily_date"]
+                    )
+            else:
+                changed = before != after
+            if changed:
                 raise ValueError("计算期间行情已更新，请重新运行以使用一致数据")
             with self._lock, _WRITE_LOCK:
                 if scan is not None:
                     self._write(f"scan-{job_id}.json", scan)
                 self._merge_tracking(tracking)
                 pending = copy.deepcopy(self._snapshot)
+                if research is not None:
+                    # The atomic snapshot publishes the new cohort and job together.
+                    slot = 1 - pending.get("research_slot", 1)
+                    self._write(f"research-{slot}.json", research)
+                    pending["research_slot"] = slot
                 if scan is not None:
                     pending["scan"] = scan
                 pending["job"].update(status="completed", finished_at=_now().isoformat())
@@ -403,7 +482,7 @@ class HuichunModeService:
                 self.start_tracking_refresh()
 
     def _publish_scan_events(self, scan: dict) -> None:
-        if self._publish is None:
+        if self._publish is None or scan.get("coverage", {}).get("publication_status") != "ready":
             return
         try:
             day = scan["observation_date"]
@@ -415,6 +494,16 @@ class HuichunModeService:
                     or scan["rule_revision"] != self._read_config().revision
                 ):
                     return
+            # A scan can span the next session's close. Recheck the independent
+            # calendar at publication time before consuming any notification IDs.
+            now = _now()
+            cutoff = now.date() if now.hour >= 15 else now.date() - timedelta(days=1)
+            session = date.fromisoformat(day)
+            if self._calendar_path is None or session > cutoff:
+                return
+            sessions = load_market_calendar(self._calendar_path, start=session, end=cutoff)
+            if sessions != [session] or huichun_coverage.known_raw_issue(self.repo.store.data_dir, session):
+                return
             events = []
             published_at = int(_now().timestamp() * 1000)
             for pool, date_field, event_type, label in (
@@ -480,16 +569,17 @@ class HuichunModeService:
         )
         return pl.DataFrame(rows, schema=FACTOR_SCHEMA, orient="row")
 
-    def _raw(self, symbols, end) -> pl.DataFrame:
+    def _raw(self, symbols, end, *, start=None) -> pl.DataFrame:
         columns = [*RAW_COLUMNS]
         available = {r[0] for r in self.repo.execute_all("DESCRIBE kline_daily")}
         if "quote_ts" in available:
             columns.append("quote_ts")
         marks = ",".join("?" for _ in symbols)
+        lower = " AND date >= ?" if start is not None else ""
         rows = self.repo.execute_all(
-            f"SELECT {','.join(columns)} FROM kline_daily WHERE date <= ? "
+            f"SELECT {','.join(columns)} FROM kline_daily WHERE date <= ?{lower} "
             f"AND symbol IN ({marks}) ORDER BY symbol,date",
-            [end, *symbols],
+            [end, *([start] if start is not None else []), *symbols],
         )
         schema = {
             c: pl.String if c == "symbol" else pl.Date if c == "date" else pl.Float64
@@ -600,6 +690,7 @@ class HuichunModeService:
         calendar = self._calendar()
         if not calendar:
             raise ValueError("暂无已收盘日线数据，请先同步历史日线")
+        expected_day = calendar[-1] if self._calendar_source == "official_exchange_calendar" else None
         end = request.end_date or self._latest_observed_date
         start = request.start_date or end
         if start > end or end > self._latest_observed_date:
@@ -607,6 +698,9 @@ class HuichunModeService:
         calendar = [d for d in calendar if d <= end]
         if not calendar:
             raise ValueError("所选日期之前没有日线数据")
+        day_at_cutoff = calendar[-1]
+        previous_day = calendar[-2] if len(calendar) > 1 else None
+        observed_at = _now()
         symbols = [
             r[0]
             for r in self.repo.execute_all(
@@ -627,6 +721,14 @@ class HuichunModeService:
                 with suppress(ValueError, TypeError):
                     listings[symbol] = date.fromisoformat(str(listing)[:10])
         candidates, observations, factor_issues, gaps = [], [], {}, 0
+        controls = []
+        conversion = new_conversion_counts()
+        stages = Counter(dict.fromkeys((
+            "valid_close", "warmup_ready", "qualified_waiting_first_cross",
+            "first_cross_today", "first_cross_rejected_today", "confirmed_today",
+        ), 0))
+        market = Counter()
+        rejection_reasons = Counter(dict.fromkeys(huichun_coverage.REJECTION_REASONS, 0))
         params = A0Params(**config.rules.model_dump())
         with self._lock:
             self._snapshot["job"]["total_symbols"] = len(symbols)
@@ -634,6 +736,7 @@ class HuichunModeService:
             self._check_stop()
             batch = symbols[offset : offset + 128]
             raw, factors = self._raw(batch, end), self._factors(batch, end)
+            market.update(huichun_coverage.market_counts(raw, day_at_cutoff, previous_day, observed_at))
             prepared, issues = self._prepare_scan_batch(
                 raw, factors, calendar=calendar, end=end,
                 listings=listings, expected_symbols=batch,
@@ -650,12 +753,24 @@ class HuichunModeService:
                     end=end,
                     params=params,
                 )
+                batch_stages, batch_reasons = huichun_coverage.stage_counts(result, day_at_cutoff, params.warmup_bars)
+                stages.update(batch_stages)
+                rejection_reasons.update(batch_reasons)
                 raw_prices = {
                     (s, d): c for s, d, c in raw.select("symbol", "date", "close").iter_rows()
                 }
-                for row in result.signals.filter(pl.col("r_date") >= start).iter_rows(named=True):
+                update_conversion_counts(conversion, result.cycles, start)
+                near = huichun_research.near_controls(
+                    result.cycles, start=start, threshold=params.zero_threshold,
+                )
+                confirmed = result.signals.filter(pl.col("r_date") >= start)
+                volatility = huichun_research.volatility_at_cross(
+                    result.indicators, pl.concat([confirmed, near]).select("symbol", "r_date"),
+                )
+                for row in chain(confirmed.iter_rows(named=True), near.iter_rows(named=True)):
                     symbol, day = row["symbol"], row["r_date"]
-                    candidates.append(
+                    cohort = candidates if row["shape_match"] else controls
+                    cohort.append(
                         {
                             "id": _digest(
                                 [symbol, day, config.revision, config.rules.model_dump()]
@@ -663,10 +778,18 @@ class HuichunModeService:
                             "symbol": symbol,
                             "name": names.get(symbol, symbol),
                             "signal_date": str(day),
+                            "pullback_fraction": row["pullback_fraction"],
+                            "pullback_bars": row["pullback_bars"],
+                            "recovery_return": row["recovery_return"],
+                            "first_watch_date": (
+                                str(row["first_watch_date"]) if row["first_watch_date"] else None
+                            ),
+                            "watch_lead_bars": row["watch_lead_bars"],
                             "g_date": str(row["g_date"]),
                             "d_date": str(row["d_date"]),
                             "rally_return": row["rally_return"],
                             "zero_distance": row["zero_distance"],
+                            "volatility_20": volatility[symbol, day],
                             "close_above_ma_pct": row["r_close"] / row["ma60"] - 1,
                             "ma_slope_pct": row["ma60"] / row["ma60_lag"] - 1,
                             "raw_close": raw_prices[symbol, day],
@@ -692,6 +815,13 @@ class HuichunModeService:
                             ]),
                             "name": names.get(symbol, symbol),
                             "observation_date": str(day),
+                            "first_watch_date": str(row["first_watch_date"]),
+                            # In observation-day raw-price units; future corporate actions
+                            # change next-day quoted prices relative to this reference.
+                            "cross_threshold_price": (
+                                raw_prices[symbol, day] * (1 + row["cross_threshold_return"])
+                                if row["cross_threshold_return"] is not None else None
+                            ),
                             "g_date": str(row["g_date"]),
                             "d_date": str(row["d_date"]),
                             "raw_close": raw_prices[symbol, day],
@@ -705,8 +835,11 @@ class HuichunModeService:
                     )
             with self._lock:
                 self._snapshot["job"]["processed_symbols"] = min(offset + 128, len(symbols))
+        raw_issue = huichun_coverage.known_raw_issue(self.repo.store.data_dir, day_at_cutoff)
+        issue_dates = Counter(d for d in factor_issues.values() if d is not None)
         return {
             "id": job_id,
+            "_research_controls": controls,
             "data_policy_version": DATA_POLICY_VERSION,
             "start_date": str(start),
             "end_date": str(end),
@@ -718,12 +851,28 @@ class HuichunModeService:
                 candidates, key=lambda r: (r["signal_date"], r["rally_return"]), reverse=True
             ),
             "observations": sorted(observations, key=lambda r: (r["gap_distance"], r["symbol"])),
+            "watch_conversion": conversion,
             "coverage": {
                 "universe": "sh_sz_a_shares",
                 "st_filter": "not_applied_historical_status_unknown",
                 "st_excluded_count": 0,
                 "symbol_count": len(symbols),
                 "candidate_count": len(candidates),
+                "stage_counts": {"universe": len(symbols), **stages, "pending_today": len(observations)},
+                "first_cross_rejection_reasons": dict(rejection_reasons),
+                "expected_daily_date": str(expected_day) if expected_day else None,
+                "publication_status": huichun_coverage.publication_status(
+                    day_at_cutoff, expected_day, self._latest_observed_date, market, raw_issue,
+                ),
+                "publication_checks": {
+                    **market, "previous_date": str(previous_day) if previous_day else None,
+                    "min_coverage_ratio": huichun_coverage.MIN_DAILY_COVERAGE_RATIO,
+                    "known_raw_issue": raw_issue,
+                },
+                "factor_issue_dates": [
+                    {"date": str(d), "count": count}
+                    for d, count in sorted(issue_dates.items(), key=lambda item: (-item[1], item[0]))
+                ],
                 "factor_excluded_count": sum(day is None for day in factor_issues.values()),
                 "factor_quarantined_count": sum(day is not None for day in factor_issues.values()),
                 "factor_issues": [

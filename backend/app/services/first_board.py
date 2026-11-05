@@ -20,10 +20,11 @@ from typing import Literal, Self
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.market_time import CN_TZ
+from app.market_time import CN_TZ, in_first_board_session
 from app.services.first_board_attention import RULE_VERSION, AttentionEvaluator
 from app.services.first_board_attention_data import AttentionData
 from app.services.first_board_context import (
+    SECTOR_MIN_QUOTE_COVERAGE,
     SECTOR_PROXY_NOTE,
     evaluate_sectors,
     load_environment,
@@ -38,6 +39,8 @@ from app.services.first_board_portfolio import (
     paper_order_block_reason,
     portfolio_snapshot,
 )
+from app.services.first_board_priority import candidate_priority, expire_priority
+from app.services.first_board_radar import FirstBoardRadar
 from app.services.fs_utils import atomic_write_text
 from app.services.index_const import CORE_INDEX_SYMBOLS
 from app.strategy import paper
@@ -81,11 +84,7 @@ def _quote_age(stamp: str | None, now: datetime) -> float:
 
 
 def _continuous(now: datetime) -> bool:
-    within_session = now.weekday() < 5 and (
-        day_time(9, 30) <= now.time().replace(tzinfo=None) < day_time(11, 30)
-        or day_time(13) <= now.time().replace(tzinfo=None) < day_time(14, 57)
-    )
-    if not within_session:
+    if not in_first_board_session(now):
         return False
     from app.services import data_integrity
 
@@ -162,6 +161,9 @@ class FirstBoardService:
         self._latest_prices: dict[str, float] = {}
         self._latest_quote_times: dict[str, str] = {}
         self._attention_data = AttentionData(repo)
+        self._radar = FirstBoardRadar(repo.store.data_dir)
+        self._last_priorities: dict[tuple[str, str], dict] = {}
+        self._priority_session: tuple[date, int] | None = None
         self._feedback = FirstBoardFeedback(repo)
         self._attention_evaluator = AttentionEvaluator()
         self._attention_input: dict = {}
@@ -282,6 +284,7 @@ class FirstBoardService:
 
     def stop(self) -> None:
         self._stop.set()
+        self._radar.stop()
         with self._pending_lock:
             self._pending = None
             self._refresh_requested = self._force_refresh_requested = False
@@ -570,6 +573,30 @@ class FirstBoardService:
         if reason not in context["reasons"]:
             context["reasons"].append(reason)
 
+    def _restore_priorities(self, day: date, revision: int) -> None:
+        """Use the already loaded event ledger for dated display only after a restart."""
+        if self._priority_session == (day, revision):
+            return
+        self._priority_session = (day, revision)
+        self._last_priorities.clear()
+        midnight_ms = datetime.combine(day, day_time.min, CN_TZ).timestamp() * 1000
+        for event in self._day_state.get("events", []):
+            p = event["evidence"].get("priority_score")
+            if (event.get("revision") != revision or event.get("date") != str(day)
+                    or not isinstance(p, dict) or p.get("version") != "priority-v1"
+                    or p.get("status") not in {"watch", "shadow", "partial", "ready"}):
+                continue
+            value, known, stamp = p.get("score"), p.get("known_max"), event.get("ts")
+            if (type(value) not in (int, float) or type(known) not in (int, float)
+                    or not 0 <= value <= known <= 100 or type(stamp) is not int
+                    or not midnight_ms <= stamp < midnight_ms + 86_400_000):
+                continue
+            at = datetime.fromtimestamp(stamp / 1000, CN_TZ)
+            self._last_priorities[(event["symbol"], event["pattern"])] = {
+                "score": value, "known_max": known, "status": p["status"], "as_of": at.isoformat(),
+                "version": p["version"], "source": "event",
+            }
+
     def _attention(self, rows: list[dict], fresh: pl.DataFrame, now: datetime, live: bool) -> dict:
         symbols = sorted({row["symbol"] for row in rows})
         self._attention_input = {"minute_price_basis": "unknown", "minute_reason": "分钟输入尚未确认"}
@@ -627,6 +654,9 @@ class FirstBoardService:
                     for row in sample_rows if now.minute % 5 == 0 else []:
                         if not 0 <= _quote_age(row.get("quote_time"), sampled_at) <= config.max_quote_age_seconds:
                             self._expire_attention(row["attention_context"], "采样时个股行情已过期")
+                            if row.get("priority_score"):
+                                expire_priority(row["priority_score"], "采样时个股行情已过期")
+                            row["sector_shadow_eligible"] = False
                             row.update(can_buy=False, event_id=None, suggested_amount=None)
                             row["blocked_reasons"].append("采样时个股行情已过期")
                     coverage = {**snapshot["coverage"],
@@ -697,11 +727,20 @@ class FirstBoardService:
             live = config.enabled and not realtime_blocked and as_of == now.date() and _continuous(now)
             rows = evaluate_candidates(self._candidates, current, config.rules, as_of=as_of)
             attention = self._attention(rows, fresh, now, live)
+            visible_symbols = {r["symbol"] for r in rows if r["symbol"] in times
+                               and r["change_pct"] is not None
+                               and meets_min_change(r["change_pct"], config.rules.min_change_pct)}
+            try:
+                radar = self._radar.snapshot(visible_symbols, now=now, enabled=live)
+            except Exception:  # noqa: BLE001 - optional radar must not disable the original buy gate
+                logger.warning("首板雷达暂不可用", exc_info=True)
+                radar = {}
             messages: list[dict] = []
             with self._lock:
                 if self._stop.is_set() or config.revision != self._config.revision:
                     return
                 self._load_day(as_of)
+                self._restore_priorities(as_of, config.revision)
                 state = copy.deepcopy(self._day_state)
                 state["candidate_symbols"] = sorted({row["symbol"] for row in rows})
                 for row in rows:
@@ -725,16 +764,40 @@ class FirstBoardService:
                     row["sector_confirmation"] = sector
                     row["evidence"]["environment"] = copy.deepcopy(self._environment)
                     row["evidence"]["sector_confirmation"] = copy.deepcopy(sector)
-                    if config.require_sector_confirmation and not sector.get("confirmed"):
+                    needs_industry = config.require_sector_confirmation and not sector.get("confirmed")
+                    radar_evidence = radar.get(symbol) or {}
+                    plate = radar_evidence.get("plate") or {}
+                    radar_concept = plate.get("status") == "ready" and plate.get("plate_type") in (15, 17)
+                    # Only a weak but measurable industry can form a shadow control.
+                    shadow = (row["state"] == "approaching" and not blocked and needs_industry
+                              and sector.get("coverage", 0) >= SECTOR_MIN_QUOTE_COVERAGE
+                              and sector.get("count", 0) >= 3
+                              and (radar_concept or any(g.get("kind") == "concept" and g.get("peer_strong") is True
+                                                        for g in context.get("groups", []))))
+                    if needs_industry:
                         blocked.append(sector.get("reason") or "缺少可确认的行业联动")
-                    if row["state"] == "approaching" and not blocked:
+                    if row["state"] == "approaching" and (not blocked or shadow):
                         budget = buy_budget(self.repo.store.data_dir, config.paper_account_id, symbol=symbol,
                                             prices=prices, sectors=self._sectors, config=config.model_dump())
                         row["evidence"]["risk_budget"] = copy.deepcopy(budget)
                         if not budget["allowed"]:
+                            shadow = False
                             blocked.extend(budget["reasons"])
-                        row["suggested_amount"] = budget.get("amount")
+                        if not blocked:
+                            row["suggested_amount"] = budget.get("amount")
+                    row["sector_shadow_eligible"] = shadow
                     row["can_buy"] = row["state"] == "approaching" and not blocked
+                    priority = candidate_priority(row, rules=config.rules, radar=radar_evidence,
+                                                  live=live and symbol in times)
+                    row["priority_score"] = priority
+                    identity = (symbol, row["pattern"])
+                    if priority["score"] is not None:
+                        self._last_priorities[identity] = {
+                            "score": priority["score"], "known_max": priority["known_max"],
+                            "status": priority["status"], "as_of": now.isoformat(), "version": priority["version"],
+                        }
+                    if identity in self._last_priorities:
+                        row["last_priority"] = self._last_priorities[identity]
                     event_type = "buy_candidate" if row["can_buy"] else row["state"]
                     key = f"{config.revision}:{symbol}:{row['pattern']}"
                     prior = state["last"].get(key)
@@ -816,6 +879,8 @@ class FirstBoardService:
         evidence = copy.deepcopy(row.get("evidence", {}))
         if "attention_context" in row:
             evidence["attention_context"] = copy.deepcopy(row["attention_context"])
+        if "priority_score" in row:
+            evidence["priority_score"] = copy.deepcopy(row["priority_score"])
         return {
             "id": uuid.uuid4().hex, "ts": int(now.timestamp() * 1000), "date": now.date().isoformat(),
             "source": "first_board", "type": event_type, "event_type": event_type,
@@ -863,6 +928,9 @@ class FirstBoardService:
                 row["blocked_reasons"].append(realtime_blocked or "行情已过期或当前不在连续竞价时段")
                 if row.get("attention_context"):
                     self._expire_attention(row["attention_context"], "行情已过期或当前不在有效观察时段")
+                if row.get("priority_score"):
+                    expire_priority(row["priority_score"], "行情已过期或当前不在有效观察时段")
+                row["sector_shadow_eligible"] = False
         if not usable or result["status"] == "error":
             result["attention_sampling"] = {**result.get("attention_sampling", self._attention_sampling),
                                             "status": "paused", "reason": "有效盘中盯盘恢复后继续采样"}

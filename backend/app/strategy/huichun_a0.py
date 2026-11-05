@@ -41,6 +41,14 @@ class A0AuditResult:
 
 _DEFAULT_PARAMS = A0Params()
 _GROUP = ["symbol", "segment_id"]
+_CYCLE_DETAILS = {
+    "pullback_fraction": pl.Float64,
+    "pullback_bars": pl.UInt32,
+    "recovery_return": pl.Float64,
+    "first_watch_date": pl.Date,
+    "watch_lead_bars": pl.UInt32,
+    "watch_elapsed_bars": pl.UInt32,
+}
 CYCLE_SCHEMA = {
     "symbol": pl.String,
     "segment_id": pl.String,
@@ -68,6 +76,7 @@ CYCLE_SCHEMA = {
     "reasons": pl.String,
     "audit_date": pl.Date,
     "last_observation_date": pl.Date,
+    **_CYCLE_DETAILS,
 }
 
 
@@ -193,6 +202,63 @@ def _at_least(value: float, threshold: float) -> bool:
     if not isfinite(value) or not isfinite(threshold):
         return value >= threshold
     return value >= threshold or threshold - value <= 2 * max(ulp(value), ulp(threshold))
+
+
+def pending_shape(params: A0Params) -> pl.Expr:
+    """Shared watch gate on bars in the qualified D-to-first-R interval."""
+    return (
+        (pl.col("date") > pl.col("d_date"))
+        & (pl.col("previous_q") < pl.col("q"))
+        & (pl.col("q") < 0)
+        & (pl.col("close") > pl.col("ma60"))
+        & (pl.col("ma60") > pl.col("ma60_lag"))
+        & (pl.col("ma60_lag") > 0)
+        & pl.col("zero_distance").map_elements(
+            lambda value: _at_least(params.zero_threshold, value), return_dtype=pl.Boolean
+        )
+    ).fill_null(False)
+
+
+def _cycle_details(cycles: pl.DataFrame, indicators: pl.DataFrame, params: A0Params) -> pl.DataFrame:
+    """Measure only the original qualified cycles, without changing their decisions."""
+    keys = [*_GROUP, "d_date"]
+    qualified = cycles.filter(pl.col("rally_qualified")).select(*keys, "r_date", "d_close", "g_close")
+    if qualified.is_empty():
+        return cycles
+    bars = (
+        indicators.select(
+            *_GROUP, "date", "close", "prior_bars", "q", "zero_distance", "ma60", "ma60_lag",
+            pl.col("q").shift(1).over(_GROUP).alias("previous_q"),
+            pl.when(pl.col("dead_cross")).then(pl.col("date"))
+            .forward_fill().over(_GROUP).alias("d_date"),
+        )
+        .join(qualified, on=keys, how="inner")
+        .filter(pl.col("r_date").is_null() | (pl.col("date") <= pl.col("r_date")))
+        .with_columns(pending_shape(params).alias("_watch"))
+    )
+    # Explicit date/bar minima and maxima keep the measurements independent of join order.
+    stats = bars.group_by(keys).agg(
+        pl.col("date").filter(pl.col("_watch")).min().alias("first_watch_date"),
+        pl.col("prior_bars").filter(pl.col("_watch")).min().alias("_first_bar"),
+        pl.col("prior_bars").max().alias("_last_bar"),
+        pl.col("prior_bars").min().alias("_d_bar"),
+        pl.col("close").min().alias("_trough"),
+    )
+    return (
+        cycles.drop(*_CYCLE_DETAILS).join(stats, on=keys, how="left", maintain_order="left")
+        .with_columns((pl.col("_last_bar") - pl.col("_first_bar")).alias("watch_elapsed_bars"))
+        .with_columns(
+            pl.when(pl.col("r_date").is_not_null()).then(pl.col("watch_elapsed_bars"))
+            .alias("watch_lead_bars"),
+            pl.when(pl.col("r_date").is_not_null()).then(pl.col("_last_bar") - pl.col("_d_bar"))
+            .alias("pullback_bars"),
+            pl.when(pl.col("r_date").is_not_null() & (pl.col("d_close") > pl.col("g_close")))
+            .then((pl.col("d_close") - pl.col("_trough")) / (pl.col("d_close") - pl.col("g_close")))
+            .alias("pullback_fraction"),
+            (pl.col("r_close") / pl.col("_trough") - 1).alias("recovery_return"),
+        )
+        .select(*CYCLE_SCHEMA)
+    )
 
 
 def _cycle_row(g: dict, d: dict | None, r: dict | None, params: A0Params) -> dict:
@@ -336,7 +402,11 @@ def audit_a0(
         raise ValueError("start must not be after end")
     prepared = _prepare(frame, end)
     indicators = _indicators(prepared, params)
-    cycles = _cycles(indicators, params, end).filter(pl.col("audit_date") >= start)
+    cycles = _cycle_details(
+        _cycles(indicators, params, end).filter(pl.col("audit_date") >= start),
+        indicators,
+        params,
+    )
     signals = cycles.filter(pl.col("shape_match").fill_null(False))
     return A0AuditResult(
         cycles=cycles,

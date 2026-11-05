@@ -13,11 +13,13 @@ import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
 import { fmtPrice, fmtPct, priceColorClass } from '@/lib/format'
 import { RulesPanel } from './RulesPanel'
+import { ResearchPanel } from './ResearchPanel'
+import { ShapeDetails, StageCounts, ThresholdCell, WatchConversion } from './ScanDiagnostics'
 import { SectorMembership, useSectorMembership, type Membership } from './SectorMembership'
 import { pinnedFirst, StockMarkButtons, useStockMarks, type MarkKind } from './StockMarks'
 import { buttonClass, ErrorNotice, inputClass, LoadingRows, Notice, Pagination, panelClass, pct, price, primaryClass, stamp } from './shared'
 
-const tabs = [{ id: 'candidates', label: '候选筛选' }, { id: 'watch', label: '待金叉观察池' }, { id: 'tracking', label: '收益跟踪' }, { id: 'rules', label: '规则设置' }] as const
+const tabs = [{ id: 'candidates', label: '候选筛选' }, { id: 'watch', label: '待金叉观察池' }, { id: 'tracking', label: '收益跟踪' }, { id: 'research', label: '全样本研究' }, { id: 'rules', label: '规则设置' }] as const
 type Tab = typeof tabs[number]['id']
 const PAGE_SIZE = 50
 type CandidateRow = (HuichunCandidate | HuichunObservation) & { latest_price?: number | null; change_pct?: number | null; sector_text?: string | null; membership?: Membership }
@@ -28,7 +30,7 @@ const candidateColumns: ColumnConfig[] = [
 ].map(([id, label]) => ({ id, label, source: { type: 'builtin', key: id }, visible: true }))
 const observationColumns: ColumnConfig[] = [
   ...candidateColumns.slice(0, 4),
-  ...[['observation_date', '观察日期'], ['sector_text', '题材 / 板块'], ['gap_distance', '当前差距'], ['previous_gap_distance', '昨日差距']]
+  ...[['observation_date', '观察日期'], ['sector_text', '题材 / 板块'], ['cross_threshold_return', '次日金叉条件'], ['gap_distance', '当前差距'], ['previous_gap_distance', '昨日差距']]
     .map(([id, label]): ColumnConfig => ({ id, label, source: { type: 'builtin', key: id }, visible: true })),
   ...candidateColumns.slice(6).map(column => column.id === 'raw_close' ? { ...column, label: '观察收盘（元）' } : column),
 ]
@@ -205,6 +207,7 @@ export function Huichun() {
     if (previous && job.id && (job.kind === 'scan' || job.kind === 'tracking') && job.status === 'completed'
       && (job.id !== previous.id || previous.status !== 'completed')) {
       void client.invalidateQueries({ queryKey: QK.huichunTracking })
+      void client.invalidateQueries({ queryKey: QK.huichunResearch })
     }
   }, [snapshot.data?.job, client])
   useEffect(() => {
@@ -268,7 +271,8 @@ export function Huichun() {
             {config.data && scanResult.rule_revision !== config.data.revision && <Notice>以下结果使用版本 {scanResult.rule_revision}，当前规则为版本 {config.data.revision}。重新筛选可应用新规则。</Notice>}
             <section className={panelClass} aria-labelledby="huichun-candidates-heading">
               <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 id="huichun-candidates-heading" className="text-sm font-semibold">{watching ? '待金叉观察池' : '候选股票'} <span className="ml-1 font-normal text-secondary">{watching && scanResult.observations === undefined ? '待生成' : `${candidates.length} ${watching ? '只股票' : '条信号'}`}</span></h2><p className="mt-1.5 text-xs text-secondary">{watching ? `观察日期：${scanResult.observation_date ?? '尚未生成'}` : `${scanResult.start_date} ～ ${scanResult.end_date}`} · 规则版本 {scanResult.rule_revision} · {stamp(scanResult.created_at)}</p></div>{!watching && candidates.length > 0 && <button className={buttonClass} disabled={!canAdd || selected.length === 0} onClick={() => addTracking.mutate({ scan_id: scanResult.id, candidate_ids: selected })}>加入所选跟踪{selected.length > 0 ? `（${selected.length}）` : ''}</button>}</div>
-              {watching && <p className="mt-3 max-w-prose text-xs leading-relaxed text-secondary">前轮涨幅、零轴位置和均线条件已满足；DIF 仍低于 DEA，两线绝对差值较上一交易日缩小。表中差距分别为 |DIF − DEA| ÷ 各自当日复权收盘价，默认按当前差距从小到大排列。状态按收盘日线判断，现价刷新不会重新判定形态。</p>}
+              <StageCounts coverage={scanResult.coverage} day={scanResult.observation_date ?? scanResult.end_date} />
+              {watching && <p className="mt-3 max-w-prose text-xs leading-relaxed text-secondary">DIF 低于 DEA 且两线差值收敛，默认按当前差距排序。次日收盘须严格超过未取整的临界值才会金叉。临界价按观察日原价尺度折算，遇除权须换算；完整形态仍取决于实际收盘时的零轴和均线条件。</p>}
               {!watching && <>{notice && <div className="mt-3"><Notice>{notice}</Notice></div>}<div className="mt-3"><ErrorNotice error={addTracking.error ?? tracking.error} retry={tracking.error ? () => void tracking.refetch() : undefined} /></div></>}
               {candidates.length > 0 && <div className="mt-3 space-y-2"><p className="text-xs text-secondary">行情日期：{quotes.data?.as_of ?? (quotes.isFetching ? '读取中' : '暂无行情')} · 现价与涨跌幅为最新行情，{watching ? '观察' : '信号'}收盘为历史基准。</p><ErrorNotice error={quotes.error} retry={() => void quotes.refetch()} /></div>}
               {candidates.length > 0 && <div className="mt-2 space-y-2 text-xs text-secondary">
@@ -296,11 +300,13 @@ export function Huichun() {
                   <td className="whitespace-nowrap px-3 py-3 tabular-nums">{rowDate}</td>
                   {watching && <td className="px-3 py-3"><span className="whitespace-nowrap rounded border border-border px-2 py-1 text-secondary">待金叉</span></td>}
                   <td className="px-3 py-3"><SectorMembership key={`${tab}:${row.id}`} value={row.membership} loading={sectors.loading} /></td>
+                  {observation && <ThresholdCell row={observation} />}
                   {observation && <><td className="px-3 py-3 tabular-nums" title={`DIF ${observation.dif.toFixed(4)} / DEA ${observation.dea.toFixed(4)}；差值 ${observation.q.toFixed(4)}`}>{pct(observation.gap_distance)}</td><td className="px-3 py-3 tabular-nums" title={`上一交易日差值 ${observation.previous_q.toFixed(4)}；差距比例以各自当日收盘价计算`}>{pct(observation.previous_gap_distance)}</td></>}
-                  <td className="px-3 py-3 tabular-nums" title={`${row.g_date} 金叉 → ${row.d_date} 死叉`}>{pct(row.rally_return)}</td><td className="px-3 py-3 tabular-nums">{pct(row.zero_distance)}</td><td className="px-3 py-3 tabular-nums">{pct(row.close_above_ma_pct)}</td><td className="px-3 py-3 tabular-nums">{pct(row.ma_slope_pct)}</td><td className="px-3 py-3 tabular-nums">{price(row.raw_close)}</td>{!watching && <td className="px-3 py-3"><button className={`${buttonClass} whitespace-nowrap`} disabled={!canAdd || added} onClick={() => addTracking.mutate({ scan_id: scanResult.id, candidate_ids: [row.id] })}>{added && <Check className="h-3.5 w-3.5" aria-hidden="true" />}{added ? '已跟踪' : '加入跟踪'}</button></td>}
+                  <td className="px-3 py-3 tabular-nums" title={`${row.g_date} 金叉 → ${row.d_date} 死叉`}>{pct(row.rally_return)}{'signal_date' in row && <ShapeDetails row={row} />}</td><td className="px-3 py-3 tabular-nums">{pct(row.zero_distance)}</td><td className="px-3 py-3 tabular-nums">{pct(row.close_above_ma_pct)}</td><td className="px-3 py-3 tabular-nums">{pct(row.ma_slope_pct)}</td><td className="px-3 py-3 tabular-nums">{price(row.raw_close)}</td>{!watching && <td className="px-3 py-3"><button className={`${buttonClass} whitespace-nowrap`} disabled={!canAdd || added} onClick={() => addTracking.mutate({ scan_id: scanResult.id, candidate_ids: [row.id] })}>{added && <Check className="h-3.5 w-3.5" aria-hidden="true" />}{added ? '已跟踪' : '加入跟踪'}</button></td>}
                 </tr>
               })}</tbody></table></div>}
               <Pagination page={candidatePage} pages={Math.ceil(candidates.length / PAGE_SIZE)} onPage={setListPage} />
+              {watching && <WatchConversion scan={scanResult} />}
               <p className="mt-3 text-xs leading-relaxed text-secondary">{watching ? '待金叉仅供提前观察，不保证随后金叉；尚未检查早盘放量。补充新日线并重新筛选后，确认且符合规则的股票进入候选，条件失效的股票退出观察池。收益跟踪从已确认候选加入。' : '以上为形态候选；历史 ST、停牌及可成交条件尚未全部核验。'}</p>
             </section>
             <details className="text-xs text-secondary"><summary className="cursor-pointer py-1">数据覆盖与筛选说明</summary><div className="mt-2 space-y-2 leading-relaxed"><p>覆盖 {scanResult.coverage.symbol_count} 只股票；复权异常整股排除 {scanResult.coverage.factor_excluded_count} 只；异常日起隔离 {scanResult.coverage.factor_quarantined_count ?? '—'} 只；存在历史缺口 {scanResult.coverage.gap_symbol_count} 只。数据最近日期：{scanResult.coverage.latest_daily_date ?? '未知'}。</p><p>{scanResult.coverage.calendar_source === 'official_exchange_calendar' ? '交易日已按交易所日历核验。' : '交易日暂取已有市场日线记录，完整交易日历缺失，收益计算将标记为数据缺失。'}缺口会中断形态计算，数据不足的区间不产生信号。</p><ul className="ml-4 list-disc space-y-1">{scanResult.limitations.map(item => <li key={item}>{item}</li>)}</ul></div></details>
@@ -312,6 +318,7 @@ export function Huichun() {
           <div className="mt-3 space-y-3"><ErrorNotice error={tracking.error} retry={() => void tracking.refetch()} /><ErrorNotice error={refresh.error ?? remove.error} />{records.length > 0 && <ErrorNotice error={quotes.error} retry={() => void quotes.refetch()} />}</div>
           {tracking.isLoading ? <LoadingRows /> : records.length === 0 ? <div className="py-8 text-sm leading-relaxed text-secondary">尚未添加跟踪股票。到“候选筛选”选择股票并加入跟踪。<button className={`${buttonClass} ml-3`} onClick={() => changeTab('candidates')}>查看候选</button></div> : <><div className="mt-4 overflow-x-auto"><table className="w-full min-w-[1280px] table-fixed text-left text-xs" aria-label="回春收益跟踪"><colgroup><col className="w-[10%]" /><col className="w-[12%]" /><col className="w-[9%]" /><col className="w-[8%]" /><col className="w-[12%]" />{[1, 2, 3, 4, 5].map(horizon => <col key={horizon} className="w-[8.2%]" />)}<col className="w-[8%]" /></colgroup><thead className="text-secondary"><tr>{['股票', '信号日 / 版本', '基准收盘（元）', '现价（元）', '信号日至今收益率', 'T+1', 'T+2', 'T+3', 'T+4', 'T+5', '操作'].map(label => <th key={label} className={cn("whitespace-nowrap px-3 py-3 font-normal", label === "现价（元）" && "text-right")}>{label}{label === "信号日至今收益率" && <span className="ml-1 text-[11px]">复权</span>}</th>)}</tr></thead><tbody>{visibleTracking.map(row => <tr key={row.id} className="border-t border-border"><td className="px-3 py-3"><button className="whitespace-nowrap font-medium hover:underline focus-visible:outline focus-visible:outline-accent" onClick={() => openStock(row)}>{row.name}</button><span className="mt-1 block text-secondary">{row.symbol}</span></td><td className="whitespace-nowrap px-3 py-3 tabular-nums">{row.signal_date}<details className="mt-1 text-secondary"><summary className="cursor-pointer">版本 {row.rule_revision}</summary><p className="mt-1 whitespace-normal leading-relaxed">前段涨幅 ≥ {pct(row.rules.rally_threshold)}；零轴距离 ≤ {pct(row.rules.zero_threshold)}；均线 {row.rules.ma_window} 日 / 比较 {row.rules.slope_lag} 日；预热 {row.rules.warmup_bars} 根。</p></details></td><td className="px-3 py-3 tabular-nums">{price(row.base_close)}</td><TrackingPriceCell quote={quotesBySymbol.get(row.symbol)} loading={quotes.isPending} /><CurrentReturnCell row={row} quote={quotesBySymbol.get(row.symbol)} />{[1, 2, 3, 4, 5].map(horizon => <ReturnCell key={horizon} value={row.returns.find(value => value.horizon === horizon)} />)}<td className="px-3 py-3"><button className={buttonClass} disabled={busy || remove.isPending || tracking.isError} onClick={() => remove.mutate(row.id)}>移除</button></td></tr>)}</tbody></table></div><Pagination page={trackPage} pages={Math.ceil(records.length / PAGE_SIZE)} onPage={setTrackingPage} /><p className="mt-4 text-xs leading-relaxed text-secondary">“待刷新”时点击“刷新收益”更新复权依据。“未到期”表示仍在等待完整交易日；“数据缺失”表示观察窗口有缺口。复权异常或基准变化时暂停计算，空缺不按 0 收益处理。“复权未核验”表示数值可计算，但除权事件完整性尚未验证，不能视为已验证收益。</p></>}
         </section>}
+        {tab === 'research' && <ResearchPanel currentRevision={config.data?.revision} busy={!!actionsUnavailable || refresh.isPending} onRefresh={() => refresh.mutate()} refreshError={refresh.error} />}
         {tab === 'rules' && (config.isLoading ? <LoadingRows /> : config.data ? <RulesPanel config={config.data} onSaved={next => { client.setQueryData(QK.huichunConfig, next); void client.invalidateQueries({ queryKey: QK.huichunSnapshot }) }} reload={() => config.refetch().then(result => result.data)} /> : null)}
       </div>
     </div>

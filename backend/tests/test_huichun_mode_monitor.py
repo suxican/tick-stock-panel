@@ -106,6 +106,235 @@ def replace_factors(svc, factors):
     factors.write_parquet(svc.repo.store.data_dir / "adj_factor/test.parquet")
 
 
+@pytest.mark.parametrize("when,day_offset,expected", [
+    ("scan", 1, "completed"), ("scan", 0, "failed"),
+    ("tracking_read", 1, "failed"), ("after_scan", 0, "failed"),
+    ("research_read", 1, "failed"),
+])
+def test_history_scan_guards_each_read_window_and_handoff(watch_environment, monkeypatch, when, day_offset, expected):
+    svc, raw, _, days, _ = watch_environment
+    end = days[300]
+    path = svc.repo.store.data_dir / "kline_daily" / f"date={days[300 + day_offset]}" / "extra.parquet"
+    def mutate():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        raw.head(0).write_parquet(path)
+    original = svc._scan
+    def run_scan(*args):
+        result = original(*args)
+        if when == "scan":
+            mutate()
+        return result
+    monkeypatch.setattr(svc, "_scan", run_scan)
+    def tracking():
+        if when in ("after_scan", "tracking_read"):
+            mutate()
+        return {"tracked": {}} if when == "tracking_read" else {}
+    monkeypatch.setattr(svc, "_calculate_tracking", tracking)
+    if when == "research_read":
+        def refresh(*args):
+            mutate()
+            return {"records": [], "updated_at": None}
+        monkeypatch.setattr(module.huichun_research, "refresh", refresh)
+    svc.start_scan(end, end)
+    state = svc.wait()
+    assert state["job"]["status"] == expected, state["job"]
+    if expected == "failed":
+        assert "行情已更新" in state["job"]["error"]
+
+
+def test_cross_threshold_and_first_watch_are_aligned_with_the_next_real_bar(watch_environment):
+    svc, raw, factors, days, _ = watch_environment
+    replace_factors(svc, factors.with_columns(pl.lit(2.0).alias("ex_factor")))
+    seen = scan(svc, days[:349])["observations"][0]
+    threshold = seen["cross_threshold_price"]
+    assert threshold == pytest.approx(seen["raw_close"] * (1 + seen["cross_threshold_return"]))
+    first = date.fromisoformat(seen["first_watch_date"])
+    later = scan(svc, days[:350])
+    row = later["candidates"][0]
+    lead = days.index(days[349]) - days.index(first)
+    assert row["first_watch_date"] == str(first)
+    assert row["watch_lead_bars"] == lead
+    for horizon in later["watch_conversion"]:
+        assert horizon["total"] == horizon["resolved"] == 1
+        assert horizon["confirmed"] == int(lead <= horizon["horizon"])
+    assert seen["threshold_zero_pass"] is True
+    assert isinstance(seen["threshold_trend_pass"], bool)
+    for scale, has_cross in [(0.99999, False), (1.00001, True)]:
+        price = threshold * scale
+        changed = raw.with_columns([
+            pl.when((pl.col("symbol") == seen["symbol"]) & (pl.col("date") == days[349]))
+            .then(pl.lit(price)).otherwise(pl.col(key)).alias(key)
+            for key in ("open", "high", "low", "close")
+        ])
+        prepared, _ = svc._prepare_scan_batch(
+            changed, factors.with_columns(pl.lit(2.0).alias("ex_factor")), calendar=days[:350],
+            end=days[349], listings={}, expected_symbols=[seen["symbol"]],
+        )
+        result = module.audit_a0(
+            prepared.frame, start=days[349], end=days[349],
+            params=module.A0Params(ma_window=3, slope_lag=1, zero_threshold=1.0),
+        )
+        bar = result.indicators.filter(pl.col("symbol") == seen["symbol"]).row(0, named=True)
+        assert bar["golden_cross"] is has_cross
+
+
+def at_close(monkeypatch, day):
+    monkeypatch.setattr(module, "_now", lambda: datetime.combine(
+        day, datetime.min.time(), CN_TZ,
+    ).replace(hour=16))
+
+
+@pytest.mark.parametrize("kind,status", [
+    ("stale", "stale"), ("snapshot", "incomplete"), ("partial", "incomplete"),
+    ("unverified", "calendar_unverified"), ("history", "historical"), ("raw_issue", "incomplete"),
+    ("before_final_cutoff", "incomplete"),
+])
+def test_monitor_requires_current_final_daily_batch(watch_environment, monkeypatch, kind, status):
+    svc, raw, _, days, _ = watch_environment
+    cutoff = days[349]
+    at_close(monkeypatch, days[350] if kind in {"stale", "history"} else cutoff)
+    if kind == "before_final_cutoff":
+        monkeypatch.setattr(module, "_now", lambda: datetime.combine(
+            cutoff, datetime.min.time(), CN_TZ,
+        ).replace(hour=15, minute=25))
+    raw = raw.filter(pl.col("date") <= (days[350] if kind == "history" else cutoff))
+    if kind == "snapshot":
+        quote_ms = int(datetime.combine(cutoff, datetime.min.time(), CN_TZ)
+                       .replace(hour=15, minute=1).timestamp() * 1000)
+        raw = raw.with_columns(pl.when(pl.col("date") == cutoff)
+                               .then(quote_ms).otherwise(None).alias("quote_ts"))
+    if kind == "partial":
+        raw = raw.filter((pl.col("date") != cutoff) | (pl.col("symbol") == "600001.SH"))
+    if kind == "unverified":
+        monkeypatch.setattr(svc, "_calendar_path", None)
+    if kind == "raw_issue":
+        from app.services import daily_health
+        from app.services.data_integrity import IntegrityIssue
+
+        daily_health.record_issues(svc.repo.store.data_dir, [
+            IntegrityIssue(cutoff, "kline_daily", "invalid", symbols=("600002.SH",)),
+        ])
+    replace_raw(svc, raw)
+    calls = []
+    svc._publish = calls.extend
+    result = scan(svc, days[:350])
+    assert result["candidates"]  # Results stay available for research.
+    assert result["coverage"]["publication_status"] == status
+    assert result["coverage"]["expected_daily_date"] == (
+        None if kind == "unverified" else str(module._now().date())
+    )
+    checks = result["coverage"]["publication_checks"]
+    assert checks["active_symbols"] == (1 if kind == "partial" else 2)
+    assert checks["previous_active_symbols"] == 2
+    assert checks["previous_date"] == str(days[348])
+    assert checks["unfinalized_symbols"] == (2 if kind in {"snapshot", "before_final_cutoff"} else 0)
+    assert checks["known_raw_issue"] is (kind == "raw_issue")
+    assert calls == []
+
+
+def test_at_final_cutoff_snapshot_can_notify_over_the_weekend(watch_environment, monkeypatch):
+    svc, raw, _, days, _ = watch_environment
+    friday = days[349]
+    assert friday.weekday() == 4
+    at_close(monkeypatch, friday + timedelta(days=2))
+    ts = int(datetime.combine(friday, datetime.min.time(), CN_TZ)
+             .replace(hour=15, minute=30).timestamp() * 1000)
+    raw = raw.filter(pl.col("date") <= friday).with_columns(
+        pl.when(pl.col("date") == friday).then(ts).otherwise(None).alias("quote_ts"),
+    )
+    replace_raw(svc, raw)
+    calls = []
+    svc._publish = calls.extend
+    result = scan(svc, days[:350])
+    assert result["coverage"]["publication_status"] == "ready"
+    assert result["coverage"]["expected_daily_date"] == str(friday)
+    assert [e["date"] for e in calls] == [str(friday)]
+
+
+def test_mid_scan_session_close_suppresses_old_day_publication(watch_environment, monkeypatch):
+    svc, raw, _, days, _ = watch_environment
+    day = days[349]
+    clock = [datetime.combine(day, datetime.min.time(), CN_TZ).replace(hour=14)]
+    monkeypatch.setattr(module, "_now", lambda: clock[0])
+    replace_raw(svc, raw.filter(pl.col("date") <= days[348]))
+    original = svc._publish_scan_events
+
+    def after_next_close(scan):
+        clock[0] = clock[0].replace(hour=15)
+        original(scan)
+
+    monkeypatch.setattr(svc, "_publish_scan_events", after_next_close)
+    calls = []
+    svc._publish = calls.extend
+    result = scan(svc, days[:349])
+    assert result["coverage"]["publication_status"] == "ready"
+    assert result["observations"] and calls == []
+
+
+def test_stage_counts_report_rejected_first_cross(watch_environment):
+    svc, _, _, days, _ = watch_environment
+    config = svc.get_config()
+    svc.save_config({**config["rules"], "zero_threshold": 0.0}, expected_revision=config["revision"])
+    coverage = scan(svc, days[:350])["coverage"]
+    stages = coverage["stage_counts"]
+    assert stages["first_cross_today"] == stages["first_cross_rejected_today"] == 1
+    assert stages["confirmed_today"] == stages["pending_today"] == 0
+    assert coverage["first_cross_rejection_reasons"] == {
+        "zero_distance_exceeded": 1, "close_not_above_ma": 0, "ma_not_rising": 0,
+        "indicator_history_insufficient": 0,
+    }
+
+
+def test_cutoff_rejections_can_have_overlapping_reasons():
+    from app.services.huichun_coverage import stage_counts
+    from app.strategy.huichun_a0 import A0AuditResult
+
+    day = date(2026, 11, 4)
+    cycles = pl.DataFrame({
+        "rally_qualified": [True, True, True], "r_date": [day, day, date(2026, 11, 3)],
+        "status": ["first_cross_rejected"] * 3, "last_observation_date": [day] * 3,
+        "shape_match": [False] * 3,
+        "reasons": ["zero_distance_exceeded;ma_not_rising", "ma_not_rising", "close_not_above_ma"],
+    })
+    prices = pl.DataFrame({"date": [day] * 2, "prior_bars": [260] * 2})
+    counts, reasons = stage_counts(A0AuditResult(cycles, pl.DataFrame(), prices), day, 250)
+    assert counts["first_cross_rejected_today"] == 2
+    assert reasons == {"zero_distance_exceeded": 1, "ma_not_rising": 2}
+
+
+@pytest.mark.parametrize("active,expected", [(94, "incomplete"), (95, "ready")])
+def test_publication_coverage_boundary(active, expected):
+    from collections import Counter
+
+    from app.services.huichun_coverage import publication_status
+
+    day = date(2026, 11, 4)
+    counts = Counter(active_symbols=active, previous_active_symbols=100)
+    assert publication_status(day, day, day, counts, False) == expected
+
+
+@pytest.mark.parametrize("index,observed,confirmed", [(348, 1, 0), (349, 0, 1)])
+def test_stage_counts_describe_cutoff_even_for_range_scans(watch_environment, index, observed, confirmed):
+    svc, _, _, days, _ = watch_environment
+    cov = scan(svc, days[:index + 1])["coverage"]
+    assert cov["stage_counts"] == {
+        "universe": 2, "valid_close": 2, "warmup_ready": 2,
+        "qualified_waiting_first_cross": observed, "first_cross_today": confirmed,
+        "first_cross_rejected_today": 0, "confirmed_today": confirmed, "pending_today": observed,
+    }
+
+
+def test_factor_issue_dates_count_unique_symbols(watch_environment):
+    svc, _, _, days, _ = watch_environment
+    replace_factors(svc, pl.DataFrame({
+        "symbol": ["600001.SH", "600001.SH", "600002.SH"],
+        "trade_date": [days[340], days[342], days[340]], "ex_factor": [-1.0] * 3,
+    }))
+    cov = scan(svc, days)["coverage"]
+    assert cov["factor_issue_dates"] == [{"date": str(days[340]), "count": 2}]
+    assert cov["stage_counts"]["valid_close"] == 0
+
+
 @pytest.mark.parametrize("factor_values", [[10.0], [None], [1.0, 1.0]])
 def test_later_invalid_factor_preserves_earlier_candidates(watch_environment, factor_values):
     svc, _, factors, days, _ = watch_environment
@@ -163,10 +392,11 @@ def test_current_st_name_does_not_rewrite_historical_candidates(watch_environmen
     (349, "a0_confirmed", "candidates"),
 ])
 def test_latest_scan_publishes_dated_raw_price_events_after_persistence(
-    watch_environment, cutoff_index, event_type, pool,
+    watch_environment, monkeypatch, cutoff_index, event_type, pool,
 ):
     svc, raw, factors, days, calendar_path = watch_environment
     cutoff = days[cutoff_index]
+    at_close(monkeypatch, cutoff)
     replace_raw(svc, raw.filter(pl.col("date") <= cutoff))
     replace_factors(svc, factors.with_columns(pl.lit(2.0).alias("ex_factor")))
     published = []
@@ -247,6 +477,7 @@ def test_failed_or_superseded_scan_never_publishes_events(
     watch_environment, monkeypatch, failure,
 ):
     svc, raw, _, days, calendar_path = watch_environment
+    at_close(monkeypatch, days[349])
     replace_raw(svc, raw.filter(pl.col("date") <= days[349]))
     published = []
     monitored = HuichunModeService(
@@ -278,8 +509,9 @@ def test_failed_or_superseded_scan_never_publishes_events(
         monitored.close(timeout=10)
 
 
-def test_notification_failure_cannot_fail_a_successful_scan(watch_environment):
+def test_notification_failure_cannot_fail_a_successful_scan(watch_environment, monkeypatch):
     svc, raw, _, days, calendar_path = watch_environment
+    at_close(monkeypatch, days[349])
     replace_raw(svc, raw.filter(pl.col("date") <= days[349]))
     calls = []
 

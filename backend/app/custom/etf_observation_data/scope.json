@@ -1,0 +1,135 @@
+[
+  {
+    "symbol": "510300.SH",
+    "scope": "fund_total_verified",
+    "reason": "管理人上市公告的流通规定涵盖全部基金份额。2026年第1号招募说明书（内容截至7月31日）第十章规定普通及集合申购由交易所和中国结算办理，份额交收登记、赎回注销。",
+    "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202608121827910087_1.pdf",
+    "listing_notice_url": "https://epaper.stcn.com/paper/zqsb/page/1/2012-05/23/D006/20120523D006_pdf.pdf",
+    "verified_from": "2026-08-04",
+    "verified_through": "2026-11-04",
+    "quarter_residual_units": {
+      "2026-06-30": 10,
+      "2026-09-30": 10
+    }
+  },
+  {
+    "symbol": "510310.SH",
+    "scope": "listed_only",
+    "reason": "说明书将场内和场外分别登记、分别申赎，并允许符合条件的场外份额跨系统转入。二、三季末报告各披露场外44,159,905份。两个时点余额相等不能补成每天的场外余额。",
+    "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202607301827498071_1.pdf",
+    "verified_from": "2026-08-04",
+    "verified_through": "2026-11-04",
+    "quarter_residual_units": {
+      "2026-06-30": -17,
+      "2026-09-30": -17
+    }
+  },
+  {
+    "symbol": "510330.SH",
+    "scope": "unverified",
+    "reason": "上市时公告所有份额可交易。现行说明书第九章另列北京直销网点的场外股票申赎，同用90万份最小单位，由登记机构确认。未获该渠道所得份额现时全部列入上交所日表的直接证明。两季末均吻合，窗口内只发布场内指标。",
+    "source_url": "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2026-05-29/510330_20260529_K795.pdf",
+    "off_market_opening_notice_url": "https://epaper.stcn.com/paper/zqsb/page/1/2015-07/14/B026/20150714B026_pdf.pdf",
+    "listing_notice_url": "https://vip.stock.finance.sina.com.cn/fund/go.php/vAkFundInfo_JJGKXX/q/193620.phtml",
+    "verified_from": "2026-08-04",
+    "verified_through": "2026-11-04",
+    "quarter_residual_units": {
+      "2026-06-30": -28,
+      "2026-09-30": -28
+    }
+  },
+  {
+    "symbol": "159919.SZ",
+    "scope": "fund_total_verified",
+    "reason": "上市公告规定全部基金份额可交易。说明书第十章列实物及现金替代申赎。实物申赎可向直销中心提交，中国结算深圳分公司办理ETF份额变更登记；现金替代模式同样由其办理份额交收、注销。当前说明书未设置另行登记的场外现金份额。",
+    "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202605171822383713_1.pdf",
+    "listing_notice_url": "https://epaper.stcn.com/paper/zqsb/page/1/2012-05/23/D041/20120523D041_pdf.pdf",
+    "registrar_guide_url": "https://www.chinaclear.cn/zdjs/fszscbb/202608/9589aee120124e47a4ac8831b2082f7d/files/%E3%80%8A%E4%B8%AD%E5%9B%BD%E8%AF%81%E5%88%B8%E7%99%BB%E8%AE%B0%E7%BB%93%E7%AE%97%E6%9C%89%E9%99%90%E8%B4%A3%E4%BB%BB%E5%85%AC%E5%8F%B8%E6%B7%B1%E5%9C%B3%E5%88%86%E5%85%AC%E5%8F%B8%E4%BA%A4%E6%98%93%E5%9E%8B%E5%BC%80%E6%94%BE%E5%BC%8F%E5%9F%BA%E9%87%91%E7%99%BB%E8%AE%B0%E7%BB%93%E7%AE%97%E4%B8%9A%E5%8A%A1%E6%8C%87%E5%8D%97%E3%80%8B.pdf#page=51",
+    "verified_from": "2026-08-04",
+    "verified_through": "2026-11-04",
+    "quarter_residual_units": {
+      "2026-06-30": -76,
+      "2026-09-30": -76
+    },
+    "registrar_guide_section": "2026年8月版 §5.4.3（一）第11至13项；PDF第51至52页。"
+  },
+  {
+    "symbol": "510050.SH",
+    "scope": "fund_total_verified",
+    "reason": "上市交易暨开放日常申赎公告载明全部份额均可交易。现行说明书第十章列申赎代理券商，依据交易所及中国结算规则办理收市后份额交收，未另列场外份额登记。",
+    "source_url": "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2026-05-29/510050_20260529_YATB.pdf",
+    "listing_notice_url": "https://finance.sina.com.cn/roll/20050218/05311365103.shtml",
+    "verified_from": "2026-08-04",
+    "verified_through": "2026-11-04",
+    "quarter_residual_units": {
+      "2026-06-30": 43,
+      "2026-09-30": 43
+    }
+  },
+  {
+    "symbol": "510500.SH",
+    "scope": "fund_total_verified",
+    "reason": "上市公告载明所有基金份额上市交易。2026年7月29日说明书9.1、9.4列交易商申赎及中国结算收市后份额交收登记、赎回注销，集合申购亦执行交易所登记规则。",
+    "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202607281827424164_1.pdf",
+    "listing_notice_url": "https://www.p5w.net/fund/jjgg/201303/t20130312_61969.htm",
+    "verified_from": "2026-08-04",
+    "verified_through": "2026-11-04",
+    "quarter_residual_units": {
+      "2026-06-30": -17,
+      "2026-09-30": -17
+    }
+  },
+  {
+    "symbol": "159922.SZ",
+    "scope": "fund_total_verified",
+    "reason": "上市公告规定全部基金份额可交易。2026年8月29日招募说明书（内容截至7月29日）第十章分别列实物与现金替代申赎；场外实物申赎清单所列渠道在中国结算深圳分公司办理ETF份额变更登记，现金替代模式由同一登记机构办理交收、注销。当前未列另行登记的场外现金份额。",
+    "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202608291828675883_1.pdf",
+    "listing_notice_url": "https://static.cninfo.com.cn/finalpage/2013-03-12/62204103.PDF",
+    "registrar_guide_url": "https://www.chinaclear.cn/zdjs/fszscbb/202608/9589aee120124e47a4ac8831b2082f7d/files/%E3%80%8A%E4%B8%AD%E5%9B%BD%E8%AF%81%E5%88%B8%E7%99%BB%E8%AE%B0%E7%BB%93%E7%AE%97%E6%9C%89%E9%99%90%E8%B4%A3%E4%BB%BB%E5%85%AC%E5%8F%B8%E6%B7%B1%E5%9C%B3%E5%88%86%E5%85%AC%E5%8F%B8%E4%BA%A4%E6%98%93%E5%9E%8B%E5%BC%80%E6%94%BE%E5%BC%8F%E5%9F%BA%E9%87%91%E7%99%BB%E8%AE%B0%E7%BB%93%E7%AE%97%E4%B8%9A%E5%8A%A1%E6%8C%87%E5%8D%97%E3%80%8B.pdf#page=51",
+    "verified_from": "2026-08-04",
+    "verified_through": "2026-11-04",
+    "quarter_residual_units": {
+      "2026-06-30": -65,
+      "2026-09-30": -65
+    },
+    "registrar_guide_section": "2026年8月版 §5.4.3（一）第11至13项；PDF第51至52页。"
+  },
+  {
+    "symbol": "512100.SH",
+    "scope": "fund_total_verified",
+    "reason": "上市公告第三部分第9项载明全部基金份额可交易。现行说明书10.1、10.4及集合申购条款规定交易商申赎和中国结算的份额登记、注销；未来直销需另行公告，窗口未查到改变登记口径的公告。",
+    "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202512091797060069_1.pdf",
+    "listing_notice_url": "https://static.cninfo.com.cn/finalpage/2016-11-01/1202809185.PDF",
+    "verified_from": "2026-08-04",
+    "verified_through": "2026-11-04",
+    "quarter_residual_units": {
+      "2026-06-30": -46,
+      "2026-09-30": -46
+    }
+  },
+  {
+    "symbol": "159915.SZ",
+    "scope": "listed_only",
+    "reason": "说明书第五、八部分分别列中国结算登记的场内份额、易方达登记的场外份额。三季报第六节披露场外份额从3,568,623增至6,016,354份，期间场外申购2,447,731份。深交所日表单独不能给出全基金逐日申赎。",
+    "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202602271820108090_1.pdf",
+    "verified_from": "2026-08-04",
+    "verified_through": "2026-11-04",
+    "quarter_residual_units": {
+      "2026-06-30": -36,
+      "2026-09-30": -36
+    }
+  },
+  {
+    "symbol": "588000.SH",
+    "scope": "fund_total_verified",
+    "reason": "上市公告第三部分第7项明确所有份额均上市。现行说明书第八章列交易所申赎登记，开通场外业务须另行公告；本窗口核查的公告中未见新增场外申赎或另设份额类别。",
+    "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202605281822952635_1.pdf",
+    "listing_notice_url": "https://www.sse.com.cn/disclosure/fund/announcement/c/2020-11-11/588000_20201111_2.pdf",
+    "verified_from": "2026-08-04",
+    "verified_through": "2026-11-04",
+    "quarter_residual_units": {
+      "2026-06-30": 23,
+      "2026-09-30": 23
+    }
+  }
+]

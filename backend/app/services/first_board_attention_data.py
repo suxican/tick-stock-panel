@@ -18,7 +18,7 @@ import polars as pl
 
 from app.data_providers.capabilities import capability_gate
 from app.market_time import CN_TZ
-from app.services.minute_adjust import compute_ratio_pairs, minute_basis_is_raw
+from app.services.minute_adjust import minute_basis_is_raw
 from app.services.sector_monitor import SectorMonitorService
 from app.services.sector_rotation import _DEFAULT_EXCLUDE_SECTORS, _MAX_AUTO_MEMBERS
 from app.strategy.first_board import _UNIVERSE_PATTERNS
@@ -155,7 +155,9 @@ class AttentionData:
             if not raw and (batch is None or "minute_price_basis" not in pl.read_parquet_schema(partition)):
                 self._minute_cache = None
                 return pl.DataFrame(), False, "分钟价格基准未确认，暂不计算分时联动"
-            frame = self._repo.get_minute_by_dates(sorted(symbols), [cutoff.date()], asset_type="stock")
+            # Read stored prices unchanged. Provenance is checked independently
+            # below before a stock can contribute to any intraday factor.
+            frame = self._repo.get_minute_by_dates(sorted(symbols), [cutoff.date()], asset_type="stock", raw=True)
             reason = None
             if frame.is_empty():
                 reason = "缺少当日本地分钟数据"
@@ -180,16 +182,7 @@ class AttentionData:
                     )["raw"].any())
                     if not raw:
                         frame, reason = pl.DataFrame(), "分钟价格基准缺失或混合，暂不计算分时联动"
-                elif raw:
-                    # Repository reads project migrated storage to forward
-                    # prices. Legacy marker fallback is raw only at ratio=1.
-                    pairs = compute_ratio_pairs(frame, self._data_dir)
-                    raw = not pairs.is_empty() and bool(pairs.select(
-                        ((pl.col("_ratio") - 1).abs() <= 1e-12).fill_null(False).all()
-                    ).item())
-                    if not raw:
-                        frame, reason = pl.DataFrame(), "分钟读取已发生复权投影，暂不按原价计算分时联动"
-                else:
+                elif not raw:
                     frame, reason = pl.DataFrame(), "分钟价格基准未确认，暂不计算分时联动"
             self._minute_cache = (key, frame, raw, reason)
             return frame, raw, reason

@@ -33,15 +33,15 @@ from app.services.zzshare_research import (
     ResearchError,
     ResearchKind,
     ResearchRateLimitError,
-    ResearchReader,
     ResearchUnavailableError,
+    shared_reader,
 )
 
 EXTENSION_ID = "zzshare.research"
 EXTENSION_API_VERSION = BACKEND_EXTENSION_API_VERSION
 logger = logging.getLogger(__name__)
 _CAPTURE_JOB = "zzshare_home_snapshot"
-_reader = ResearchReader()
+_reader = shared_reader
 
 
 def _capture_home(data_dir: Path) -> None:

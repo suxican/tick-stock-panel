@@ -97,6 +97,50 @@ def test_recorded_signal_delays_entry_and_t1_exit_and_charges_real_cash_fees(set
     assert len(repo.calls) == len(set(repo.calls))
 
 
+def test_priority_replay_separates_shadow_and_never_backfills_old_scores(setup):
+    repo, _ = setup
+    old = sample()
+    current = sample(minute=5)
+    shadow = sample(minute=0, flag=False)
+    score = {"version": "priority-v1", "status": "shadow", "score": 66., "known_max": 90,
+             "parts": {"popularity": {"points": None}}}
+    shadow["rows"][0]["candidates"][0].update(sector_shadow_eligible=True, priority_score=score)
+    current["rows"][0]["candidates"][0]["priority_score"] = {**score, "status": "partial"}
+    replay = run(repo, [old, current, shadow])
+    comparison = replay["priority_comparison"]
+    assert replay["summary"]["signals"] == 1 and comparison["unscored"] == 1
+    assert comparison["scored"] == 0 and comparison["shadow"]["signals"] == 1
+    assert all(row["signals"] == 0 for row in comparison["groups"])
+
+
+def test_priority_ranking_uses_first_available_times_then_scores():
+    def trade(stamp, symbol, base, popular):
+        return {"signal_at": f"2026-10-19T10:{stamp}:00+08:00", "date": "2026-10-19",
+                "symbol": symbol, "status": "closed", "net_return": base / 100,
+                "gross_return": base / 100, "net_pnl": base, "_baseline": 1 / base,
+                "_base_score": base, "_full_score": base + popular, "_hot_known": popular > 0,
+                "_touched": True, "_sealed": False}
+    trades = [trade("00", "A", 1, 0), trade("05", "B", 20, 0), trade("05", "C", 19, 10),
+              trade("05", "D", 21, 0), trade("10", "E", 90, 10)]
+    report = execution._priority_comparison(trades, [])
+    groups = {r["variant"]: r for r in report["groups"] if r["top_n"] == 3 and r["window"] == "all"}
+    assert [groups[k]["net_pnl_sum"] for k in ("baseline", "sector", "popularity")] == [40, 42, 41]
+    assert all(g["broken"] == 3 and g["outcomes"] == 3 for g in groups.values())
+
+
+def test_priority_board_outcomes_require_final_matching_day_and_signal_limit():
+    trade = {"date": DAY.isoformat(), "_candidates": [{"state": "approaching", "evidence": {"limit_up_price": 11.}}]}
+    close_ms = datetime.combine(DAY, time(15), CN_TZ).timestamp() * 1000
+    facts = {"raw_high": 11., "raw_close": 10.5, "quote_ts": close_ms - 1}
+    execution._board_outcomes(trade, facts, 11.)
+    assert "_touched" not in trade
+    facts["quote_ts"] = close_ms
+    execution._board_outcomes(trade, facts, 10.98)
+    assert "_touched" not in trade
+    execution._board_outcomes(trade, facts, 11.)
+    assert trade["_touched"] and not trade["_sealed"]
+
+
 def test_first_stock_day_signal_merges_patterns_and_keeps_negative_unknown_denominators(setup):
     repo, _ = setup
     first = sample()

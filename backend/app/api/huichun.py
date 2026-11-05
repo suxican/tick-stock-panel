@@ -97,6 +97,11 @@ def tracking(request: Request):
     return _call(request, "get_tracking")
 
 
+@router.get("/research")
+def research(request: Request):
+    return _call(request, "get_research")
+
+
 @router.post("/tracking")
 def add_tracking(request: Request, body: HuichunTrackRequest):
     return _call(request, "add_tracking", scan_id=body.scan_id, candidate_ids=body.candidate_ids)

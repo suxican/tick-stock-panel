@@ -168,6 +168,45 @@ def test_http_provider_preserves_optional_evidence_but_never_invents_it():
     assert "minute_price_basis" not in legacy.columns
 
 
+def test_custom_minute_sync_keeps_declared_grid_and_basis_through_normalization(monkeypatch):
+    provider = SimpleNamespace(get_minute=Mock(return_value=auction_bars()))
+    monkeypatch.setattr(kline_sync, "_selected_minute_provider_name", lambda: "custom")
+    monkeypatch.setattr(kline_sync, "_resolve_minute_provider", lambda _name: (provider, False, None))
+    frame, fallback = kline_sync._try_custom_minute(
+        [SYMBOL], start_time=None, end_time=None, asset_type="stock", freq="1m")
+    assert not fallback
+    assert frame["minute_price_basis"].unique().to_list() == ["raw"]
+    assert frame["minute_time_grid"].unique().to_list() == ["auction_end"]
+
+
+@pytest.mark.parametrize("raw_basis, declared, requested", [(True, "raw", "none"), (False, "forward", "forward")])
+def test_tickflow_minute_fetch_records_requested_adjustment_without_assuming_grid(monkeypatch, raw_basis, declared, requested):
+    compact = {"timestamp": [int(stamp(9, 31).replace(tzinfo=CN_TZ).timestamp() * 1000)], "close": [10.]}
+    batch = Mock(return_value={SYMBOL: compact})
+    monkeypatch.setattr(kline_sync, "_try_custom_minute", lambda *a, **kw: (None, True))
+    monkeypatch.setattr(kline_sync, "get_client", lambda: SimpleNamespace(klines=SimpleNamespace(batch=batch)))
+    for frame in (kline_sync.sync_minute_batch([SYMBOL], raw_basis=raw_basis),
+                  kline_sync.fetch_minute_single(SYMBOL, DAY.date(), capset=SimpleNamespace(has=lambda _: True), raw_basis=raw_basis)):
+        assert frame["minute_price_basis"].to_list() == [declared]
+        assert "minute_time_grid" not in frame.columns
+    assert [call.kwargs["adjust"] for call in batch.call_args_list] == [requested, requested]
+
+
+def test_attention_reads_verified_original_prices_when_chart_projection_changes_them(tmp_path, monkeypatch):
+    store(tmp_path, auction_bars())
+    factors = tmp_path / "adj_factor"
+    factors.mkdir()
+    pl.DataFrame({"symbol": [SYMBOL], "trade_date": [DAY.date() + timedelta(days=1)],
+                  "ex_factor": [1.25]}).write_parquet(factors / "factor.parquet")
+    minute_adjust.mark_minute_basis_raw(tmp_path)
+    repo = KlineRepository(DataStore(tmp_path))
+    assert repo.get_minute_by_dates([SYMBOL], [DAY.date()])["close"][0] == 8.
+    monkeypatch.setattr(inputs, "capability_gate", lambda _: (True, "test"))
+    frame, raw, reason = inputs.AttentionData(repo).minutes({SYMBOL}, now=stamp(13, 10).replace(tzinfo=CN_TZ))
+    assert raw and reason is None and frame["close"][0] == 10.
+    assert intraday(frame)["return_5m"] is not None
+
+
 def test_mixed_stocks_do_not_certify_legacy_rows_or_block_confirmed_stocks(tmp_path, monkeypatch):
     other = "000002.SZ"
     frame = pl.concat([auction_bars(), auction_bars(evidence=False).with_columns(

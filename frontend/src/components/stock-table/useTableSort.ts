@@ -13,16 +13,20 @@ export interface SortState {
 }
 
 export function useTableSort<T>(getSortValue: (r: T, col: ColumnConfig) => any = defaultGetSortValue, initialSort: SortState | null = null) {
-  const [sort, setSort] = useState<SortState | null>(initialSort)
+  // A page may choose its default when the first snapshot arrives. Once the
+  // user sorts (including clearing the sort), refreshes keep that choice.
+  const [selection, setSort] = useState<SortState | null | undefined>(undefined)
+  const sort = selection === undefined ? initialSort : selection
 
   /** 点击表头：同列轮换 asc→desc→清除；不同列重置为 asc */
   const toggle = useCallback((colId: string) => {
-    setSort(prev => {
+    setSort(selection => {
+      const prev = selection === undefined ? initialSort : selection
       if (!prev || prev.key !== colId) return { key: colId, dir: 'asc' }
       if (prev.dir === 'asc') return { key: colId, dir: 'desc' }
       return null
     })
-  }, [])
+  }, [initialSort])
 
   /** 对行集合按当前 sort 排序（返回新数组）。无 sort 或列不存在时原样返回；
    *  取值为 null 的行排在最后。表头是否可点由 StockDataTable 控制。 */

@@ -353,3 +353,83 @@ def test_empty_input_has_stable_schemas():
 def test_invalid_parameters_are_rejected(kwargs):
     with pytest.raises(ValueError):
         a0.A0Params(**kwargs)
+
+
+def test_cycle_diagnostics_use_close_trough_and_first_eligible_watch(monkeypatch):
+    frame = _controlled(
+        monkeypatch, closes=[9, 10, 16, 14, 9, 8, 12],
+        q=[-1, 1, 1, -3, -2, -1, 1], dif=[0.01] * 7,
+        ma=[7.] * 7, lag=[6.] * 7,
+    ).with_columns(pl.lit(2.).alias("low"))
+    audit = _audit(frame)
+    row = audit.signals.row(0, named=True)
+    assert row["pullback_fraction"] == pytest.approx(1.5)
+    assert row["pullback_bars"] == 3
+    assert row["recovery_return"] == pytest.approx(.5)
+    assert row["first_watch_date"] == frame["date"][4]
+    assert row["watch_lead_bars"] == 2
+
+
+def test_watch_conversion_counts_rejection_censoring_and_mature_nonconversion(monkeypatch):
+    from app.strategy.huichun_watch import new_conversion_counts, update_conversion_counts
+
+    frame = _controlled(
+        monkeypatch, closes=[9, 10, 16, 14, 14, 14, 7],
+        q=[-1, 1, 1, -3, -2, -1, 1], dif=[.01] * 7, ma=[7.] * 7, lag=[6.] * 7,
+    )
+    first = frame["date"][4]
+    gap_day = frame["date"][6]
+    prefix = frame.head(6).with_columns(
+        pl.when(pl.col("date") == frame["date"][5]).then(pl.lit(gap_day))
+        .otherwise(None).alias("segment_invalidated_at")
+    )
+    def rows(data, end, start=first):
+        counts = new_conversion_counts()
+        update_conversion_counts(counts, _audit(data, end=end).cycles, start)
+        return {r["horizon"]: r for r in counts}
+
+    immature = rows(prefix, frame["date"][5])
+    assert immature[1]["resolved"] == 1 and immature[1]["confirmed"] == 0
+    assert immature[3]["pending"] == 1 and immature[3]["resolved"] == 0
+    gap = rows(prefix, gap_day)
+    assert gap[1]["resolved"] == 1 and gap[3]["gap_unknown"] == 1
+    rejected = rows(frame, gap_day)
+    assert rejected[3]["resolved"] == rejected[3]["rejected"] == 1
+    assert rejected[3]["confirmed"] == 0
+    assert all(r["total"] == 0 for r in rows(frame, gap_day, gap_day).values())
+
+
+@pytest.mark.parametrize(
+    "ema10,dif,dea,limit,valid_threshold",
+    [(8., .02, .04, .004, True), (3., -3., -2.99, 1., False)],
+)
+def test_watch_threshold_checks_hypothetical_gates_and_nonpositive_boundary(
+    ema10, dif, dea, limit, valid_threshold,
+):
+    from app.strategy.huichun_watch import pending_crosses
+
+    dates = [ORIGIN + timedelta(days=i) for i in range(4)]
+    indicators = pl.DataFrame({
+        "symbol": ["600001.SH"] * 4, "segment_id": ["0"] * 4, "date": dates,
+        "close": [14., 15., 16., 20.], "ema10": [ema10] * 4, "dif": [dif] * 4,
+        "dea": [dea] * 4, "q": [-.3, -.2, -.1, dif - dea],
+        "zero_distance": [max(abs(dif), abs(dea)) / 20] * 4, "gap_distance": [.001] * 4,
+        "ma60": [13., 14., 15., 17.], "ma60_lag": [12., 13., 14., 15.],
+    })
+    cycles = pl.DataFrame({
+        "symbol": ["600001.SH"], "segment_id": ["0"], "status": ["waiting_first_cross"],
+        "rally_qualified": [True], "rally_return": [.4], "g_date": [ORIGIN],
+        "d_date": [dates[1]], "first_watch_date": [dates[2]],
+    })
+    row = pending_crosses(
+        a0.A0AuditResult(cycles, cycles.head(0), indicators), observation_date=dates[-1],
+        params=a0.A0Params(ma_window=3, slope_lag=1, zero_threshold=limit),
+    ).row(0, named=True)
+    if valid_threshold:
+        assert row["cross_threshold_return"] is not None
+        assert row["threshold_trend_pass"] is False
+        assert row["threshold_zero_pass"] is False
+    else:
+        assert row["cross_threshold_return"] is None
+        assert row["threshold_trend_pass"] is None
+        assert row["threshold_zero_pass"] is None

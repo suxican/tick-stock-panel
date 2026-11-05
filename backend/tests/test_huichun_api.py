@@ -177,7 +177,7 @@ def test_chart_maps_future_cutoff_and_storage_errors(huichun_client, monkeypatch
     assert response.status_code == 400
     assert "已收盘" in response.json()["detail"]
 
-    def unavailable():
+    def unavailable(cutoff):
         raise OSError("private path / secret-token")
 
     monkeypatch.setattr(service, "_input_signature", unavailable)

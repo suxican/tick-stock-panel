@@ -217,6 +217,46 @@ def test_disabled_monitor_does_not_collect_research_samples(rig):
     assert rig.svc.snapshot()["status"] == "disabled"
 
 
+def test_priority_is_frozen_with_signal_and_sample_and_expires_on_read(rig, monkeypatch):
+    monkeypatch.setattr(rig.svc._radar, "snapshot", lambda *args, **kw: {})
+    rig.svc.process_snapshot(quotes(), NOW.date(), now=NOW)
+    row = rig.svc.snapshot()["rows"][0]
+    score = row["priority_score"]
+    assert score["version"] == "priority-v1" and score["score"] is not None
+    assert score["can_buy"] and score["parts"]["popularity"]["points"] is None
+    assert rig.svc.events(NOW.date())[0]["evidence"]["priority_score"]["version"] == score["version"]
+    assert samples(rig)[0]["rows"][0]["candidates"][0]["priority_score"]["score"] == score["score"]
+    rig.clock["now"] = NOW.replace(hour=15)
+    closed = rig.svc.snapshot()["rows"][0]
+    assert closed["priority_score"]["score"] is None and not closed["can_buy"]
+    assert closed["last_priority"]["score"] == score["score"]
+    # Restarting after close restores only the dated evidence already in the ledger.
+    rig.svc._priority_session = None
+    rig.svc._last_priorities.clear()
+    rig.svc.process_snapshot(quotes(), NOW.date(), now=rig.clock["now"])
+    restored = rig.svc.snapshot()["rows"][0]
+    assert restored["priority_score"]["score"] is None and not restored["can_buy"]
+    assert restored["last_priority"]["source"] == "event" and restored["last_priority"]["score"] == score["score"]
+
+
+def test_concept_shadow_requires_covered_industry_and_other_buy_gates(rig, monkeypatch):
+    monkeypatch.setattr(rig.svc._radar, "snapshot", lambda *args, **kw: {})
+    monkeypatch.setattr(fb, "evaluate_sectors", lambda *_: {
+        "测试行业": {"coverage": .9, "count": 10, "confirmed": False, "reason": "同行偏弱"},
+    })
+    for ctx in rig.contexts.values():
+        ctx["groups"][0]["peer_strong"] = True
+    rig.svc.save_config({**rig.svc.get_config(), "require_sector_confirmation": True})
+    rig.svc.process_snapshot(quotes(), NOW.date(), now=NOW)
+    row = rig.svc.snapshot()["rows"][0]
+    assert row["sector_shadow_eligible"] and row["priority_score"]["status"] == "shadow"
+    assert not row["can_buy"] and row["suggested_amount"] is None and row["event_id"] is None
+    assert all(event["type"] != "buy_candidate" for event in rig.published)
+    monkeypatch.setattr(fb, "buy_budget", lambda *a, **kw: {"allowed": False, "reasons": ["额度不足"]})
+    rig.svc.process_snapshot(quotes(), NOW.date(), now=NOW)
+    assert not rig.svc.snapshot()["rows"][0]["sector_shadow_eligible"]
+
+
 def test_slow_computation_does_not_backfill_an_anchor_that_has_already_passed(rig):
     evaluate = rig.svc._attention_evaluator.evaluate
 
@@ -321,7 +361,8 @@ def test_real_catalog_adapter_and_evaluator_flow_into_immutable_samples(rig, mon
     pl.DataFrame(minute_rows).write_parquet(minute_path)
     reads = []
 
-    def get_minutes(symbols, days, *, asset_type):
+    def get_minutes(symbols, days, *, asset_type, raw):
+        assert raw
         reads.append((symbols, days, asset_type))
         return pl.read_parquet(minute_path)
 

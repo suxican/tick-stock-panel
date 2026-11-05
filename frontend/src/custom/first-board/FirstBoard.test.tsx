@@ -111,6 +111,64 @@ function candidate(name: string, values: Partial<FirstBoardCandidate> = {}): Fir
 function candidateNames() {
   return [...host.querySelectorAll('table[aria-label="首板实时候选"] tbody tr')].map(row => row.querySelector('td button')!.firstChild!.textContent)
 }
+
+it('ranks actionable scores first and shows only historical evidence after close', async () => {
+  const base: NonNullable<FirstBoardCandidate['priority_score']> = {
+    version: 'priority-v1', status: 'partial', score: 58, known_max: 85, can_buy: true,
+    role: 'leader', reason: '等待分时证据',
+    primary_sector: { id: 'solar', name: '光伏', kind: 'concept', source_id: 'local', field: '概念',
+      peer_rank: 2, peer_total: 35, peer_valid_count: 18, peer_count: 20, peer_mean_change_pct: .03,
+      peer_up_ratio: .7, peer_coverage: .9, peer_persistent: true, peer_reference_at: '2026-09-30T09:55:00+08:00' },
+    parts: { popularity: { points: 6, max_points: 10, reason: '当时热榜' } },
+    radar: { popularity: { status: 'ready', rank: 38, rank_gain: 5, source_at: '2026-09-30T09:59:00+08:00', fetched_at: '2026-09-30T10:00:00+08:00' },
+      theme: { status: 'ready', source: 'official_core', name: '电池', rank: 3 },
+      plate: { status: 'ready', source: 'vendor_plate', name: '光伏设备', plate_type: 14, rank: 1, members_at: '2026-09-30T09:56:00+08:00' } },
+  }
+  const data = { ...snapshot(), rows: [
+    candidate('A', { priority_score: { ...base, status: 'watch', score: 72, can_buy: false }, can_buy: false }),
+    candidate('B', { priority_score: base }),
+    candidate('C', { priority_score: { ...base, status: 'ready', score: 78, known_max: 100 } }),
+  ] }
+  calls.firstBoardSnapshot.mockResolvedValue(data)
+  await render()
+  expect(candidateNames()).toEqual(['C', 'B', 'A'])
+  const cell = host.querySelectorAll('[data-priority-cell]')[1]
+  expect(cell.textContent).toContain('58 分')
+  expect(cell.textContent).toContain('证据覆盖 85 / 100')
+  expect(cell.textContent).toContain('同行持续强势')
+  await act(async () => { const detail = cell.querySelector('details')!; detail.open = true; detail.dispatchEvent(new Event('toggle')) })
+  expect(cell.textContent).toContain('当时人气第 38 名')
+  expect(cell.textContent).toContain('上升 5 位')
+  expect(cell.textContent).toContain('持续强势参考时点')
+  expect(cell.textContent).toContain('官方核心股 · 电池')
+  expect(cell.textContent).toContain('供应商行业榜 · 光伏设备')
+  const select = [...host.querySelectorAll('label')].find(el => el.textContent?.includes('评分筛选'))!.querySelector('select')!
+  async function filter(value: string) {
+    await act(async () => { select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })) })
+    await settle()
+  }
+  await filter('incomplete')
+  expect(candidateNames()).toEqual(['B', 'A'])
+  calls.firstBoardSnapshot.mockResolvedValue({
+    ...data, status: 'closed', rows: [candidate('B', { priority_score: base, last_priority: {
+      as_of: '2026-09-30T10:00:00+08:00', version: 'priority-v1', status: 'partial', score: 58, known_max: 85,
+    } })],
+  })
+  await click('刷新')
+  expect(candidateNames()).toEqual([])
+  await filter('all')
+  expect(host.querySelector('[data-priority-cell]')?.textContent).toContain('最近盘中评分')
+  expect(host.querySelector('[data-priority-cell] strong')).toBeNull()
+  expect(button('模拟买入').disabled).toBe(true)
+  calls.firstBoardSnapshot.mockResolvedValue({
+    ...data, status: 'closed', rows: [candidate('B', { priority_score: base, last_priority: {
+      as_of: '2026-09-30T09:56:00+08:00', version: 'priority-v1', status: 'partial', score: 53, known_max: 70, source: 'event',
+    } })],
+  })
+  await click('刷新')
+  expect(host.querySelector('[data-priority-cell]')?.textContent).toContain('最近信号评分')
+  expect(host.querySelector('[data-priority-cell] strong')).toBeNull()
+})
 async function toggleFocus(name: string, symbol: string, focused = false) {
   const control = host.querySelector<HTMLButtonElement>(`button[aria-label="${focused ? '取消关注' : '特别关注'} ${name} ${symbol}"]`)
   expect(control).not.toBeNull()
@@ -215,6 +273,48 @@ async function filterAttention(value: string) {
   await act(async () => { select!.value = value; select!.dispatchEvent(new Event('change', { bubbles: true })) })
   await settle()
 }
+
+it('filters every confirmed sector membership by source and excludes historical or official-only matches', async () => {
+  const local = attention().groups[0]
+  const boards = [
+    { ...local, id: 'other', name: '主评分板块', peer_strong: false },
+    { ...local, id: 'battery', name: '电池', peer_strong: true },
+    { ...local, id: 'solar', name: '光伏设备', peer_strong: true, kind: 'industry' as const },
+  ]
+  const base: NonNullable<FirstBoardCandidate['priority_score']> = {
+    status: 'watch', version: 'priority-v1', score: 53, known_max: 70, parts: {}, primary_sector: null,
+    role: 'unknown', can_buy: false, reason: '等待临板',
+  }
+  const data = { ...snapshot(), rows: [
+    candidate('A', { attention_context: attention({ groups: boards }), priority_score: base }),
+    candidate('B', { priority_score: { ...base, radar: { plates: [
+      { status: 'ready', source: 'vendor_plate', rank: 1, plate_type: 17, tid: 'B1', name: '电池' },
+      { status: 'ready', source: 'vendor_plate', rank: 1, plate_type: 14, tid: 'B2', name: '光伏设备' },
+    ] } } }),
+    candidate('C', { attention_context: attention({ groups: boards, status: 'stale' }),
+      priority_score: { ...base, radar: { theme: { status: 'ready', source: 'official_core', rank: 1, name: '电池' } } } }),
+  ] }
+  calls.firstBoardSnapshot.mockResolvedValue(data)
+  await render()
+  async function select(label: string, value: string) {
+    const input = host.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!
+    await act(async () => { input.value = value; input.dispatchEvent(new Event('change', { bubbles: true })) })
+    await settle()
+  }
+  await select('评分筛选', 'concept')
+  expect(candidateNames()).toEqual(['A', 'B'])
+  await select('具体强势板块', 'battery')
+  expect(candidateNames()).toEqual(['A'])
+  await select('具体强势板块', 'zzshare:17:B1')
+  expect(candidateNames()).toEqual(['B'])
+  await select('评分筛选', 'industry')
+  expect(candidateNames()).toEqual(['A', 'B'])
+  await select('具体强势板块', 'zzshare:14:B2')
+  expect(candidateNames()).toEqual(['B'])
+  calls.firstBoardSnapshot.mockResolvedValue({ ...data, status: 'stale' })
+  await click('刷新')
+  expect(candidateNames()).toEqual([])
+})
 
 it('shows attention evidence with explicit decimal units without granting a simulated buy', async () => {
   calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [candidate('A', { can_buy: false, attention_context: attention() })] })
@@ -813,10 +913,13 @@ it('requests an ISO event date even when the browser falls back to another local
 it('renders historical events by selected date without turning them into live buys', async () => {
   calls.firstBoardEvents.mockResolvedValue({ events: [{ id: 'old1', ts: 1790720400000, date: '2026-09-30', symbol: '600000.SH', name: '历史股票',
     pattern: 'platform', pattern_label: '平台突破', state: 'approaching', event_type: 'buy_candidate', message: '历史候选信号', price: 10.8,
-    revision: 1, evidence: {}, blocked_reasons: [], quote_time: '2026-09-30T09:00:00+08:00' }], total: 1, day: beijingDay() })
+    revision: 1, evidence: { priority_score: { version: 'priority-v1', status: 'partial', score: 53, known_max: 70,
+      parts: {}, primary_sector: null, role: 'unknown', can_buy: true, reason: '当时行情' } },
+    blocked_reasons: [], quote_time: '2026-09-30T09:00:00+08:00' }], total: 1, day: beijingDay() })
   await render('events')
   expect(calls.firstBoardEvents).toHaveBeenCalledWith(beijingDay(), {})
   expect(host.textContent).toContain('历史候选信号')
+  expect(host.textContent).toContain('信号时优先分 53 分')
   expect(button('模拟买入')).toBeUndefined()
 })
 it('combines event filters, keeps them across dates and tabs, and handles empty results and refresh errors', async () => {

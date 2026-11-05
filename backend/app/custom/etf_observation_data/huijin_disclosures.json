@@ -1,0 +1,368 @@
+{
+  "reviewed_through": "2026-11-05",
+  "funds": [
+    {
+      "symbol": "159915.SZ",
+      "report_title": "易方达创业板交易型开放式指数证券投资基金2025年年度报告",
+      "period_end": "2025-12-31",
+      "published_on": "2026-03-31",
+      "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202603301820871603_1.pdf",
+      "page": 64,
+      "denominator": "上市总份额",
+      "holders": [
+        {
+          "name": "中央汇金投资有限责任公司",
+          "units": 11362962941,
+          "percent": 36.07,
+          "kind": "direct"
+        },
+        {
+          "name": "中央汇金资产管理有限责任公司",
+          "units": 5656821265,
+          "percent": 17.96,
+          "kind": "direct"
+        }
+      ],
+      "interim_review": {
+        "report_title": "易方达创业板交易型开放式指数证券投资基金2026年中期报告",
+        "period_end": "2026-06-30",
+        "published_on": "2026-08-31",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202608301828738228_1.pdf",
+        "page": 47
+      },
+      "latest_review": {
+        "report_title": "易方达创业板交易型开放式指数证券投资基金2026年第3季度报告",
+        "period_end": "2026-09-30",
+        "published_on": "2026-10-27",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202610261830942943_1.pdf",
+        "page": 13
+      }
+    },
+    {
+      "symbol": "159919.SZ",
+      "report_title": "嘉实沪深300交易型开放式指数证券投资基金2025年年度报告",
+      "period_end": "2025-12-31",
+      "published_on": "2026-03-30",
+      "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202603291820838477_1.pdf",
+      "page": 66,
+      "denominator": "上市总份额",
+      "holders": [
+        {
+          "name": "中央汇金投资有限责任公司",
+          "units": 19543686916,
+          "percent": 47.88,
+          "kind": "direct"
+        },
+        {
+          "name": "中央汇金资产管理有限责任公司",
+          "units": 15954808069,
+          "percent": 39.09,
+          "kind": "direct"
+        }
+      ],
+      "interim_review": {
+        "report_title": "嘉实沪深300交易型开放式指数证券投资基金2026年中期报告",
+        "period_end": "2026-06-30",
+        "published_on": "2026-08-31",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202608301828737312_1.pdf",
+        "page": 51
+      },
+      "latest_review": {
+        "report_title": "嘉实沪深300交易型开放式指数证券投资基金2026年第3季度报告",
+        "period_end": "2026-09-30",
+        "published_on": "2026-10-27",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202610261830928813_1.pdf",
+        "page": 11
+      }
+    },
+    {
+      "symbol": "159922.SZ",
+      "report_title": "嘉实中证500交易型开放式指数证券投资基金2025年年度报告",
+      "period_end": "2025-12-31",
+      "published_on": "2026-03-30",
+      "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202603291820838464_1.pdf",
+      "page": 71,
+      "denominator": "上市总份额",
+      "holders": [
+        {
+          "name": "中央汇金投资有限责任公司",
+          "units": 2310720380,
+          "percent": 44.32,
+          "kind": "direct"
+        }
+      ],
+      "interim_review": {
+        "report_title": "嘉实中证500交易型开放式指数证券投资基金2026年中期报告",
+        "period_end": "2026-06-30",
+        "published_on": "2026-08-31",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202608301828738306_1.pdf",
+        "page": 57
+      },
+      "latest_review": {
+        "report_title": "嘉实中证500交易型开放式指数证券投资基金2026年第3季度报告",
+        "period_end": "2026-09-30",
+        "published_on": "2026-10-27",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202610261830928803_1.pdf",
+        "page": 12
+      }
+    },
+    {
+      "symbol": "510050.SH",
+      "report_title": "上证50交易型开放式指数证券投资基金2025年年度报告",
+      "period_end": "2025-12-31",
+      "published_on": "2026-03-31",
+      "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202603301820866060_1.pdf",
+      "page": 53,
+      "denominator": "上市总份额",
+      "holders": [
+        {
+          "name": "中央汇金投资有限责任公司",
+          "units": 28791513899,
+          "percent": 50.81,
+          "kind": "direct"
+        },
+        {
+          "name": "中央汇金资产管理有限责任公司",
+          "units": 19967517877,
+          "percent": 35.24,
+          "kind": "direct"
+        }
+      ],
+      "interim_review": {
+        "report_title": "上证50交易型开放式指数证券投资基金2026年中期报告",
+        "period_end": "2026-06-30",
+        "published_on": "2026-08-31",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202608301828742424_1.pdf",
+        "page": 47
+      },
+      "latest_review": {
+        "report_title": "上证50交易型开放式指数证券投资基金2026年第3季度报告",
+        "period_end": "2026-09-30",
+        "published_on": "2026-10-27",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202610261830938313_1.pdf",
+        "page": 13
+      }
+    },
+    {
+      "symbol": "510300.SH",
+      "report_title": "华泰柏瑞沪深300交易型开放式指数证券投资基金2025年年度报告",
+      "period_end": "2025-12-31",
+      "published_on": "2026-03-31",
+      "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202603301820868083_1.pdf",
+      "page": 75,
+      "denominator": "上市总份额",
+      "holders": [
+        {
+          "name": "中央汇金资产管理有限责任公司",
+          "units": 37858474974,
+          "percent": 42.62,
+          "kind": "direct"
+        },
+        {
+          "name": "中央汇金投资有限责任公司",
+          "units": 35654598859,
+          "percent": 40.14,
+          "kind": "direct"
+        }
+      ],
+      "interim_review": {
+        "report_title": "华泰柏瑞沪深300交易型开放式指数证券投资基金2026年中期报告",
+        "period_end": "2026-06-30",
+        "published_on": "2026-08-29",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202608291828684524_1.pdf",
+        "page": 59
+      },
+      "latest_review": {
+        "report_title": "华泰柏瑞沪深300交易型开放式指数证券投资基金2026年第3季度报告",
+        "period_end": "2026-09-30",
+        "published_on": "2026-10-27",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202610261830938404_1.pdf",
+        "page": 12
+      }
+    },
+    {
+      "symbol": "510310.SH",
+      "report_title": "易方达沪深300交易型开放式指数发起式证券投资基金2025年年度报告",
+      "period_end": "2025-12-31",
+      "published_on": "2026-03-31",
+      "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202603301820873936_1.pdf",
+      "page": 75,
+      "denominator": "上市总份额",
+      "holders": [
+        {
+          "name": "中央汇金资产管理有限责任公司",
+          "units": 28538696695,
+          "percent": 43.34,
+          "kind": "direct"
+        },
+        {
+          "name": "中央汇金投资有限责任公司",
+          "units": 27355388757,
+          "percent": 41.54,
+          "kind": "direct"
+        },
+        {
+          "name": "易方达基金－中央汇金资产管理有限责任公司－易方达基金－汇金资管单一资产管理计划",
+          "units": 254000077,
+          "percent": 0.39,
+          "kind": "named_plan"
+        }
+      ],
+      "interim_review": {
+        "report_title": "易方达沪深300交易型开放式指数发起式证券投资基金2026年中期报告",
+        "period_end": "2026-06-30",
+        "published_on": "2026-08-31",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202608301828743058_1.pdf",
+        "page": 56
+      },
+      "latest_review": {
+        "report_title": "易方达沪深300交易型开放式指数发起式证券投资基金2026年第3季度报告",
+        "period_end": "2026-09-30",
+        "published_on": "2026-10-27",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202610261830944912_1.pdf",
+        "page": 14
+      }
+    },
+    {
+      "symbol": "510330.SH",
+      "report_title": "华夏沪深300交易型开放式指数证券投资基金2025年年度报告",
+      "period_end": "2025-12-31",
+      "published_on": "2026-03-31",
+      "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202603301820866235_1.pdf",
+      "page": 68,
+      "denominator": "上市总份额",
+      "holders": [
+        {
+          "name": "中央汇金资产管理有限责任公司",
+          "units": 21090791723,
+          "percent": 44.47,
+          "kind": "direct"
+        },
+        {
+          "name": "中央汇金投资有限责任公司",
+          "units": 20937230572,
+          "percent": 44.15,
+          "kind": "direct"
+        }
+      ],
+      "interim_review": {
+        "report_title": "华夏沪深300交易型开放式指数证券投资基金2026年中期报告",
+        "period_end": "2026-06-30",
+        "published_on": "2026-08-31",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202608301828742580_1.pdf",
+        "page": 60
+      },
+      "latest_review": {
+        "report_title": "华夏沪深300交易型开放式指数证券投资基金2026年第3季度报告",
+        "period_end": "2026-09-30",
+        "published_on": "2026-10-27",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202610261830938323_1.pdf",
+        "page": 14
+      }
+    },
+    {
+      "symbol": "510500.SH",
+      "report_title": "中证500交易型开放式指数证券投资基金2025年年度报告",
+      "period_end": "2025-12-31",
+      "published_on": "2026-03-31",
+      "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202603301820875380_1.pdf",
+      "page": 90,
+      "denominator": "上市总份额",
+      "holders": [
+        {
+          "name": "中央汇金投资有限责任公司",
+          "units": 8235101633,
+          "percent": 43.2,
+          "kind": "direct"
+        },
+        {
+          "name": "中央汇金资产管理有限责任公司",
+          "units": 5981977518,
+          "percent": 31.38,
+          "kind": "direct"
+        },
+        {
+          "name": "易方达基金－中央汇金资产管理有限责任公司－易方达基金－汇金资管单一资产管理计划",
+          "units": 190080598,
+          "percent": 1.0,
+          "kind": "named_plan"
+        }
+      ],
+      "interim_review": {
+        "report_title": "中证500交易型开放式指数证券投资基金2026年中期报告",
+        "period_end": "2026-06-30",
+        "published_on": "2026-08-31",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202608301828743003_1.pdf",
+        "page": 61
+      },
+      "latest_review": {
+        "report_title": "中证500交易型开放式指数证券投资基金2026年第3季度报告",
+        "period_end": "2026-09-30",
+        "published_on": "2026-10-27",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202610261830945505_1.pdf",
+        "page": 15
+      }
+    },
+    {
+      "symbol": "512100.SH",
+      "report_title": "南方中证1000交易型开放式指数证券投资基金2025年年度报告",
+      "period_end": "2025-12-31",
+      "published_on": "2026-03-31",
+      "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202603301820866365_1.pdf",
+      "page": 114,
+      "denominator": "上市总份额",
+      "holders": [
+        {
+          "name": "中央汇金资产管理有限责任公司",
+          "units": 13212186794,
+          "percent": 51.51,
+          "kind": "direct"
+        },
+        {
+          "name": "中央汇金投资有限责任公司",
+          "units": 8956692256,
+          "percent": 34.92,
+          "kind": "direct"
+        }
+      ],
+      "interim_review": {
+        "report_title": "南方中证1000交易型开放式指数证券投资基金2026年中期报告",
+        "period_end": "2026-06-30",
+        "published_on": "2026-08-31",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202608301828742444_1.pdf",
+        "page": 72
+      },
+      "latest_review": {
+        "report_title": "南方中证1000交易型开放式指数证券投资基金2026年第3季度报告",
+        "period_end": "2026-09-30",
+        "published_on": "2026-10-27",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202610261830945494_1.pdf",
+        "page": 12
+      }
+    },
+    {
+      "symbol": "588000.SH",
+      "report_title": "华夏上证科创板50成份交易型开放式指数证券投资基金2025年年度报告",
+      "period_end": "2025-12-31",
+      "published_on": "2026-03-31",
+      "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202603301820866046_1.pdf",
+      "page": 65,
+      "denominator": "上市总份额",
+      "holders": [],
+      "interim_review": {
+        "report_title": "华夏上证科创板50成份交易型开放式指数证券投资基金2026年中期报告",
+        "period_end": "2026-06-30",
+        "published_on": "2026-08-31",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202608301828742576_1.pdf",
+        "page": 50
+      },
+      "latest_review": {
+        "report_title": "华夏上证科创板50成份交易型开放式指数证券投资基金2026年第3季度报告",
+        "period_end": "2026-09-30",
+        "published_on": "2026-10-27",
+        "source_url": "https://pdf.dfcfw.com/pdf/H2_AN202610261830938409_1.pdf",
+        "page": 13
+      }
+    }
+  ]
+}

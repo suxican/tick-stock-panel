@@ -8,6 +8,7 @@ import { SettingsModal } from '@/components/data/SettingsModal'
 import { ExtDataPullPanel } from './ExtDataPullPanel'
 import { ExtDataApiPanel } from './ExtDataApiPanel'
 import { ExtConfigExportButton } from './ExtConfigTransfer'
+import { ZzshareLimitReasonsPanel } from './ZzshareLimitReasonsPanel'
 
 export function ExtDataStatCard({ config, onDelete, deleting, onEdit }: {
   config: ExtDataConfig
@@ -16,6 +17,7 @@ export function ExtDataStatCard({ config, onDelete, deleting, onEdit }: {
   onEdit?: () => void
 }) {
   const qc = useQueryClient()
+  const isZzshareReasons = config.id === 'zzshare_limit_reasons'
   const fileRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
   const [uploadResult, setUploadResult] = useState<{ rows: number; date: string } | null>(null)
@@ -197,6 +199,15 @@ export function ExtDataStatCard({ config, onDelete, deleting, onEdit }: {
         )}
       </div>
 
+      {isZzshareReasons && (
+        <div className="px-4 pb-3">
+          <button type="button" onClick={() => setSettingsOpen(true)}
+            className="inline-flex min-h-8 w-full items-center justify-center gap-1.5 rounded-btn bg-accent/10 px-2 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60">
+            <RefreshCw className="h-3.5 w-3.5" />同步 / 查看归因
+          </button>
+        </div>
+      )}
+
       <div className="mt-auto px-4 pb-4 pt-2.5 border-t border-border/60 space-y-1 text-[11px]">
         <div className="flex items-baseline justify-between gap-3">
           <span className="text-muted shrink-0">标识</span>
@@ -244,6 +255,7 @@ export function ExtDataStatCard({ config, onDelete, deleting, onEdit }: {
                 <span className="text-muted">最新 <span className="text-secondary font-mono">{config.latest_sync_date ?? '—'}</span></span>
               </div>
 
+              {isZzshareReasons ? <ZzshareLimitReasonsPanel /> : <>
               {/* 数据写入: 主操作区 */}
               <div>
                 <div className="text-[11px] font-medium text-secondary mb-2">数据写入</div>
@@ -326,6 +338,7 @@ export function ExtDataStatCard({ config, onDelete, deleting, onEdit }: {
                   <CheckCircle2 className="h-3.5 w-3.5" />上传成功 · {uploadResult.rows} 行 · {uploadResult.date}
                 </div>
               )}
+              </>}
 
               {/* 管理操作: 低频, 收到底部一行 */}
               <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-border/40">

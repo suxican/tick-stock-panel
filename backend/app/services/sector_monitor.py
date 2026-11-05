@@ -88,9 +88,10 @@ class SectorMonitorService:
             # Retry it at the next background refresh even if its stat is stable.
             self._catalog_signature = None
             raise RuntimeError("板块成员数据读取失败")
+        catalog, _, members_by_key = self._view
         return [
-            {**deepcopy(target), "members": sorted(self._members_by_key.get(target["key"], set()))}
-            for kind in ("industry", "concept") for target in self._catalog[kind]
+            {**deepcopy(target), "members": sorted(members_by_key[target["key"]])}
+            for kind in ("industry", "concept") for target in catalog[kind]
         ]
 
     def missing_target_keys(self, targets: list[dict]) -> list[str]:

@@ -1922,7 +1922,9 @@ class KlineRepository:
         from app.price_limits import polars_is_risk_warning_name
 
         columns = ["symbol", "date", "close", "raw_close"]
-        df = self._scan_daily_batch(symbols, start - timedelta(days=32), end, columns)
+        # Optional close-stamped facts support end-of-day board outcomes on newer partitions.
+        df = self._scan_daily_batch(symbols, start - timedelta(days=32), end, [*columns, "raw_high", "quote_ts"])
+        columns.extend(c for c in ("raw_high", "quote_ts") if c in df.columns)
         if df.is_empty():
             return df
         if df.select(pl.struct("symbol", "date").is_duplicated().any()).item():

@@ -608,6 +608,7 @@ def test_minute_units_and_wallclock_datetime():
     assert fake.his_calls[0]["period"] == "1m"
     assert df.height == 2
     rows = df.sort("datetime").to_dicts()
+    assert df["minute_price_basis"].to_list() == ["raw", "raw"]
     assert rows[0]["datetime"] == datetime(2026, 10, 9, 9, 31, 0)   # 北京墙钟 naive
     assert rows[1]["datetime"] == datetime(2026, 10, 9, 15, 0, 0)
     assert rows[0]["volume"] == 1234.0        # 股 → floor(/100) 手

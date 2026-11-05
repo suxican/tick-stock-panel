@@ -118,7 +118,7 @@ def test_minutes_batch_exact_today_and_cutoff_cached_then_next_minute_refresh(da
     first, raw, reason = adapter.minutes({"000001.SZ", "000002.SZ"}, now=NOW)
     assert raw and reason is None and first["close"].to_list() == [10.]
     repo.get_minute_by_dates.assert_called_once_with(
-        ["000001.SZ", "000002.SZ"], [NOW.date()], asset_type="stock")
+        ["000001.SZ", "000002.SZ"], [NOW.date()], asset_type="stock", raw=True)
     cached, _, _ = adapter.minutes({"000002.SZ", "000001.SZ"}, now=NOW + timedelta(seconds=40))
     assert cached is first  # immutable batch identity is the downstream feature cache key
     assert repo.get_minute_by_dates.call_count == 1

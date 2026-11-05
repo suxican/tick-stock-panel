@@ -78,7 +78,7 @@ _ADJ_SCHEMA = {
 _MINUTE_SCHEMA = {
     "symbol": pl.String, "datetime": pl.Datetime("us"),
     "open": pl.Float64, "high": pl.Float64, "low": pl.Float64, "close": pl.Float64,
-    "volume": pl.Float64, "amount": pl.Float64,
+    "volume": pl.Float64, "amount": pl.Float64, "minute_price_basis": pl.String,
 }
 _MINUTE_BARS_PER_DAY = 240  # A 股 1m 一交易日根数(含收盘集合竞价分钟)
 _MINUTE_MAX_COUNT = 9600    # 实测单次 count=9600(40 交易日)正常返回
@@ -372,6 +372,7 @@ def _minute_rows(
         amount = _col("Amount")
         out.append({
             "symbol": symbol, "datetime": dt,
+            "minute_price_basis": "raw",  # his_dats explicitly requests dividend="none".
             "open": _col("Open"), "high": _col("High"),
             "low": _col("Low"), "close": close,
             "volume": float(math.floor(volume / 100.0)) if volume is not None else None,

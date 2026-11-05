@@ -71,7 +71,7 @@ def build_huichun_chart(service: HuichunModeService, request: HuichunChartReques
     now = _now()
     if request.as_of > now.date() or (request.as_of == now.date() and now.hour < 15):
         raise ValueError("图表截止日必须是已收盘日期")
-    before = service._input_signature()
+    before = service._input_signature(request.as_of)
     calendar, calendar_source = _chart_calendar(service, request.as_of)
     name = request.symbol
     listings = {}
@@ -165,6 +165,6 @@ def build_huichun_chart(service: HuichunModeService, request: HuichunChartReques
                 price_basis_date=str(last["date"]), latest_valid_date=str(last["date"]),
                 data_status="end_reached" if last["date"] == request.as_of else "truncated",
             )
-    if before != service._input_signature():
+    if before != service._input_signature(request.as_of):
         raise ValueError("计算期间行情已更新，请重新打开图表以使用一致数据")
     return response

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type FirstBoardConfig, type FirstBoardExecutionOptions, type FirstBoardPaperValidation, type FirstBoardReplayValidation, type FirstBoardTradeValidation, type FirstBoardTradeValidationRequest } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
+import { PriorityComparison } from './PriorityComparison'
 import { beijingDay, buttonClass, ErrorNotice, inputClass, LoadingRows, money, Notice, panelClass, pct, stamp } from './shared'
 
 const modeLabels = { replay: '已记录信号成交回放（模型估计）', paper: '模拟盘成交归因' }
@@ -98,6 +99,7 @@ function ValidationResult({ result, onOpenStock }: { result: FirstBoardTradeVali
     <p className="text-xs leading-relaxed text-secondary">以上净收益仅统计已闭环且可核验的信号。未成交、持有中、部分退出与无法验证不计作零收益。不是独立组合收益或盈利证明。</p>
     {replay && <div className="space-y-2 text-xs text-secondary"><p>前向样本：{replay.coverage.sample_count} 个锚点 · 股票日 {replay.coverage.stock_days} · 可提示股票日 {replay.coverage.eligible_stock_days} · 负例股票日 {replay.coverage.negative_stock_days} · 未知股票日 {replay.coverage.unknown_stock_days}</p><p>分钟读取 {replay.coverage.minute_days_read} 日 · 交易日历{replay.coverage.calendar_available ? '可用' : '不可用'}。前向采样用于保留当时证据，不等于成交笔数。</p></div>}
     {paper && <div className="space-y-2 text-xs text-secondary"><p>账本委托 {paper.coverage.ledger_order_count} 条 · 成交 {paper.coverage.ledger_fill_count} 条 · 可归属 {paper.coverage.attributable_count} · 无法归属 {paper.coverage.unknown_count}</p><p>历史费用缺失 {paper.coverage.legacy_fee_default_count} 条；相关收益已排除。未发现委托不代表未尝试下单；人工选择和退出会影响结果。</p></div>}
+    {replay?.priority_comparison && <PriorityComparison key={replay.id} report={replay.priority_comparison} />}
     {signals === 0 && <Notice>所选范围没有可验证的已记录信号。缺少记录不能解释为策略没有机会。</Notice>}
     {replay && Object.keys(replay.by_group).length > 0 && <details><summary className="cursor-pointer text-sm">前向分组与闭环分母</summary><div className="mt-2 overflow-x-auto"><table className="w-full min-w-[650px] text-left text-xs" aria-label="交易验证分组"><thead><tr>{['当时分组', '信号', '闭环', '未成交', '无法验证', '持有中', '闭环平均净收益率'].map(label => <th className="px-2 py-2 font-normal text-secondary" key={label}>{label}</th>)}</tr></thead><tbody>{Object.entries(replay.by_group).map(([group, value]) => <tr key={group} className="border-t border-border"><th className="px-2 py-2 font-medium">{groupLabels[group] ?? group}</th><td className="px-2 py-2">{value.signals}</td><td className="px-2 py-2">{value.closed}</td><td className="px-2 py-2">{value.no_fill}</td><td className="px-2 py-2">{value.unverifiable}</td><td className="px-2 py-2">{value.open_position}</td><td className="px-2 py-2">{pct(value.closed ? value.net_return_mean : null)}</td></tr>)}</tbody></table></div></details>}
     {result.trades.length > 0 && <div className="overflow-x-auto"><table className="w-full min-w-[850px] text-left text-xs" aria-label="交易验证明细"><thead><tr>{['股票 / 信号时间', '执行状态', '闭环净收益', '闭环净收益率', '剩余数量', '原因与交易链'].map(label => <th key={label} className="px-2 py-2 font-normal text-secondary">{label}</th>)}</tr></thead><tbody>

@@ -116,6 +116,39 @@ class _ReplayModel(_Contract):
     options: ExecutionOptions
 
 
+class _PriorityOutcomes(_ReplaySummary):
+    outcomes: Count
+    touched: Count
+    sealed: Count
+    broken: Count
+    filled: Count
+    worst_net_return: Value
+
+    @model_validator(mode="after")
+    def outcome_counts(self):
+        if not (self.sealed + self.broken == self.touched <= self.outcomes <= self.signals
+                and self.closed <= self.filled <= self.signals):
+            raise ValueError("invalid priority outcomes")
+        return self
+
+
+class _PriorityGroup(_PriorityOutcomes):
+    variant: Literal["baseline", "sector", "popularity"]
+    top_n: Literal[3, 5]
+    window: Literal["all", "holdout"]
+    segments: dict[str, _PriorityOutcomes] = Field(default_factory=dict)
+
+
+class _PriorityComparison(_Contract):
+    version: Literal["priority-v1"]
+    scored: Count
+    unscored: Count
+    popularity_known: Count
+    holdout_start: Day | None
+    groups: list[_PriorityGroup]
+    shadow: _PriorityOutcomes
+
+
 class _BaseResult(_Contract):
     id: Identifier
     created_at: Timestamp
@@ -132,6 +165,7 @@ class _ReplayResult(_BaseResult):
     coverage: _ReplayCoverage
     summary: _ReplaySummary
     by_group: dict[str, _ReplaySummary]
+    priority_comparison: _PriorityComparison | None = None
     trades: list[_ReplayTrade]
     total_trades: Count
     trades_truncated: bool

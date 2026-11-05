@@ -7,7 +7,7 @@
 
 // ===== Query Key 工厂 =====
 
-import type { FirstBoardEventFilters, HuichunChartRequest } from './api'
+import type { EtfFlowWindow, FirstBoardEventFilters, HuichunChartRequest } from './api'
 
 /** 日K修正后的直接消费查询; SSE 与数据页共用, 不扩散到分钟和财务数据。 */
 export const DAILY_DATA_QUERY_PREFIXES = new Set([
@@ -23,12 +23,16 @@ export const MINUTE_DATA_QUERY_PREFIXES = new Set([
 ])
 
 export const QK = {
+  etfObservation: (window: EtfFlowWindow, asOf?: string) => ['etf-observation', window, asOf ?? 'latest'] as const,
+  etfObservationDetail: (symbol: string, window: EtfFlowWindow, asOf?: string) =>
+    ['etf-observation', 'detail', symbol, window, asOf ?? 'latest'] as const,
   extensionPackages: ['extension-packages'] as const,
   // 回春扫描和收益快照独立刷新；现价仍复用市场行情缓存。
   huichun: ['huichun'] as const,
   huichunConfig: ['huichun', 'config'] as const,
   huichunSnapshot: ['huichun', 'snapshot'] as const,
   huichunTracking: ['huichun', 'tracking'] as const,
+  huichunResearch: ['huichun', 'research'] as const,
   huichunChart: (body: HuichunChartRequest) => ['huichun', 'chart', body] as const,
   // 首板工作台独立轮询快照，复用行情缓存。
   firstBoard: ['first-board'] as const,

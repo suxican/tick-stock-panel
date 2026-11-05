@@ -934,7 +934,7 @@ def _normalize_minute(df_in, default_symbol: str | None = None, *, source: str =
         if col in df.columns:
             df = df.with_columns(pl.col(col).cast(pl.Float64, strict=False))
 
-    keep = [c for c in CANONICAL_MINUTE_COLS if c in df.columns]
+    keep = [c for c in (*CANONICAL_MINUTE_COLS, "minute_price_basis", "minute_time_grid") if c in df.columns]
     return df.select(keep)
 
 
@@ -1274,7 +1274,7 @@ def sync_minute_batch(
 
             seg = _normalize_minute(_compact_klines_to_df(raw))
             if not seg.is_empty():
-                seg_out.append(seg)
+                seg_out.append(seg.with_columns(pl.lit("raw" if raw_basis else "forward").alias("minute_price_basis")))
 
             if on_chunk_done:
                 on_chunk_done(step, total_steps, seg_label)
@@ -1652,7 +1652,10 @@ def fetch_minute_single(
         logger.warning("fetch_minute_single(%s, %s) failed: %s", symbol, trade_date, e)
         return pl.DataFrame()
 
-    return _normalize_minute(_compact_klines_to_df(raw, default_symbol=symbol))
+    frame = _normalize_minute(_compact_klines_to_df(raw, default_symbol=symbol))
+    if frame.is_empty():
+        return frame
+    return frame.with_columns(pl.lit("raw" if raw_basis else "forward").alias("minute_price_basis"))
 
 
 def fetch_adj_factor_single(symbol: str) -> pl.DataFrame:

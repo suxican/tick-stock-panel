@@ -51,7 +51,7 @@ def chart_env(tmp_path, monkeypatch):
     service._calendar_path = calendar_path
     service._calendar_source = "sentinel_scan_source"
     service._latest_observed_date = date(2020, 1, 1)
-    service._input_signature = lambda: [env.generation]
+    service._input_signature = lambda *args: [env.generation]
     service._raw = lambda symbols, end: env.raw.filter(pl.col("date") <= end)
     service._factors = lambda symbols, end: env.factors.filter(
         pl.col("trade_date").is_null() | (pl.col("trade_date") <= end)
@@ -184,6 +184,42 @@ def test_no_local_stock_data_never_falls_back_to_live(chart_env):
     assert result["rows"] == []
     assert result["source"] == "huichun_a0"
     assert result["huichun"]["data_status"] == "no_valid_data"
+
+
+@pytest.mark.parametrize("table,partition,abort", [
+    ("kline_daily", "future", False), ("kline_daily", "cutoff", True),
+    ("kline_daily", "", True), ("kline_daily", "unknown", True),
+    ("adj_factor", "future", True), ("instruments", "", True),
+])
+@pytest.mark.parametrize("remove", [False, True])
+def test_chart_signature_scopes_only_canonical_daily_partitions(
+    chart_env, tmp_path, table, partition, abort, remove,
+):
+    env = chart_env
+    cutoff = env.days[300]
+    dirs = {"future": f"date={env.days[301]}", "cutoff": f"date={cutoff}",
+            "unknown": "date=invalid", "": ""}
+    directory = tmp_path / table / dirs[partition]
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "part.parquet"
+    if remove:
+        path.write_bytes(b"present at chart start")
+    env.service.repo.store = SimpleNamespace(data_dir=tmp_path)
+    del env.service._input_signature
+    original = env.service._raw
+    def change_file(symbols, end):
+        if remove:
+            path.unlink()
+        else:
+            path.write_bytes(b"changed during chart calculation")
+        return original(symbols, end)
+    env.service._raw = change_file
+    req = HuichunChartRequest(symbol="600001.SH", as_of=cutoff, rules=HuichunRules(), rule_revision=0)
+    if abort:
+        with pytest.raises(ValueError, match="行情已更新"):
+            build_huichun_chart(env.service, req)
+    else:
+        assert build_huichun_chart(env.service, req)["rows"]
 
 
 def test_chart_rejects_mixed_input_generations(chart_env):

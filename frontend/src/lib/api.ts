@@ -4,6 +4,8 @@
 // Prod:同源(FastAPI 托管前端 dist)
 
 import { toast } from '@/components/Toast'
+import type { EtfFlowWindow, EtfObservationDetail, EtfObservationSnapshot } from './etfObservation'
+export type * from './etfObservation'
 
 const BASE = ''
 
@@ -3193,6 +3195,16 @@ export interface LabReport {
 
 // ===== API surface =====
 export const api = {
+  etfObservation: (window: EtfFlowWindow, asOf?: string) => {
+    const params = new URLSearchParams({ window: String(window) })
+    if (asOf) params.set('as_of', asOf)
+    return request<EtfObservationSnapshot>(`/api/etf-observation?${params}`, { quiet: true })
+  },
+  etfObservationDetail: (symbol: string, window: EtfFlowWindow, asOf?: string) => {
+    const params = new URLSearchParams({ symbol, window: String(window) })
+    if (asOf) params.set('as_of', asOf)
+    return request<EtfObservationDetail>(`/api/etf-observation/detail?${params}`, { quiet: true })
+  },
   huichunConfig: () => request<HuichunConfig>('/api/huichun/config', { quiet: true }),
   huichunSaveConfig: (body: { rules: HuichunRules; expected_revision: number }) => request<HuichunConfig>('/api/huichun/config', {
     method: 'PUT', body: JSON.stringify(body), quiet: true,
@@ -3205,6 +3217,7 @@ export const api = {
     method: 'POST', body: JSON.stringify(body), quiet: true,
   }),
   huichunTracking: () => request<HuichunTracking>('/api/huichun/tracking', { quiet: true }),
+  huichunResearch: () => request<HuichunResearch>('/api/huichun/research', { quiet: true }),
   huichunAddTracking: (body: { scan_id: string; candidate_ids: string[] }) => request<HuichunTracking>('/api/huichun/tracking', {
     method: 'POST', body: JSON.stringify(body), quiet: true,
   }),
@@ -6065,6 +6078,7 @@ export interface FirstBoardAttentionGroup {
   market_mean_change_pct?: number | null
   up_ratio: number | null
   strong: boolean | null
+  peer_strong?: boolean | null
   follow: boolean | null
   reason: string
   leader: { symbol: string; name: string; observed_limit_at: string; at_limit: boolean | null } | null
@@ -6117,8 +6131,53 @@ export interface FirstBoardCandidate {
   sector: string | null
   sector_confirmation?: { reason?: string; confirmed?: boolean; member_count?: number; count?: number; coverage?: number }
   attention_context?: FirstBoardAttention
+  priority_score?: FirstBoardPriority
+  last_priority?: { score: number; known_max: number; as_of: string; status: string; version: string; source?: 'event' } | null
   suggested_amount: number | null
   event_id?: string | null
+}
+export type FirstBoardPriorityStatus = 'ready' | 'partial' | 'watch' | 'shadow' | 'blocked' | 'sealed' | 'broken' | 'invalid' | 'stale'
+export interface FirstBoardRadarPopularity {
+  status: 'ready' | 'unranked' | 'unavailable'
+  rank?: number
+  prior_rank?: number | null
+  rank_gain?: number | null
+  source_at?: string | null
+  fetched_at?: string | null
+}
+export interface FirstBoardRadarBoard {
+  status: 'ready' | 'unavailable'
+  source?: 'official_core' | 'vendor_plate'
+  tid?: string
+  plate_type?: 14 | 15 | 17 | null
+  name?: string
+  rank?: number
+  market_at?: string | null
+  members_at?: string | null
+  source_at?: string | null
+  fetched_at?: string | null
+}
+export interface FirstBoardPriority {
+  version: string
+  status: FirstBoardPriorityStatus
+  score: number | null
+  known_max: number
+  parts: Partial<Record<'stock' | 'sector' | 'timing' | 'popularity', { points: number | null; max_points: number; reason: string }>>
+  primary_sector: {
+    id: string; name: string; kind: 'concept' | 'industry'; source_id: string; field: string
+    peer_rank: number; peer_total: number; peer_valid_count: number; peer_count: number
+    peer_mean_change_pct: number; peer_up_ratio: number; peer_coverage: number
+    peer_persistent?: boolean | null; peer_reference_at?: string | null
+  } | null
+  role: 'leader' | 'follower' | 'ordinary' | 'unknown'
+  can_buy: boolean
+  reason: string
+  radar?: {
+    popularity?: FirstBoardRadarPopularity
+    theme?: FirstBoardRadarBoard
+    plate?: FirstBoardRadarBoard
+    plates?: FirstBoardRadarBoard[]
+  }
 }
 /** 昨日固定首板样本的今日反馈；收益和比例均为小数制，缺失值不填零。 */
 export interface FirstBoardFeedbackSummary {
@@ -6213,7 +6272,7 @@ export interface FirstBoardEvent {
   message: string
   price: number | null
   revision: number
-  evidence: Record<string, unknown>
+  evidence: Record<string, unknown> & { priority_score?: FirstBoardPriority }
   blocked_reasons: string[]
   quote_time: string | null
 }
@@ -6365,6 +6424,14 @@ export interface FirstBoardReplayValidation extends FirstBoardValidationBase {
   }
   summary: FirstBoardExecutionSummary
   by_group: Record<string, FirstBoardExecutionSummary>
+  priority_comparison?: {
+    version: string; scored: number; unscored: number; popularity_known: number; holdout_start: string | null
+    groups: (FirstBoardRankOutcomes & {
+      variant: 'baseline' | 'sector' | 'popularity'; top_n: 3 | 5; window: 'all' | 'holdout'
+      segments?: Record<string, FirstBoardRankOutcomes>
+    })[]
+    shadow: FirstBoardRankOutcomes
+  }
   trades: {
     signal_id: string; symbol: string; name: string | null; date: string; revision: number; patterns: string[]
     group: 'S0F0' | 'S1F0' | 'S0F1' | 'S1F1' | 'unknown'
@@ -6378,6 +6445,11 @@ export interface FirstBoardReplayValidation extends FirstBoardValidationBase {
   total_trades: number
   trades_truncated: boolean
   fingerprint: string
+}
+
+export interface FirstBoardRankOutcomes extends FirstBoardExecutionSummary {
+  outcomes: number; touched: number; sealed: number; broken: number; filled: number
+  worst_net_return: number | null
 }
 export type FirstBoardTradeValidation = FirstBoardReplayValidation | FirstBoardPaperValidation
 export interface FirstBoardTradeValidationRun {
@@ -6437,6 +6509,11 @@ export interface HuichunCandidate {
   g_date: string
   d_date: string
   rally_return: number
+  pullback_fraction?: number | null
+  pullback_bars?: number | null
+  recovery_return?: number | null
+  first_watch_date?: string | null
+  watch_lead_bars?: number | null
   zero_distance: number
   close_above_ma_pct: number
   ma_slope_pct: number
@@ -6448,6 +6525,14 @@ export interface HuichunCandidate {
   rule_revision: number
 }
 export interface HuichunCoverage {
+  stage_counts?: { universe: number; valid_close: number; warmup_ready: number; qualified_waiting_first_cross: number;
+    first_cross_today: number; first_cross_rejected_today: number; confirmed_today: number; pending_today: number }
+  factor_issue_dates?: { date: string; count: number }[]
+  first_cross_rejection_reasons?: Record<string, number>
+  expected_daily_date?: string | null
+  publication_status?: 'ready' | 'historical' | 'stale' | 'incomplete' | 'calendar_unverified'
+  publication_checks?: { active_symbols: number; previous_active_symbols: number; previous_date: string | null;
+    min_coverage_ratio: number; unfinalized_symbols: number; known_raw_issue: boolean }
   universe?: 'sh_sz_a_shares'
   st_filter?: 'current_instrument_name' | 'not_applied_historical_status_unknown'
   st_excluded_count?: number
@@ -6461,6 +6546,10 @@ export interface HuichunCoverage {
   calendar_source: 'official_exchange_calendar' | 'observed_market_daily_dates'
 }
 export interface HuichunObservation extends Omit<HuichunCandidate, 'signal_date'> {
+  cross_threshold_price?: number | null
+  cross_threshold_return?: number | null
+  threshold_trend_pass?: boolean | null
+  threshold_zero_pass?: boolean | null
   observation_date: string
   gap_distance: number
   previous_gap_distance: number
@@ -6491,10 +6580,35 @@ export interface HuichunSnapshot {
     candidates: HuichunCandidate[]
     observation_date?: string
     observations?: HuichunObservation[]
+    watch_conversion?: { horizon: number; total: number; resolved: number; confirmed: number; rejected: number; gap_unknown: number; pending: number }[]
     coverage: HuichunCoverage
     limitations: string[]
   } | null
   config_revision: number
+}
+export interface HuichunResearchRecord {
+  id: string
+  symbol: string
+  name: string
+  signal_date: string
+  g_date: string
+  d_date: string
+  cohort: 'confirmed' | 'zero_control'
+  origin: 'forward' | 'backfill'
+  board: 'main' | 'gem' | 'star'
+  rules: HuichunRules
+  rule_revision: number
+  zero_distance: number
+  first_seen_at: string
+  volatility_20?: number | null
+  shape_t5: { status: string; return_pct: number | null }
+  execution: { status: string; entry_date: string | null; exit_date: string | null; gross_return_pct: number | null; net_return_pct: number | null;
+    shares?: number | null; entry_price?: number | null; exit_price?: number | null; buy_fee?: number | null; sell_fee?: number | null; entry_cost?: number | null }
+}
+export interface HuichunResearch {
+  updated_at: string | null
+  records: HuichunResearchRecord[]
+  limitations: string[]
 }
 export interface HuichunReturn {
   horizon: number
