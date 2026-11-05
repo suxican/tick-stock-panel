@@ -23,6 +23,7 @@ vi.mock('./Keys', () => ({
 }))
 vi.mock('@/extensions/registry', () => ({
   getFrontendExtensionNavigation: () => [{ route: { path: '/zzshare-radar' } }],
+  getFrontendSlotRegistrations: () => [],
 }))
 
 let host: HTMLDivElement

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -106,24 +107,28 @@ def _latest_minute_partition(minute_dir: Path) -> str | None:
     return parts[-1] if parts else None
 
 
-def _prev_daily_close(data_dir: Path, target_date: str) -> pl.DataFrame | None:
-    """目标日前最近一个日K分区的收盘价 → (_bare, prev_close); 无则 None。
-
-    与 api/ext_data._prev_daily_close 同口径 (服务层不依赖 api 层, 就地实现)。
-    """
+def previous_daily_partition(data_dir: Path, target_date: str) -> Path | None:
+    """目标日前最近一个已落盘的股票日 K 分区，供分时行情及其缓存签名共用。"""
     daily = data_dir / "kline_daily"
     if not daily.exists():
         return None
-    dates = sorted(
-        d.name[5:]
-        for d in daily.iterdir()
-        if d.is_dir() and d.name.startswith("date=") and (d / "part.parquet").is_file()
-    )
-    prevs = [d for d in dates if d < target_date]
-    if not prevs:
+    previous = (d for d in daily.iterdir() if d.name.startswith("date=") and d.name[5:] < target_date)
+    for directory in sorted(previous, reverse=True):
+        path = directory / "part.parquet"
+        if path.is_file():
+            return path
+    return None
+
+
+def _prev_daily_close(path: Path | None) -> pl.DataFrame | None:
+    if path is None:
         return None
     try:
-        df = pl.read_parquet(daily / f"date={prevs[-1]}" / "part.parquet", columns=["symbol", "close"])
+        daily = pl.scan_parquet(path, hive_partitioning=False)
+        if "date" in daily.collect_schema():
+            partition_day = date.fromisoformat(path.parent.name.removeprefix("date="))
+            daily = daily.filter(pl.col("date").cast(pl.Date, strict=False) == partition_day)
+        df = daily.select("symbol", "close").collect()
     except Exception:
         return None
     return (
@@ -136,8 +141,8 @@ def _prev_daily_close(data_dir: Path, target_date: str) -> pl.DataFrame | None:
     )
 
 
-def _minute_pcts(minute_dir: Path, target: str) -> tuple[pl.DataFrame | None, str, bool]:
-    """当日全市场分钟 → (_bare, _bucket, _pct[, amount]); 读取失败返回 (None, reason, False)。
+def minute_percentages(minute_dir: Path, target: str, previous: Path | None) -> tuple[pl.DataFrame | None, str, bool]:
+    """当日全市场分钟 → (_bare, datetime, _pct[, amount]); 读取失败返回 (None, reason, False)。
 
     amount 列缺失 (旧 schema) 时走精简读取, has_amount=False 由上层降级活跃度。
     """
@@ -153,14 +158,21 @@ def _minute_pcts(minute_dir: Path, target: str) -> tuple[pl.DataFrame | None, st
             logger.warning("sector_rotation read minute partition failed: %s", exc)
             return None, "minute_schema", False
     # close <= 0 / 非有限的分钟行无效: 作基准时 pct 为 inf, 作分子时是 -100% 假跌幅
-    bars = bars.drop_nulls(subset=["datetime", "close"]).filter(
-        pl.col("close").cast(pl.Float64).is_finite() & (pl.col("close") > 0)
+    dtype = bars.schema["datetime"]
+    if not isinstance(dtype, pl.Datetime):
+        return None, "minute_schema", has_amount
+    if dtype.time_zone is not None:
+        bars = bars.with_columns(pl.col("datetime").dt.convert_time_zone("Asia/Shanghai").dt.replace_time_zone(None))
+    # 逐行校验归属，错放到分区的其他交易日记录不能进入板块、全市场或首根基准。
+    bars = bars.filter(
+        (pl.col("datetime").dt.date() == date.fromisoformat(target))
+        & pl.col("close").cast(pl.Float64).is_finite() & (pl.col("close") > 0)
     )
     if bars.is_empty():
         return None, "minute_empty", has_amount
     bars = bars.with_columns(_bare().alias("_bare"))
 
-    prev = _prev_daily_close(minute_dir.parent, target)
+    prev = _prev_daily_close(previous)
     joined = bars.join(prev, on="_bare", how="left") if prev is not None else bars.with_columns(
         pl.lit(None, dtype=pl.Float64).alias("prev_close")
     )
@@ -429,7 +441,9 @@ def _compute(repo, data_dir: Path, kind: str, flow_field: str | None, top: int, 
     if map_df.is_empty() or member_count == 0:
         return {"status": "no_data", "reason": "members_missing", "date": target, "kind": kind}
 
-    pcts, basis, has_amount = _minute_pcts(minute_dir, target)
+    pcts, basis, has_amount = minute_percentages(
+        minute_dir, target, previous_daily_partition(data_dir, target),
+    )
     if pcts is None:
         return {"status": "no_data", "reason": basis, "date": target, "kind": kind}
 

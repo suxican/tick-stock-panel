@@ -17,6 +17,7 @@ from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from app.market_time import CN_TZ, cn_today
+from app.services.dimension_intraday import member_intraday
 from app.services.ext_data import (
     ExtConfig,
     ExtConfigStore,
@@ -797,17 +798,6 @@ def dimension_members(
 # 不做后台预计算 — 板块基数大而单次聚合仅几十毫秒。
 _DIMENSION_INTRADAY_CACHE: dict[tuple[str, str, str, str | None], tuple[float, dict]] = {}
 _DIMENSION_INTRADAY_CACHE_TTL_S = 60.0
-# 成分股网格化 ffill 上限: 超大板块退化为逐时间戳可得均值 (内存保护)。
-_DIMENSION_INTRADAY_FFILL_CAP = 2000
-# 分钟 pct 物理边界 (与 services.sector_rotation._PCT_PHYSICAL_BOUND 同值,
-# A 股日涨跌停最大 ±30%): 超出视为脏点剔除 (GH #473 同族)。
-_DIMENSION_INTRADAY_PCT_BOUND = 0.30
-_DIMENSION_INTRADAY_PCT_EPS = 1e-9  # 浮点容差: 130/100-1 略大于 0.30, 真涨停勿滤
-
-
-def _bare_symbol_expr(col: str = "symbol") -> pl.Expr:
-    """'000001.SZ' → '000001'; 已是裸代码则原样。"""
-    return pl.col(col).cast(pl.String).str.strip_chars().str.split(".").list.first()
 
 
 def _dimension_member_bares(matched: pl.DataFrame, config: ExtConfig) -> list[str]:
@@ -826,33 +816,6 @@ def _dimension_member_bares(matched: pl.DataFrame, config: ExtConfig) -> list[st
     )
     series = matched.select(coalesced.alias("_bare")).to_series()
     return sorted({s for s in series.to_list() if s})
-
-
-def _prev_daily_close(data_dir: Path, target_date: str) -> pl.DataFrame | None:
-    """目标日前最近一个日K分区的收盘价 → (_bare, prev_close); 无则 None。"""
-    daily = data_dir / "kline_daily"
-    if not daily.exists():
-        return None
-    dates = sorted(
-        d.name[5:]
-        for d in daily.iterdir()
-        if d.is_dir() and d.name.startswith("date=") and (d / "part.parquet").exists()
-    )
-    prevs = [d for d in dates if d < target_date]
-    if not prevs:
-        return None
-    path = daily / f"date={prevs[-1]}" / "part.parquet"
-    if not path.exists():
-        return None
-    df = pl.read_parquet(path, columns=["symbol", "close"])
-    return (
-        df.with_columns(_bare_symbol_expr().alias("_bare"))
-        .select([pl.col("_bare"), pl.col("close").cast(pl.Float64).alias("prev_close")])
-        # 前收 <= 0 / 非有限视为缺失 (否则 close/ref 为 inf, 整个响应 JSON 渲染 500),
-        # 缺失时由调用方退化为当日首根有效分钟 close
-        .filter(pl.col("prev_close").is_finite() & (pl.col("prev_close") > 0))
-        .unique(subset=["_bare"], keep="last")
-    )
 
 
 def _dimension_intraday_compute(
@@ -884,89 +847,13 @@ def _dimension_intraday_compute(
     if not target:
         return {"status": "no_data", "reason": "minute_missing", "date": snapshot_date, "points": []}
 
-    ext_df, _active = _read_ext_dataframe(config, data_dir)
+    ext_df, _active = _read_ext_dataframe(
+        config, data_dir, snapshot_date=target if config.mode == "timeseries" else None,
+    )
     if ext_df.is_empty() or field not in ext_df.columns:
         return {"status": "empty", "reason": "no_members", "date": target, "points": []}
-    member_bares = _dimension_member_bares(_filter_dimension_member_rows(ext_df, field, value), config)
-    if not member_bares:
-        return {"status": "empty", "reason": "no_members", "date": target, "points": []}
-
-    try:
-        bars = pl.read_parquet(
-            minute_dir / f"date={target}" / "part.parquet",
-            columns=["symbol", "datetime", "close"],
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("dimension-intraday read minute partition failed: %s", exc)
-        return {"status": "no_data", "reason": "minute_schema", "date": target, "points": []}
-    # close <= 0 / 非有限的分钟行无效: 作基准时 pct 为 inf, 作分子时是 -100% 假跌幅
-    bars = bars.drop_nulls(subset=["datetime", "close"]).filter(
-        pl.col("close").cast(pl.Float64).is_finite() & (pl.col("close") > 0)
-    )
-    if bars.is_empty():
-        return {"status": "no_data", "reason": "minute_empty", "date": target, "points": []}
-    bars = bars.with_columns(_bare_symbol_expr().alias("_bare"))
-
-    prev = _prev_daily_close(data_dir, target)
-    joined = bars.join(prev, on="_bare", how="left") if prev is not None else bars.with_columns(
-        pl.lit(None, dtype=pl.Float64).alias("prev_close")
-    )
-    refs = joined.group_by("_bare").agg(
-        pl.col("prev_close").first().alias("_prev"),
-        pl.col("close").sort_by("datetime").first().alias("_first"),
-    ).with_columns(pl.coalesce(["_prev", "_first"]).alias("_ref"))
-    n_prev = refs["_prev"].is_not_null().sum()
-    basis = "prev_close" if n_prev == refs.height else ("first_close" if n_prev == 0 else "mixed")
-    joined = (
-        joined.join(refs.select(["_bare", "_ref"]), on="_bare", how="left")
-        .with_columns((pl.col("close") / pl.col("_ref") - 1.0).alias("_pct"))
-        # 物理边界外视为脏点剔除 (与 sector_rotation 同口径, GH #473 同族)
-        .filter(pl.col("_pct").abs() <= _DIMENSION_INTRADAY_PCT_BOUND + _DIMENSION_INTRADAY_PCT_EPS)
-    )
-
-    market = joined.group_by("datetime").agg(pl.col("_pct").mean().alias("_market"))
-
-    member_bars = joined.filter(pl.col("_bare").is_in(member_bares))
-    members_with_minute = member_bars["_bare"].n_unique() if not member_bars.is_empty() else 0
-    if members_with_minute == 0:
-        return {
-            "status": "empty", "reason": "no_member_bars", "date": target,
-            "member_count": len(member_bares), "members_with_minute": 0, "points": [],
-        }
-    if members_with_minute <= _DIMENSION_INTRADAY_FFILL_CAP:
-        # 网格化 (成分股 × 全时间轴) + 逐股 ffill: 停牌分钟冻结在最后价而非退出均值
-        grid = (
-            member_bars.select(pl.col("_bare").unique())
-            .join(joined.select(pl.col("datetime").unique()), how="cross")
-        )
-        member_bars = (
-            grid.join(member_bars.select(["_bare", "datetime", "_pct"]), on=["_bare", "datetime"], how="left")
-            .sort(["_bare", "datetime"])
-            .with_columns(pl.col("_pct").forward_fill().over("_bare"))
-        )
-    sector = member_bars.group_by("datetime").agg(pl.col("_pct").mean().alias("_sector"))
-
-    combined = market.join(sector, on="datetime", how="left").sort("datetime")
-
-    def _r4(v) -> float | None:
-        return round(float(v), 4) if v is not None and not (isinstance(v, float) and math.isnan(v)) else None
-
-    points = [
-        {
-            "time": row["datetime"].strftime("%H:%M"),
-            "sector": _r4(row["_sector"]),
-            "market": _r4(row["_market"]),
-        }
-        for row in combined.iter_rows(named=True)
-    ]
-    return {
-        "status": "ok",
-        "date": target,
-        "basis": basis,
-        "member_count": len(member_bares),
-        "members_with_minute": members_with_minute,
-        "points": points,
-    }
+    members = _dimension_member_bares(_filter_dimension_member_rows(ext_df, field, value), config)
+    return member_intraday(data_dir, date.fromisoformat(target), members)
 
 
 @router.get("/{config_id}/dimension-intraday")

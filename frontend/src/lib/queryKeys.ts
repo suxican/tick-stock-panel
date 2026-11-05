@@ -14,11 +14,12 @@ export const DAILY_DATA_QUERY_PREFIXES = new Set([
   'screener-cached', 'screener-kline-batch', 'market-snapshot', 'overview-market',
   'index-quotes', 'index-daily', 'watchlist-enriched', 'kline-batch', 'kline', 'kline-latest', 'stock-levels',
   'regime-history', 'regime-latest', 'regime-states', 'regime-coverage', 'regime-phases', 'regime-mainline',
+  'zzshare-theme-members', 'zzshare-theme-intraday',
 ])
 
 /** 分钟落盘补拉后的体检与直接消费查询, 不影响日K/财务或独立的指数分钟数据。 */
 export const MINUTE_DATA_QUERY_PREFIXES = new Set([
-  'minute-gaps', 'minute-batch', 'kline-minute', 'kline-minute-range',
+  'minute-gaps', 'minute-batch', 'kline-minute', 'kline-minute-range', 'zzshare-theme-intraday',
 ])
 
 export const QK = {
@@ -122,6 +123,9 @@ export const QK = {
   pipelineJob:          (id: string) => ['pipeline-job', id] as const,
   extData:              ['ext-data'] as const,
   zzshareThemes:        (date: string) => ['zzshare-themes', date] as const,
+  zzshareThemeMembers:  (plateCode: string, date: string) => ['zzshare-theme-members', plateCode, date] as const,
+  zzshareThemeIntraday: (plateCode: string, date: string) => ['zzshare-theme-intraday', plateCode, date] as const,
+  zzshareHome:          (date: string, asOf?: string) => ['zzshare-home', date, asOf ?? 'latest'] as const,
   zzshareResearch:      (kind: string, date: string, code?: string, plateType?: 14 | 15 | 17) => ['zzshare-research', kind, date, code, plateType] as const,
   extDataRows:          (id: string, date?: string, limit?: number, columns?: string) => ['ext-data-rows', id, date, limit, columns] as const,
   dimensionMembers:     (id: string, field: string, value: string, date?: string) => ['dimension-members', id, field, value, date] as const,

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { skipToken, useQuery } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Link } from 'react-router-dom'
 import {
@@ -14,26 +14,32 @@ import { Activity, Building2, ChevronRight, Database, RefreshCw, Search, Tags, U
 import { Modal } from '@/components/Modal'
 import { boardTag } from '@/components/stock-table/primitives'
 import { toNavItems } from '@/lib/listNav'
-import { api, type DimensionIntradayPoint, type MarketSnapshotRow } from '@/lib/api'
+import { api, type DimensionIntradayPoint, type DimensionIntradayResult, type MarketSnapshotRow } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
-import { fmtBigNum, fmtPct, fmtPrice, priceColorClass } from '@/lib/format'
+import { cnDateFromUtc, fmtBigNum, fmtPct, fmtPrice, priceColorClass } from '@/lib/format'
 import { useChartTheme } from '@/lib/theme'
-import type { DimensionKind, DimensionMembersTarget, Props } from './DimensionMembersDialog'
+import { dimensionTargetKey, type DatedThemeTarget, type DimensionKind, type DimensionQuery, type DimensionMembersTarget, type Props } from './DimensionMembersDialog'
 
-
-interface ResolvedSource {
-  configId: string
-  field: string
-}
 
 type SortMode = 'change_desc' | 'change_asc' | 'amount_desc' | 'name'
 
-function resolveSource(sourceField: string): ResolvedSource | null {
+function resolveSource(target: DimensionMembersTarget): (Pick<DatedThemeTarget, 'members' | 'intraday'> & { label: string }) | null {
+  if (target.kind === 'theme') return { members: target.members, intraday: target.intraday, label: '题材成分' }
+  const { sourceField, value, date } = target
   const separator = sourceField.indexOf('.')
   if (separator <= 0 || separator === sourceField.length - 1) return null
+  const configId = sourceField.slice(0, separator)
+  const field = sourceField.slice(separator + 1)
   return {
-    configId: sourceField.slice(0, separator),
-    field: sourceField.slice(separator + 1),
+    label: configId,
+    members: {
+      queryKey: QK.dimensionMembers(configId, field, value, date),
+      queryFn: () => api.dimensionMembers(configId, { field, value, date, limit: 10000 }),
+    },
+    intraday: {
+      queryKey: QK.dimensionIntraday(configId, field, value, date),
+      queryFn: () => api.dimensionIntraday(configId, { field, value, date }),
+    },
   }
 }
 
@@ -59,7 +65,7 @@ export function DimensionMembersDialog({ target, onClose, onStockClick }: Props)
   if (!target) return null
   return (
     <DimensionMembersDialogContent
-      key={`${target.sourceField}:${target.value}:${target.date ?? ''}`}
+      key={dimensionTargetKey(target)}
       target={target}
       onClose={onClose}
       onStockClick={onStockClick}
@@ -68,37 +74,33 @@ export function DimensionMembersDialog({ target, onClose, onStockClick }: Props)
 }
 
 export function DimensionMembersDialogContent({ target, onClose, onStockClick }: Omit<Props, 'target'> & { target: DimensionMembersTarget }) {
-  const source = useMemo(() => resolveSource(target.sourceField), [target.sourceField])
+  const datedTheme = target.kind === 'theme'
+  const source = useMemo(() => resolveSource(target), [target])
   const [search, setSearch] = useState('')
   const [sortMode, setSortMode] = useState<SortMode>('change_desc')
   const listRef = useRef<HTMLDivElement>(null)
 
   const membersQuery = useQuery({
-    queryKey: source ? QK.dimensionMembers(source.configId, source.field, target.value, target.date) : ['dimension-members-invalid'],
-    queryFn: () => api.dimensionMembers(source!.configId, {
-      field: source!.field,
-      value: target.value,
-      date: target.date,
-      limit: 10000,
-    }),
-    enabled: !!source,
-    staleTime: 5 * 60_000,
+    queryKey: source?.members.queryKey ?? ['dimension-members-invalid'],
+    queryFn: source?.members.queryFn ?? skipToken,
+    staleTime: datedTheme ? 60_000 : 5 * 60_000,
   })
 
   const marketQuery = useQuery({
     queryKey: QK.marketSnapshot,
     queryFn: api.marketSnapshot,
-    enabled: (membersQuery.data?.rows.length ?? 0) > 0,
+    enabled: !datedTheme && (membersQuery.data?.rows.length ?? 0) > 0,
     staleTime: 60_000,
   })
 
   const marketMap = useMemo(() => {
     const map = new Map<string, MarketSnapshotRow>()
+    if (datedTheme) return map
     for (const row of marketQuery.data?.rows ?? []) {
       for (const key of symbolKeys(row.symbol)) map.set(key, row)
     }
     return map
-  }, [marketQuery.data?.rows])
+  }, [datedTheme, marketQuery.data?.rows])
 
   const rows = useMemo(() => {
     const seen = new Set<string>()
@@ -138,6 +140,7 @@ export function DimensionMembersDialogContent({ target, onClose, onStockClick }:
       up: changes.filter(value => value > 0).length,
       down: changes.filter(value => value < 0).length,
       flat: rows.length - changes.filter(value => value !== 0).length,
+      missing: rows.length - changes.length,
       average: changes.length ? changes.reduce((sum, value) => sum + value, 0) / changes.length : null,
     }
   }, [rows])
@@ -154,12 +157,13 @@ export function DimensionMembersDialogContent({ target, onClose, onStockClick }:
     listRef.current?.scrollTo({ top: 0 })
   }, [search, sortMode])
 
-  const accent = target.kind === 'concept'
-    ? { icon: Tags, badge: '概念', iconCls: 'text-orange-700 dark:text-orange-300', badgeCls: 'bg-orange-500/10 text-orange-700 dark:text-orange-300' }
+  const accent = target.kind !== 'industry'
+    ? { icon: Tags, badge: datedTheme ? '题材' : '概念', iconCls: 'text-orange-700 dark:text-orange-300', badgeCls: 'bg-orange-500/10 text-orange-700 dark:text-orange-300' }
     : { icon: Building2, badge: '行业', iconCls: 'text-sky-700 dark:text-sky-300', badgeCls: 'bg-sky-500/10 text-sky-700 dark:text-sky-300' }
   const AccentIcon = accent.icon
   const titleId = 'dimension-members-title'
   const total = membersQuery.data?.total ?? 0
+  const canOpenStock = (symbol: string) => !datedTheme || /^\d{6}\.(SH|SZ|BJ)$/.test(symbol)
 
   return (
     <Modal
@@ -177,7 +181,7 @@ export function DimensionMembersDialogContent({ target, onClose, onStockClick }:
             <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${accent.badgeCls}`}>{accent.badge}</span>
           </div>
           <div className="mt-0.5 flex items-center gap-2 text-[10px] text-muted">
-            <span>{membersQuery.data?.label ?? source?.configId ?? '扩展数据'}</span>
+            <span>{membersQuery.data?.label ?? source?.label ?? '扩展数据'}</span>
             {membersQuery.data?.date && <span>{membersQuery.data.date}</span>}
           </div>
         </div>
@@ -207,15 +211,12 @@ export function DimensionMembersDialogContent({ target, onClose, onStockClick }:
             <Summary label="平均涨跌" value={fmtPct(stats.average)} className={priceColorClass(stats.average)} />
           </div>
 
-          {source && (
-            <DimensionIntradaySection
-              configId={source.configId}
-              field={source.field}
-              value={target.value}
-              date={target.date}
-              kind={target.kind}
-            />
-          )}
+          {datedTheme && <p className="border-b border-border px-4 py-1.5 text-[11px] text-secondary">
+            成分与行情均对应 {target.date}。行情取该交易日最新本地记录，可能晚于榜单计算时刻。
+            {stats.missing > 0 && `有 ${stats.missing} 只成分缺少涨跌幅。`}
+          </p>}
+          <DimensionIntradaySection request={source.intraday} poll={!datedTheme || target.date === cnDateFromUtc(new Date().toISOString())}
+            kind={target.kind === 'industry' ? 'industry' : 'concept'} />
 
           <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5">
             <div className="relative min-w-0 flex-1">
@@ -241,7 +242,7 @@ export function DimensionMembersDialogContent({ target, onClose, onStockClick }:
           </div>
 
           <div className="grid shrink-0 grid-cols-[minmax(132px,1fr)_74px_74px_18px] border-b border-border bg-elevated/60 px-4 py-2 text-[10px] font-medium text-muted md:grid-cols-[minmax(180px,1fr)_90px_84px_88px_100px_18px]">
-            <span>股票</span><span className="text-right">现价</span><span className="text-right">涨跌幅</span>
+            <span>股票</span><span className="text-right">{datedTheme ? '当日价格' : '现价'}</span><span className="text-right">涨跌幅</span>
             <span className="hidden text-right md:block">换手率</span><span className="hidden text-right md:block">成交额</span><span />
           </div>
 
@@ -258,8 +259,9 @@ export function DimensionMembersDialogContent({ target, onClose, onStockClick }:
                       key={virtualRow.key}
                       ref={rowVirtualizer.measureElement}
                       data-index={virtualRow.index}
-                      onClick={() => onStockClick?.(row.symbol, row.name, toNavItems(visibleRows))}
-                      disabled={!onStockClick}
+                      onClick={() => onStockClick?.(row.symbol, row.name, toNavItems(datedTheme ? visibleRows.filter(item => canOpenStock(item.symbol)) : visibleRows))}
+                      disabled={!onStockClick || !canOpenStock(row.symbol)}
+                      title={canOpenStock(row.symbol) ? undefined : '该成分缺少可核验的 A 股代码'}
                       className="absolute left-0 top-0 grid min-h-[54px] w-full grid-cols-[minmax(132px,1fr)_74px_74px_18px] items-center border-b border-border/60 px-4 text-left text-xs transition-colors hover:bg-elevated/50 disabled:cursor-default md:grid-cols-[minmax(180px,1fr)_90px_84px_88px_100px_18px]"
                       style={{ transform: `translateY(${virtualRow.start}px)` }}
                     >
@@ -274,7 +276,7 @@ export function DimensionMembersDialogContent({ target, onClose, onStockClick }:
                       <span className={`text-right tabular-nums font-medium ${priceColorClass(finite(row.change_pct))}`}>{fmtPct(finite(row.change_pct))}</span>
                       <span className="hidden text-right tabular-nums text-secondary md:block">{finite(row.turnover_rate) != null ? `${finite(row.turnover_rate)!.toFixed(2)}%` : '—'}</span>
                       <span className="hidden text-right tabular-nums text-secondary md:block">{fmtBigNum(finite(row.amount))}</span>
-                      <ChevronRight className="h-3.5 w-3.5 text-muted" />
+                      {canOpenStock(row.symbol) && <ChevronRight className="h-3.5 w-3.5 text-muted" />}
                     </button>
                   )
                 })}
@@ -320,18 +322,15 @@ function lastNonNull(points: DimensionIntradayPoint[], key: 'sector' | 'market')
   return null
 }
 
-function DimensionIntradaySection({ configId, field, value, date, kind }: {
-  configId: string
-  field: string
-  value: string
-  date?: string
+function DimensionIntradaySection({ request, poll, kind }: {
+  request: DimensionQuery<DimensionIntradayResult>
+  poll: boolean
   kind: DimensionKind
 }) {
   const query = useQuery({
-    queryKey: QK.dimensionIntraday(configId, field, value, date),
-    queryFn: () => api.dimensionIntraday(configId, { field, value, date }),
+    ...request,
     staleTime: 15_000,
-    refetchInterval: 60_000,
+    refetchInterval: poll ? 60_000 : false,
   })
   const data = query.data
 
@@ -384,7 +383,7 @@ function DimensionIntradaySection({ configId, field, value, date, kind }: {
         <div className="mx-4 mb-2 mt-1 flex h-[96px] flex-col items-center justify-center gap-1 rounded-md border border-dashed border-border">
           <Database className="h-4 w-4 text-muted" />
           <p className="text-[11px] text-muted">分钟数据未落盘, 暂无分时走势</p>
-          <p className="text-[10px] text-muted/70">需 TickFlow Pro+ 盘后分钟同步 / Expert 盘中增量, 或自定义分钟源</p>
+          <p className="text-[10px] text-muted/70">可在数据页同步所选交易日的股票分钟行情。</p>
           <Link to="/data" className="text-[10px] text-accent hover:text-accent/80">前往数据页 →</Link>
         </div>
       ) : !data || data.status === 'empty' || data.points.length < 2 ? (
@@ -408,7 +407,7 @@ function IntradayChart({ points, kind }: { points: DimensionIntradayPoint[]; kin
   ctRef.current = ct
   // v4 不支持字符串时间: 用均匀伪时间戳作横轴, 标签经 formatter 映射回 HH:MM
   const labelsRef = useRef<string[]>([])
-  const labelAt = (time: number) => labelsRef.current[time - INTRADAY_BASE_TS] ?? ''
+  const labelAt = (time: number) => labelsRef.current[(time - INTRADAY_BASE_TS) / 60] ?? ''
 
   useEffect(() => {
     const el = containerRef.current

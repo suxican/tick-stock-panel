@@ -27,7 +27,7 @@ const views: Record<ResearchTab, readonly [ZzshareResearchKind, string][]> = {
   lhb: [['lhb_list', '盘后龙虎榜']],
 }
 const captions: Record<ZzshareResearchKind, string> = {
-  plates_rank: '按 ZZShare 指定日板块热度排序。来源热度与上方本地强度分分别计算。',
+  plates_rank: '按 ZZShare 指定日板块热度排序。来源热度与本地板块强度分分别计算。',
   plates_list: '供应商当前板块目录。切换交易日不会还原历史目录。',
   market_sentiment: '截至所选日近 30 个自然日的情绪点位。',
   sentiment_trend: '所选交易日的模型分时读数，数值单位为模型点位。',

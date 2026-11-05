@@ -112,11 +112,68 @@ export interface ZzshareResearchResult {
   warning?: string | null
 }
 
+export interface ZzshareHomeRow {
+  tid: string
+  name: string
+  rank: number
+  score: number | null
+  scope: string | null
+  rank_change: number | null
+  new_entry: boolean | null
+  streak: number | null
+  streak_min: number
+  avg_change_pct: number | null
+  rising_count: number | null
+  rising_pct: number | null
+  valid_count: number | null
+  member_count: number | null
+  strong_count: number | null
+  limit_up_count: number | null
+  limit_down_count: number | null
+  mainline_tag: string | null
+  continuity_score: number | null
+  core_stocks: {
+    symbol: string | null
+    name: string
+    role: string | null
+    change_pct: number | null
+    price_yuan: number | null
+    core_score: number | null
+  }[]
+}
+
+export interface ZzshareHomeResult {
+  date: string
+  state: 'ready' | 'no_data' | 'unavailable'
+  mode: 'intraday' | 'close'
+  as_of: string | null
+  source_at: string | null
+  market_snapshot_at: string | null
+  fetched_at: string | null
+  stale: boolean
+  message: string
+  previous_date: string | null
+  points: string[]
+  candidate_count: number | null
+  strategy_candidate_count: number | null
+  selection_rule: string | null
+  rows: ZzshareHomeRow[]
+}
+
 export interface ZzshareThemeStock {
   symbol: string
   name: string
   change_pct: number  // 百分数，非底层行情的小数比例
   amount_yuan: number | null
+}
+
+export interface ZzshareThemeMembersResult {
+  plate_code: string
+  label: string
+  date: string
+  total: number
+  quote_count: number
+  rows: MarketSnapshotRow[]
 }
 
 export interface ZzshareThemeRow {
@@ -3367,8 +3424,17 @@ export const api = {
     if (plateType !== undefined) qs.set('plate_type', String(plateType))
     return request<ZzshareResearchResult>(`/api/zzshare/research/${kind}?${qs}`, { quiet: true, timeoutMs: 60_000 })
   },
+  zzshareHome: (date: string, asOf?: string) => {
+    const qs = new URLSearchParams({ date })
+    if (asOf) qs.set('as_of', asOf)
+    return request<ZzshareHomeResult>(`/api/zzshare/home-topics?${qs}`, { quiet: true, timeoutMs: 60_000 })
+  },
   zzshareThemes: (date: string) =>
     request<ZzshareThemesResult>(`/api/zzshare/themes?${new URLSearchParams({ date })}`, { quiet: true }),
+  zzshareThemeMembers: (plateCode: string, date: string) =>
+    request<ZzshareThemeMembersResult>(`/api/zzshare/themes/${encodeURIComponent(plateCode)}/members?${new URLSearchParams({ date })}`, { quiet: true }),
+  zzshareThemeIntraday: (plateCode: string, date: string) =>
+    request<DimensionIntradayResult>(`/api/zzshare/themes/${encodeURIComponent(plateCode)}/intraday?${new URLSearchParams({ date })}`, { quiet: true }),
   syncZzshareThemes: (date: string) =>
     request<ZzshareThemesResult>('/api/zzshare/themes/sync', {
       method: 'POST', body: JSON.stringify({ date }), quiet: true,

@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import polars as pl
@@ -183,3 +183,69 @@ def test_dimension_intraday_dirty_point_filtered_gh473(tmp_path: Path) -> None:
     # (+5% + +2%) / 2 = 3.5%, 而不是 (+1800% + +2%) / 2
     dirty = next(p for p in payload["points"] if p["time"] == "09:32")
     assert dirty["sector"] == 0.035
+
+
+def test_archived_member_chart_uses_exact_pool_partition_and_beijing_minute(tmp_path):
+    from app.services.dimension_intraday import member_intraday
+
+    day = date(2026, 11, 3)
+    _write_daily(tmp_path, "2026-11-02", {"600000.SH": 10.0, "000001.SZ": 20.0})
+    _write_minute(tmp_path, str(day), [
+        ("600000.SH", "2026-11-02T10:01:00", 11.5),  # 错放进目标分区
+        ("600000.SH", "2026-11-03T09:31:00", 11.0),
+        ("000001.SZ", "2026-11-03T09:31:00", 19.0),
+    ])
+    _write_minute(tmp_path, "2026-11-04", [("600000.SH", "2026-11-04T14:50:00", 99.0)])
+    a = member_intraday(tmp_path, day, ["600000", "000002", "600000"])
+    b = member_intraday(tmp_path, day, ["000001"])
+    assert a["date"] == str(day) and a["member_count"] == 2 and a["members_with_minute"] == 1
+    assert a["points"] == [{"time": "09:31", "sector": 0.1, "market": 0.025}]
+    assert b["points"] == [{"time": "09:31", "sector": -0.05, "market": 0.025}]
+    empty = member_intraday(tmp_path, date(2026, 11, 1), ["600000"])
+    assert empty["date"] == "2026-11-01" and empty["reason"] == "minute_missing"
+
+
+def test_member_intraday_refreshes_changed_daily_and_minute_partitions(tmp_path):
+    from app.services.dimension_intraday import member_intraday
+
+    day = date(2026, 11, 3)
+    _write_minute(tmp_path, str(day), [("600000.SH", "2026-11-03T09:31:00", 10.5)])
+    assert member_intraday(tmp_path, day, ["600000"])["basis"] == "first_close"
+    _write_daily(tmp_path, "2026-11-02", {"600000.SH": 10.0})
+    assert member_intraday(tmp_path, day, ["600000"])["points"][0]["sector"] == 0.05
+    _write_minute(tmp_path, str(day), [
+        ("600000.SH", "2026-11-03T09:31:00", 10.5),
+        ("600000.SH", "2026-11-03T09:32:00", 10.7),
+    ])
+    assert member_intraday(tmp_path, day, ["600000"])["points"][-1]["sector"] == 0.07
+
+
+def test_member_chart_never_uses_future_close_from_misfiled_previous_day(tmp_path):
+    from app.services.dimension_intraday import member_intraday
+
+    day = date(2026, 11, 3)
+    _write_minute(tmp_path, str(day), [("600000.SH", "2026-11-03T09:31:00", 11.0)])
+    part = tmp_path / "kline_daily" / "date=2026-11-02"
+    part.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["600000.SH"], "date": [date(2026, 11, 4)], "close": [12.0]}).write_parquet(
+        part / "part.parquet",
+    )
+    result = member_intraday(tmp_path, day, ["600000"])
+    assert result["basis"] == "first_close"
+    assert result["points"] == [{"time": "09:31", "sector": 0.0, "market": 0.0}]
+
+
+def test_timeseries_dimension_uses_members_at_chart_date(tmp_path):
+    config = ExtConfig(id="daily_groups", label="每日题材", mode="timeseries", fields=[])
+    day = "2026-11-03"
+    for session, symbol in [(day, "000001.SZ"), ("2026-11-04", "600000.SH")]:
+        target = tmp_path / "ext_data" / config.id / "timeseries" / f"date={session}"
+        target.mkdir(parents=True)
+        pl.DataFrame({"symbol": [symbol], "概念": ["题材A"]}).write_parquet(target / "part.parquet")
+    _write_daily(tmp_path, "2026-11-02", {"000001.SZ": 10.0, "600000.SH": 20.0})
+    _write_minute(tmp_path, day, [
+        ("000001.SZ", "2026-11-03T09:31:00", 11.0),
+        ("600000.SH", "2026-11-03T09:31:00", 19.0),
+    ])
+    chart = _dimension_intraday_compute(config, tmp_path, "概念", "题材A", day)
+    assert chart["points"] == [{"time": "09:31", "sector": 0.1, "market": 0.025}]

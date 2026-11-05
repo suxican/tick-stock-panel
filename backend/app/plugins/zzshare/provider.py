@@ -15,6 +15,7 @@ import polars as pl
 
 from app.market_time import CN_TZ, cn_now
 from app.plugins.zzshare import ZzshareError
+from app.plugins.zzshare.home import fetch_home_dates, fetch_home_topics
 from app.plugins.zzshare.research import fetch_research
 
 _DAY_PATH = "/v3/market/kline/day"
@@ -117,6 +118,13 @@ class ZzshareProvider:
                  limit: int = 20, model: int = 1, start: str | None = None) -> list[dict]:
         return fetch_research(self._get, kind, day, code=code, plate_type=plate_type,
                               limit=limit, model=model, start=start)
+
+    def home_topics(self, day: str | None = None) -> dict:
+        """无日期时返回官网最新快照的实际交易日，指定日期则只接受该日榜单。"""
+        return fetch_home_topics(self._get, day)
+
+    def home_topic_dates(self) -> list[str]:
+        return fetch_home_dates(self._get)
 
     def get_limit_reasons(self, day: str) -> list[dict]:
         """按 ISO 日期取原始归因记录；同股多条记录交上层归并。"""

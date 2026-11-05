@@ -1,14 +1,34 @@
 import { lazy, Suspense } from 'react'
+import type { DimensionIntradayResult, DimensionMembersResult } from '@/lib/api'
 import type { NavItem } from '@/lib/listNav'
 
 export type DimensionKind = 'concept' | 'industry'
 
-export interface DimensionMembersTarget {
+interface ExtensionFieldTarget {
   kind: DimensionKind
   value: string
   /** 扩展字段完整标识，例如 ext_gn_ths.所属概念。 */
   sourceField: string
   date?: string
+}
+
+export interface DimensionQuery<T> {
+  queryKey: readonly unknown[]
+  queryFn: () => Promise<T>
+}
+
+/** 指定交易日的题材成员及行情由调用方一并提供。 */
+export interface DatedThemeTarget {
+  kind: 'theme'
+  value: string
+  date: string
+  members: DimensionQuery<Pick<DimensionMembersResult, 'date' | 'rows' | 'total' | 'label'>>
+  intraday: DimensionQuery<DimensionIntradayResult>
+}
+export type DimensionMembersTarget = ExtensionFieldTarget | DatedThemeTarget
+
+export function dimensionTargetKey(target: DimensionMembersTarget) {
+  return JSON.stringify(target.kind === 'theme' ? target.members.queryKey : [target.sourceField, target.value, target.date])
 }
 
 export interface Props {
@@ -37,7 +57,7 @@ export function DimensionMembersDialog({ target, onClose, onStockClick }: Props)
   return (
     <Suspense fallback={null}>
       <DimensionMembersDialogContent
-        key={`${target.sourceField}:${target.value}:${target.date ?? ''}`}
+        key={dimensionTargetKey(target)}
         target={target}
         onClose={onClose}
         onStockClick={onStockClick}

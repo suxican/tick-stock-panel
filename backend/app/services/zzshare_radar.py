@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -21,6 +22,7 @@ from app.polars_guard import guarded_collect
 from app.services.daily_health import assert_usable
 from app.services.fs_utils import atomic_write_text
 from app.services.market_game_calendar import load_game_calendar
+from app.services.zzshare_limit_reasons import LimitReasonsSourceError, _stock_symbol
 from app.tickflow.repository import enriched_dirname
 
 logger = logging.getLogger(__name__)
@@ -103,7 +105,7 @@ def _quote_frame(repo, day: date) -> pl.DataFrame:
         "symbol", pl.col("close").alias("previous_close")
     ).filter(pl.col("symbol").is_unique() & (pl.col("previous_close") > 0))
     today = scan_enriched_parquet(paths[1]).filter(pl.col("date") == day).select(
-        "date", "symbol", "close", "raw_close", "quote_ts", "volume", "amount",
+        "date", "symbol", "close", "raw_close", "quote_ts", "volume", "amount", "turnover_rate",
         "consecutive_limit_ups", "consecutive_limit_downs",
     )
     frame = guarded_collect(
@@ -122,7 +124,7 @@ def _quotes(repo, day: date) -> tuple[dict, str | None]:
     if not required.issubset(frame.columns):
         return {}, None
     frame = frame.filter(pl.col("date").cast(pl.Date, strict=False) == day).filter(pl.col("symbol").is_unique())
-    columns = [*sorted(required), *(c for c in ("amount", "quote_ts", "volume") if c in frame.columns)]
+    columns = [*sorted(required), *(c for c in ("amount", "quote_ts", "volume", "turnover_rate") if c in frame.columns)]
     quotes = {}
     stamps = set()
     now_ms = cn_now().timestamp() * 1000
@@ -143,6 +145,8 @@ def _quotes(repo, day: date) -> tuple[dict, str | None]:
         quotes[symbol.split(".")[0]] = {
             "symbol": symbol, "change": round(change, 12), "limit_up": up > 0,
             "limit_down": down > 0, "amount": amount if _numeric(amount) and amount > 0 else None,
+            "close": price, "volume": volume if _numeric(volume) and volume >= 0 else None,
+            "turnover_rate": row["turnover_rate"] if _numeric(row.get("turnover_rate")) else None,
         }
         stamps.add(stamp)
     # 不将分散时间戳、缺失时间戳、采集时刻冒充统一的行情时点。
@@ -181,17 +185,70 @@ def _theme(plate: dict, members: dict[str, str], quotes: dict) -> dict | None:
     }
 
 
-def _members(provider, directory: Path, day: str, code: str) -> dict:
-    name = hashlib.sha256(code.encode()).hexdigest()
-    path = directory / "members" / f"{name}.json"
+class MemberCacheError(RuntimeError):
+    """指定日的成员文件存在，但不能验证其身份或内容。"""
+
+
+def _member_path(directory: Path, code: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9]{1,16}", code):
+        raise ValueError("题材代码应为 1 至 16 个英文字母或数字")
+    return directory / "members" / f"{hashlib.sha256(code.encode()).hexdigest()}.json"
+
+
+def _read_member_file(path: Path, day: str, code: str) -> dict[str, str]:
     try:
         cached = json.loads(path.read_text(encoding="utf-8"))
-        if (cached["date"] == day and cached["code"] == code and isinstance(cached["members"], dict)
-                and cached["members"] and cached["count"] == len(cached["members"])
-                and all(len(ticker) == 6 and ticker.isascii() and ticker.isdigit() and isinstance(name, str)
-                        for ticker, name in cached["members"].items())):
-            return cached["members"]
-    except (OSError, ValueError, TypeError, KeyError):
+        members = cached["members"]
+        if (cached["date"] == day and cached["code"] == code and isinstance(members, dict) and members
+                and type(cached["count"]) is int and cached["count"] == len(members)
+                and all(re.fullmatch(r"[0-9]{6}", ticker) and isinstance(name, str) and name.strip()
+                        for ticker, name in members.items())):
+            return members
+    except FileNotFoundError:
+        raise
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise MemberCacheError("该日题材成分文件不可读或字段异常。") from exc
+    raise MemberCacheError("题材成分的日期、标识或成员数量不符。")
+
+
+def read_cached_members(repo, day: date, plate_code: str) -> dict[str, str]:
+    """仅接受题材雷达对应日期、对应代码的完整快照，不启动同步或按名称猜测板块。"""
+    return _read_member_file(_member_path(_directory(repo, day), plate_code), day.isoformat(), plate_code)
+
+
+def member_snapshot(repo, day: date, plate_code: str, members: dict[str, str]) -> dict:
+    """成分是主表；报价复用当日本地模型的口径，缺行情和非股票成员保留在分母中。"""
+    try:
+        quotes, _ = _quotes(repo, day)
+    except (OSError, ValueError, pl.exceptions.PolarsError, RuntimeError) as exc:
+        logger.warning("zzshare members: quotes unavailable %s (%s)", day, type(exc).__name__)
+        quotes = {}
+    rows = []
+    quote_count = 0
+    for code, name in members.items():
+        try:
+            symbol = _stock_symbol(code)
+        except LimitReasonsSourceError:
+            symbol = code  # 公开题材也含可转债等非股票成员；保留原始标识。
+        quote = quotes.get(code, {})
+        if quote.get("symbol") != symbol:
+            quote = {}
+        quote_count += bool(quote)
+        rows.append({
+            "symbol": symbol, "code": code, "name": name, "close": quote.get("close"),
+            "change_pct": quote.get("change"), "turnover_rate": quote.get("turnover_rate"),
+            "amount": quote.get("amount"), "volume": quote.get("volume"),
+            "limit_up": quote.get("limit_up"), "limit_down": quote.get("limit_down"),
+        })
+    return {"plate_code": plate_code, "label": "ZZShare 当日题材成分", "date": day.isoformat(),
+            "total": len(rows), "quote_count": quote_count, "rows": rows}
+
+
+def _members(provider, directory: Path, day: str, code: str) -> dict:
+    path = _member_path(directory, code)
+    try:
+        return _read_member_file(path, day, code)
+    except (FileNotFoundError, MemberCacheError):
         pass
     rows = provider.research("plates_stocks", day, code=code, plate_type=17)
     members = {}

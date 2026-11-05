@@ -42,12 +42,12 @@ def _day(value: str) -> str:
     return date.fromisoformat(value).isoformat()
 
 
-def _timestamp(value: str) -> str:
+def _timestamp(value: str, *, timespec: str = "seconds") -> str:
     if not isinstance(value, str) or len(value) < 16 or value[10] not in ("T", " "):
         raise ValueError("源更新时间缺少时刻")
     stamp = datetime.fromisoformat(value)
     stamp = stamp.replace(tzinfo=CN_TZ) if stamp.tzinfo is None else stamp.astimezone(CN_TZ)
-    return stamp.isoformat(timespec="seconds")
+    return stamp.isoformat(timespec=timespec)
 
 
 def _rank(value: object) -> int:
