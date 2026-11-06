@@ -259,6 +259,26 @@ def test_batch_stop_loss_includes_actual_buy_fee(tmp_path, monkeypatch):
     assert exit_candidates(tmp_path, "default", {SYMBOL: 9.72}, now=now)[0]["qty"] == 200
 
 
+def test_take_profit_and_limit_up_hold_use_batch_cost_and_never_delay_stop_loss(tmp_path, monkeypatch):
+    paper.create_account(tmp_path, 100_000, slippage_bps=0, commission_pct=0)
+    monkeypatch.setattr(paper, "cn_today", lambda: DAY)
+    _fill_order(tmp_path, "buy", 200, "first_board:entry")
+    # 单位成本 10.025: 5% 止盈线 10.52625, 3% 止损线 9.72425。
+    early = datetime(2026, 10, 16, 9, 45, tzinfo=CN_TZ)
+    assert exit_candidates(tmp_path, "default", {SYMBOL: 10.53}, now=early) == []
+    assert exit_candidates(tmp_path, "default", {SYMBOL: 10.52}, now=early, exit_profit_pct=.05) == []
+    hit = exit_candidates(tmp_path, "default", {SYMBOL: 10.53}, now=early, exit_profit_pct=.05)
+    assert hit[0]["qty"] == 200 and "止盈" in hit[0]["reason"]
+    late = early.replace(hour=10, minute=31)
+    limits = {SYMBOL: 10.995}
+    assert exit_candidates(tmp_path, "default", {SYMBOL: 11.0}, now=late, exit_profit_pct=.05, limit_prices=limits) == []
+    assert exit_candidates(tmp_path, "default", {SYMBOL: 10.9}, now=late, limit_prices=limits)[0]["qty"] == 200
+    # 缺少涨停判定价无法确认封板, 按原规则提示; 止损优先于涨停持有。
+    assert exit_candidates(tmp_path, "default", {SYMBOL: 11.0}, now=late, limit_prices={})[0]["qty"] == 200
+    stop = exit_candidates(tmp_path, "default", {SYMBOL: 9.7}, now=early, limit_prices={SYMBOL: 9.6})
+    assert "止损" in stop[0]["reason"]
+
+
 def test_buy_order_symbol_must_match_fill_for_attribution(tmp_path, monkeypatch):
     paper.create_account(tmp_path, 100_000)
     monkeypatch.setattr(paper, "cn_today", lambda: DAY)
@@ -308,7 +328,7 @@ def test_corporate_action_total_and_lots_keep_paper_rounding_contract(
     monkeypatch.setattr(paper, "load_positions", lambda *args: positions)
     now = datetime(2026, 10, 16, 9, 45, tzinfo=CN_TZ)
     candidates = exit_candidates(tmp_path, "default", {SYMBOL: 9.0}, now=now)
-    available = paper._available_of(positions[SYMBOL], now.date().isoformat())
+    available = paper.available_qty(positions[SYMBOL], now.date().isoformat())
     assert candidates[0]["qty"] == available == int(lot_qty - sold_qty)
     time_exits = exit_candidates(tmp_path, "default", {SYMBOL: 10.0}, now=now.replace(hour=10, minute=31))
     assert time_exits[0]["qty"] == available

@@ -6,14 +6,40 @@ no IO, grants no permission, and does not estimate fills or profit probability.
 from __future__ import annotations
 
 import math
+from datetime import datetime
 
-from app.strategy.first_board import FirstBoardRules, meets_min_change
+from app.market_time import CN_TZ
+from app.strategy.first_board import FirstBoardRules, approaching_distance, meets_min_change
 
-RULE_VERSION = "priority-v1"
+RULE_VERSION = "priority-v2"
+# 归档与回放仍需识别旧版评分; 新版本追加在末尾, 顺序即新旧顺序。
+SUPPORTED_VERSIONS = ("priority-v1", RULE_VERSION)
+VOLUME_RATIO_MIN_MINUTES = 5
 
 
 def _finite(value: object) -> bool:
     return isinstance(value, (float, int)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def session_minutes(at: datetime) -> float | None:
+    """开盘后已进行的连续竞价分钟数(扣除午休, 0–240); 开盘前为空。"""
+    local = at.astimezone(CN_TZ) if at.tzinfo else at.replace(tzinfo=CN_TZ)
+    minutes = local.hour * 60 + local.minute + local.second / 60
+    if minutes < 570:
+        return None
+    if minutes <= 690:
+        return minutes - 570
+    return 120. if minutes < 780 else min(240., minutes - 660)
+
+
+def volume_ratio(row: dict, now: datetime) -> float | None:
+    """量比 = 当日每分钟均量 / 前5日每分钟均量; 开盘初期集合竞价量占比过高, 暂不计算。"""
+    facts = row.get("evidence") or {}
+    volume, average, elapsed = facts.get("volume"), facts.get("avg_volume_5"), session_minutes(now)
+    if (elapsed is None or elapsed < VOLUME_RATIO_MIN_MINUTES or not _finite(volume) or not _finite(average)
+            or volume <= 0 or average <= 0):
+        return None
+    return volume / elapsed / (average / 240)
 
 
 def _part(maximum: int, points: float | None, reason: str, *, known: int | None = None) -> dict:
@@ -21,21 +47,47 @@ def _part(maximum: int, points: float | None, reason: str, *, known: int | None 
             "known_max": (maximum if known is None else known) if points is not None else 0, "reason": reason}
 
 
-def _stock(row: dict, rules: FirstBoardRules) -> dict:
+def _approached_at(row: dict, now: datetime) -> datetime | None:
+    stamp = (row.get("evidence") or {}).get("first_approach_at")
+    if stamp is None:
+        return now
+    try:
+        at = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return None
+    return at if at.tzinfo and at.date() == now.date() and at <= now else None
+
+
+def _stock(row: dict, rules: FirstBoardRules, now: datetime) -> dict:
+    # 突破、成交额与换手已是临板门槛, 通过后不再提供区分度; 只保留其有效性校验。
     facts = row.get("evidence") or {}
     price, breakout = row.get("price"), facts.get("breakout_price_raw")
     distance, amount, turnover = row.get("distance_to_limit_pct"), facts.get("amount"), row.get("turnover_rate")
     if (not all(_finite(value) for value in (price, breakout, distance, amount, turnover))
             or min(price, breakout) <= 0 or min(distance, amount, turnover) < 0):
         return _part(40, None, "缺少有效原价、突破基准、距涨停或量额")
-    proximity = (max(0., 1. - distance / (2 * rules.approaching_distance))
-                 if rules.approaching_distance > 0 else float(distance == 0))
-    breakout_points = 10 * (price > breakout)
-    amount_points = 5 * (amount >= rules.min_amount)
-    turnover_points = 5 * (rules.min_turnover_rate <= turnover <= rules.max_turnover_rate)
-    return _part(40, breakout_points + amount_points + turnover_points + 20 * proximity,
-                 f"突破 {breakout_points}/10，成交额 {amount_points}/5，换手 {turnover_points}/5，"
-                 f"距涨停 {distance:.2%}（接近度 {20 * proximity:.1f}/20）")
+    threshold = approaching_distance(rules, str(row.get("symbol") or ""), now.date())
+    proximity = max(0., 1. - distance / (2 * threshold)) if threshold > 0 else float(distance == 0)
+    points, known = 15 * proximity, 15
+    notes = [f"距涨停 {distance:.2%}（{15 * proximity:.1f}/15）"]
+    ratio = volume_ratio(row, now)
+    if ratio is None:
+        notes.append("量比待确认")
+    else:
+        volume_points = 15 * min(1., max(0., (ratio - 1) / 2))
+        points, known = points + volume_points, known + 15
+        notes.append(f"量比 {ratio:.2f}（{volume_points:.1f}/15）")
+    approached = _approached_at(row, now)
+    minutes = session_minutes(approached) if approached else None
+    if minutes is None:
+        notes.append("临板时刻待确认")
+    else:
+        # 越早临板越主动; 10:00 前满分, 14:30 后临板不得分。
+        early_points = 10 * min(1., max(0., (210 - minutes) / 180))
+        points, known = points + early_points, known + 10
+        notes.append(f"{'首次临板' if row.get('state') == 'approaching' else '当前'}为开盘后 "
+                     f"{minutes:.0f} 分钟（{early_points:.1f}/10）")
+    return _part(40, points, "，".join(notes), known=known)
 
 
 def _sector(groups: list[dict], radar: dict) -> tuple[dict, dict | None]:
@@ -126,7 +178,8 @@ def expire_priority(result: dict, reason: str) -> None:
                   role="unknown", can_buy=False, reason=reason, radar={})
 
 
-def candidate_priority(row: dict, *, rules: FirstBoardRules, radar: dict | None, live: bool) -> dict:
+def candidate_priority(row: dict, *, rules: FirstBoardRules, radar: dict | None, live: bool,
+                       now: datetime) -> dict:
     state = row.get("state")
     result = {"version": RULE_VERSION, "status": state or "invalid", "score": None, "known_max": 0,
               "parts": {}, "primary_sector": None, "role": "unknown", "can_buy": False,
@@ -145,7 +198,7 @@ def candidate_priority(row: dict, *, rules: FirstBoardRules, radar: dict | None,
     if not _finite(change) or not meets_min_change(change, rules.min_change_pct):
         result["reason"] = "尚未达到最低涨幅"
         return result
-    stock = _stock(row, rules)
+    stock = _stock(row, rules, now)
     if stock["points"] is None:
         result.update(status="invalid", reason=stock["reason"])
         return result

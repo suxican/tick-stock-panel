@@ -40,7 +40,11 @@ from app.services.first_board_portfolio import (
     paper_order_block_reason,
     portfolio_snapshot,
 )
-from app.services.first_board_priority import candidate_priority, expire_priority
+from app.services.first_board_priority import (
+    SUPPORTED_VERSIONS,
+    candidate_priority,
+    expire_priority,
+)
 from app.services.first_board_radar import FirstBoardRadar
 from app.services.first_board_technical import FirstBoardTechnical
 from app.services.fs_utils import atomic_write_text
@@ -63,6 +67,7 @@ _LIMITATIONS = [
     SECTOR_PROXY_NOTE,
 ]
 _MAX_EVENTS_PER_DAY = 50_000
+_PASSIVE_REFRESH_SECONDS = 60
 _CONFIG_WRITE_LOCK = threading.RLock()
 _EVENT_TYPES = {"buy_candidate", "approaching", "sealed", "broken", "watch", "invalid", "exit_candidate"}
 
@@ -90,10 +95,9 @@ def _trading_day(now: datetime) -> bool | None:
         return False
     from app.services import data_integrity
 
-    with data_integrity._CAL_LOCK:
-        calendar = data_integrity._CAL[1]
-        if calendar and min(calendar) <= now.date() <= max(calendar):
-            return now.date() in calendar
+    calendar = data_integrity.cached_trading_calendar()
+    if calendar and min(calendar) <= now.date() <= max(calendar):
+        return now.date() in calendar
     return None
 
 
@@ -121,6 +125,11 @@ class FirstBoardConfig(BaseModel):
     total_exposure: float = Field(default=.5, gt=0, le=1)
     exit_time: str = "10:30"
     exit_loss_pct: float = Field(default=.03, gt=0, le=.2)
+    exit_profit_pct: float | None = Field(default=None, gt=0, le=.5)
+    exit_hold_limit_up: bool = False
+    feedback_gate: bool = False
+    feedback_min_mean_change: float = Field(default=0., ge=-.2, le=.2)
+    feedback_min_up_ratio: float = Field(default=.5, ge=0, le=1)
 
     @model_validator(mode="after")
     def validate_rules(self) -> Self:
@@ -138,6 +147,35 @@ class FirstBoardConfig(BaseModel):
         if len(set(self.allowed_market_states)) != len(self.allowed_market_states):
             raise ValueError("市场环境不能重复")
         return self
+
+
+def _positive_prices(frame: pl.DataFrame, column: str) -> dict[str, float]:
+    if column not in frame.columns:
+        return {}
+    return {symbol: float(value) for symbol, value in zip(frame["symbol"].to_list(), frame[column].to_list(), strict=True)
+            if isinstance(value, (float, int)) and math.isfinite(value) and value > 0}
+
+
+def _feedback_gate(feedback: dict, config: FirstBoardConfig, as_of: date) -> dict | None:
+    """可选门控: 昨日首板今日整体反馈须为当日盘中实测且达到阈值, 证据不足同样暂停买入提示。"""
+    if not config.feedback_gate:
+        return None
+    summary = (feedback.get("groups") or {}).get("all") or {}
+    mean, ratio, coverage = (summary.get(key) for key in ("mean_change_pct", "up_ratio", "coverage"))
+    gate = {"allowed": False, "mean_change_pct": mean, "up_ratio": ratio, "coverage": coverage,
+            "sample_count": summary.get("sample_count"), "min_mean_change_pct": config.feedback_min_mean_change,
+            "min_up_ratio": config.feedback_min_up_ratio}
+    measured = all(isinstance(value, (float, int)) and not isinstance(value, bool) and math.isfinite(value)
+                   for value in (mean, ratio, coverage))
+    if (feedback.get("status") not in {"ready", "partial"} or feedback.get("quote_mode") != "live"
+            or feedback.get("as_of") != str(as_of) or summary.get("small_sample") is not False
+            or not measured or coverage < SECTOR_MIN_QUOTE_COVERAGE):
+        gate["reason"] = "昨日首板反馈样本不足或行情覆盖不足, 无法确认赚钱效应"
+    elif mean < config.feedback_min_mean_change or ratio < config.feedback_min_up_ratio:
+        gate["reason"] = f"昨日首板今日均涨 {mean:.2%}、上涨占比 {ratio:.0%}, 未达到反馈门槛"
+    else:
+        gate.update(allowed=True, reason=f"昨日首板今日均涨 {mean:.2%}、上涨占比 {ratio:.0%}, 满足反馈门槛")
+    return gate
 
 
 class FirstBoardService:
@@ -161,6 +199,7 @@ class FirstBoardService:
         self._refresh_requested = False
         self._force_refresh_requested = False
         self._last_request = 0.0
+        self._processed_at = 0.0
         self._prepared_key = None
         self._prepared_at = 0.0
         self._candidates = pl.DataFrame()
@@ -168,10 +207,12 @@ class FirstBoardService:
         self._environment: dict = {}
         self._latest_prices: dict[str, float] = {}
         self._latest_quote_times: dict[str, str] = {}
+        self._latest_limits: dict[str, float] = {}
         self._attention_data = AttentionData(repo)
         self._technical = FirstBoardTechnical(repo)
         self._radar = FirstBoardRadar(repo.store.data_dir)
         self._last_priorities: dict[tuple[str, str], dict] = {}
+        self._first_approach: dict[tuple[str, str], datetime] = {}
         self._priority_session: tuple[date, int] | None = None
         self._feedback = FirstBoardFeedback(repo)
         self._attention_evaluator = AttentionEvaluator()
@@ -231,7 +272,8 @@ class FirstBoardService:
         self._config, self._versions = config, versions
         self._prepared_key = None
         self._snapshot = self._empty_snapshot()
-        self._latest_prices, self._latest_quote_times = {}, {}
+        self._latest_prices, self._latest_quote_times, self._latest_limits = {}, {}, {}
+        self._processed_at = 0.0
 
     @property
     def enabled(self) -> bool:
@@ -284,7 +326,8 @@ class FirstBoardService:
             self._config, self._versions = config, versions
             self._prepared_key = None
             self._snapshot = self._empty_snapshot()
-            self._latest_prices, self._latest_quote_times = {}, {}
+            self._latest_prices, self._latest_quote_times, self._latest_limits = {}, {}, {}
+            self._processed_at = 0.0
         self.request_refresh(force=True)
         return copy.deepcopy(document)
 
@@ -319,7 +362,9 @@ class FirstBoardService:
             if self._stop.is_set():
                 return
             now = time.monotonic()
-            if not force and now - self._last_request < 5:
+            # 读快照只在近期没有完成评估时补算: 盘中由行情投递驱动, 盘后数据静止。
+            if not force and (now - self._last_request < 5
+                              or now - self._processed_at < _PASSIVE_REFRESH_SECONDS):
                 return
             self._last_request = now
             self._refresh_requested = True
@@ -354,11 +399,12 @@ class FirstBoardService:
                     break
                 logger.exception("首板快照评估失败")
                 with self._lock:
+                    self._processed_at = 0.0
                     self._snapshot = {**self._snapshot, "status": "error",
                                       "message": "首板数据评估失败, 买入提示已暂停; 请检查数据后刷新。",
                                       "rows": [{**row, "can_buy": False, "event_id": None}
                                                for row in self._snapshot["rows"]]}
-                    self._latest_prices, self._latest_quote_times = {}, {}
+                    self._latest_prices, self._latest_quote_times, self._latest_limits = {}, {}, {}
 
     def _refresh_snapshot(self) -> tuple[pl.DataFrame, date | None]:
         if self._quote_service is not None:
@@ -419,9 +465,7 @@ class FirstBoardService:
             # 完整性服务已取到的日历可提供更强证据。这里只读缓存, 禁止触发网络探测。
             from app.services import data_integrity
 
-            with data_integrity._CAL_LOCK:
-                cached_calendar = data_integrity._CAL[1]
-                calendar = set(cached_calendar) if cached_calendar else set()
+            calendar = data_integrity.cached_trading_calendar() or frozenset()
             if calendar and min(calendar) <= as_of <= max(calendar):
                 result["source"] = "cached_calendar_and_local_index_daily"
                 expected = sorted(day for day in calendar if day < as_of)[-count:]
@@ -459,6 +503,14 @@ class FirstBoardService:
                      "candidate_symbols": [], "pending_alert_ids": []}
         self._state_day, self._day_state = as_of, state
         self._state_signature = signature
+
+    def _copy_day_state(self) -> dict:
+        """写时复制: 已发布的事件与转移记录不可变, 只复制会被追加或替换的容器。"""
+        state = dict(self._day_state)
+        state["last"] = dict(state["last"])
+        state["events"] = list(state["events"])
+        state["pending_alert_ids"] = list(state.get("pending_alert_ids", []))
+        return state
 
     @staticmethod
     def _file_signature(path: Path) -> tuple[int, int] | None:
@@ -519,7 +571,7 @@ class FirstBoardService:
                 return
             config = self._config
             now = _beijing(_now())
-            state = copy.deepcopy(self._day_state)
+            state = self._copy_day_state()
             pending = set(state.get("pending_alert_ids", []))
             current_ids = {value.get("event_id") for value in state["last"].values()}
             messages = [event for event in state["events"]
@@ -552,7 +604,7 @@ class FirstBoardService:
         with self._lock:
             if self._stop.is_set() or self._state_day != as_of:
                 return
-            state = copy.deepcopy(self._day_state)
+            state = self._copy_day_state()
             sent = set(ids)
             state["pending_alert_ids"] = [item for item in state.get("pending_alert_ids", []) if item not in sent]
             if self._write_day(as_of, state):
@@ -564,14 +616,15 @@ class FirstBoardService:
             return current.head(0), {}
         timestamps = {}
         counts: dict[str, int] = {}
-        for row in current.select("symbol", "date", "quote_ts").iter_rows(named=True):
-            counts[row["symbol"]] = counts.get(row["symbol"], 0) + 1
-            timestamp = row["quote_ts"]
+        today, now_ts = now.date(), now.timestamp()
+        for symbol, day, timestamp in zip(current["symbol"].to_list(), current["date"].to_list(),
+                                          current["quote_ts"].to_list(), strict=True):
+            counts[symbol] = counts.get(symbol, 0) + 1
             if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp):
                 continue
-            age = now.timestamp() - timestamp / 1000
-            if row["date"] == now.date() and 0 <= age <= config.max_quote_age_seconds:
-                timestamps[row["symbol"]] = datetime.fromtimestamp(timestamp / 1000, CN_TZ).isoformat()
+            age = now_ts - timestamp / 1000
+            if day == today and 0 <= age <= config.max_quote_age_seconds:
+                timestamps[symbol] = datetime.fromtimestamp(timestamp / 1000, CN_TZ).isoformat()
         timestamps = {key: value for key, value in timestamps.items() if counts[key] == 1}
         return current.filter(pl.col("symbol").is_in(list(timestamps))), timestamps
 
@@ -587,26 +640,38 @@ class FirstBoardService:
         if reason not in context["reasons"]:
             context["reasons"].append(reason)
 
+    def _exit_candidates(self, config: FirstBoardConfig, prices: dict[str, float],
+                         limits: dict[str, float], now: datetime) -> list[dict]:
+        return exit_candidates(self.repo.store.data_dir, config.paper_account_id, prices, now=now,
+                               exit_time=config.exit_time, exit_loss_pct=config.exit_loss_pct,
+                               exit_profit_pct=config.exit_profit_pct,
+                               limit_prices=limits if config.exit_hold_limit_up else None)
+
     def _restore_priorities(self, day: date, revision: int) -> None:
         """Use the already loaded event ledger for dated display only after a restart."""
         if self._priority_session == (day, revision):
             return
         self._priority_session = (day, revision)
         self._last_priorities.clear()
+        self._first_approach.clear()
         midnight_ms = datetime.combine(day, day_time.min, CN_TZ).timestamp() * 1000
         for event in self._day_state.get("events", []):
-            p = event["evidence"].get("priority_score")
+            stamp = event.get("ts")
             if (event.get("revision") != revision or event.get("date") != str(day)
-                    or not isinstance(p, dict) or p.get("version") != "priority-v1"
-                    or p.get("status") not in {"watch", "shadow", "partial", "ready"}):
-                continue
-            value, known, stamp = p.get("score"), p.get("known_max"), event.get("ts")
-            if (type(value) not in (int, float) or type(known) not in (int, float)
-                    or not 0 <= value <= known <= 100 or type(stamp) is not int
-                    or not midnight_ms <= stamp < midnight_ms + 86_400_000):
+                    or type(stamp) is not int or not midnight_ms <= stamp < midnight_ms + 86_400_000):
                 continue
             at = datetime.fromtimestamp(stamp / 1000, CN_TZ)
-            self._last_priorities[(event["symbol"], event["pattern"])] = {
+            identity = (event["symbol"], event["pattern"])
+            if event.get("event_type") in {"approaching", "buy_candidate"}:
+                self._first_approach[identity] = min(at, self._first_approach.get(identity, at))
+            p = event["evidence"].get("priority_score")
+            if (not isinstance(p, dict) or p.get("version") not in SUPPORTED_VERSIONS
+                    or p.get("status") not in {"watch", "shadow", "partial", "ready"}):
+                continue
+            value, known = p.get("score"), p.get("known_max")
+            if type(value) not in (int, float) or type(known) not in (int, float) or not 0 <= value <= known <= 100:
+                continue
+            self._last_priorities[identity] = {
                 "score": value, "known_max": known, "status": p["status"], "as_of": at.isoformat(),
                 "version": p["version"], "source": "event",
             }
@@ -697,7 +762,8 @@ class FirstBoardService:
         self._attention_sampling = sampling
         with self._lock:
             if self._snapshot is snapshot and self._config.revision == config.revision and not self._stop.is_set():
-                snapshot["attention_sampling"] = {**sampling, "trade_date": str(now.date()), "revision": config.revision}
+                self._snapshot = {**snapshot, "attention_sampling": {
+                    **sampling, "trade_date": str(now.date()), "revision": config.revision}}
 
     def process_snapshot(self, current: pl.DataFrame, as_of: date, *, now: datetime | None = None) -> None:
         with self._process_lock:
@@ -735,10 +801,11 @@ class FirstBoardService:
             now = _beijing(now or _now())
             fresh, times = self._fresh_quotes(current, now, config)
             sectors = evaluate_sectors(fresh, self._sectors)
-            prices = {row["symbol"]: float(row["raw_close"]) for row in fresh.iter_rows(named=True)
-                      if isinstance(row.get("raw_close"), (float, int)) and math.isfinite(row["raw_close"]) and row["raw_close"] > 0}
+            prices = _positive_prices(fresh, "raw_close")
+            limits = _positive_prices(fresh, "limit_up_price") if config.exit_hold_limit_up else {}
             realtime_blocked = self._realtime_block_reason()
             live = config.enabled and not realtime_blocked and as_of == now.date() and _continuous(now)
+            feedback_gate = _feedback_gate(feedback, config, as_of)
             rows = evaluate_candidates(self._candidates, current, config.rules, as_of=as_of)
             attention = self._attention(rows, fresh, now, live)
             visible_symbols = {r["symbol"] for r in rows if r["symbol"] in times
@@ -757,13 +824,16 @@ class FirstBoardService:
                     return
                 self._load_day(as_of)
                 self._restore_priorities(as_of, config.revision)
-                state = copy.deepcopy(self._day_state)
+                state = self._copy_day_state()
                 state["candidate_symbols"] = sorted({row["symbol"] for row in rows})
+                # 联动上下文、环境与行业结果由同股各形态及各行共享, 发布后不得原地修改;
+                # 事件归档、研究采样和快照读取各自深拷贝。
+                environment = copy.deepcopy(self._environment)
                 for row in rows:
                     symbol = row["symbol"]
                     row.update(quote_time=times.get(symbol), sector=self._sectors.get(symbol), event_id=None,
                                suggested_amount=None, can_buy=False, blocked_reasons=[])
-                    context = copy.deepcopy(attention[symbol])
+                    context = attention[symbol]
                     if not live or symbol not in times:
                         self._expire_attention(context, "个股行情已过期或当前未启用有效盘中观察")
                     row["attention_context"] = context
@@ -776,10 +846,14 @@ class FirstBoardService:
                         blocked.append("行情时间缺失、重复或已过期")
                     if not self._environment.get("allowed"):
                         blocked.append(self._environment.get("reason") or "市场环境未通过")
+                    if feedback_gate is not None:
+                        row["evidence"]["feedback_gate"] = feedback_gate
+                        if not feedback_gate["allowed"]:
+                            blocked.append(feedback_gate["reason"])
                     sector = sectors.get(row["sector"], {})
                     row["sector_confirmation"] = sector
-                    row["evidence"]["environment"] = copy.deepcopy(self._environment)
-                    row["evidence"]["sector_confirmation"] = copy.deepcopy(sector)
+                    row["evidence"]["environment"] = environment
+                    row["evidence"]["sector_confirmation"] = sector
                     needs_industry = config.require_sector_confirmation and not sector.get("confirmed")
                     radar_evidence = radar.get(symbol) or {}
                     plate = radar_evidence.get("plate") or {}
@@ -803,10 +877,14 @@ class FirstBoardService:
                             row["suggested_amount"] = budget.get("amount")
                     row["sector_shadow_eligible"] = shadow
                     row["can_buy"] = row["state"] == "approaching" and not blocked
-                    priority = candidate_priority(row, rules=config.rules, radar=radar_evidence,
-                                                  live=live and symbol in times)
-                    row["priority_score"] = priority
                     identity = (symbol, row["pattern"])
+                    if row["state"] == "approaching" and live and symbol in times:
+                        self._first_approach.setdefault(identity, now)
+                    if row["state"] == "approaching" and identity in self._first_approach:
+                        row["evidence"]["first_approach_at"] = self._first_approach[identity].isoformat()
+                    priority = candidate_priority(row, rules=config.rules, radar=radar_evidence,
+                                                  live=live and symbol in times, now=now)
+                    row["priority_score"] = priority
                     if priority["score"] is not None:
                         self._last_priorities[identity] = {
                             "score": priority["score"], "known_max": priority["known_max"],
@@ -830,8 +908,7 @@ class FirstBoardService:
                     if row["can_buy"] and latest.get("state") == "buy_candidate":
                         row["event_id"] = latest.get("event_id")
                 if live and config.paper_account_id:
-                    for item in exit_candidates(self.repo.store.data_dir, config.paper_account_id, prices,
-                                                now=now, exit_time=config.exit_time, exit_loss_pct=config.exit_loss_pct):
+                    for item in self._exit_candidates(config, prices, limits, now):
                         key = f"{config.revision}:exit:{item['symbol']}"
                         if key in state["last"]:
                             continue
@@ -856,6 +933,7 @@ class FirstBoardService:
                 self._day_state = state
                 self._latest_prices = prices
                 self._latest_quote_times = times
+                self._latest_limits = limits
                 status = ("disabled" if not config.enabled else "closed" if not _continuous(now)
                           else "waiting" if realtime_blocked
                           else "stale" if as_of != now.date() or not times else "ready")
@@ -887,6 +965,7 @@ class FirstBoardService:
                 if previous_sampling.get("trade_date") == str(as_of) and previous_sampling.get("revision") == config.revision:
                     self._snapshot["attention_sampling"] = dict(previous_sampling)
                 snapshot = self._snapshot
+                self._processed_at = time.monotonic()
             try:
                 self._publish_pending(as_of)
             finally:
@@ -918,9 +997,11 @@ class FirstBoardService:
 
     def snapshot(self) -> dict:
         with self._lock:
-            result = copy.deepcopy(self._snapshot)
+            # 已发布快照只整体替换、不原地修改, 深拷贝放在锁外不阻塞行情评估。
+            published = self._snapshot
             config = self._config
             quote_times = dict(self._latest_quote_times)
+        result = copy.deepcopy(published)
         # UI 停留也不能让上次有效买点无限期有效。
         now = _beijing(_now())
         expire_feedback(result["yesterday_feedback"], now=now,
@@ -978,12 +1059,14 @@ class FirstBoardService:
         with self._lock:
             if self._state_day == day:
                 self._load_day(day)
-                return copy.deepcopy(self._day_state["events"][::-1])
-            path = self.root / "events" / f"{day.isoformat()}.json"
-            if not path.exists():
-                return []
-            doc = self._read_day(path, day)
-            return doc["events"][::-1]
+                current = self._day_state["events"]
+            else:
+                path = self.root / "events" / f"{day.isoformat()}.json"
+                if not path.exists():
+                    return []
+                return self._read_day(path, day)["events"][::-1]
+        # 写时复制保证已发布的列表不再变化, 复制放在锁外不阻塞行情评估。
+        return copy.deepcopy(current[::-1])
 
     def first_alert_rankings(self, day: date, *, revision: int | None = None,
                              top_n: int | None = None, offset: int = 0, limit: int = 100) -> dict:
@@ -1094,10 +1177,8 @@ class FirstBoardService:
             else:
                 if event["event_type"] != "exit_candidate":
                     raise ValueError("该记录不是退出提示")
-                current_exit = next((item for item in exit_candidates(
-                    self.repo.store.data_dir, config.paper_account_id, fresh_prices, now=now,
-                    exit_time=config.exit_time, exit_loss_pct=config.exit_loss_pct,
-                ) if item["symbol"] == symbol), None)
+                current_exit = next((item for item in self._exit_candidates(
+                    config, fresh_prices, self._latest_limits, now) if item["symbol"] == symbol), None)
                 if current_exit is None:
                     raise ValueError("该提示已不满足当前退出条件或没有剩余可卖数量")
                 available = paper.normalize_qty(int(current_exit["qty"]))
@@ -1107,7 +1188,7 @@ class FirstBoardService:
                     position = paper.load_positions(self.repo.store.data_dir, config.paper_account_id).get(symbol, {})
                     reserved_sells = sum(int(order["qty"]) for order in orders if order.get("symbol") == symbol
                                          and order.get("status") == "pending" and order.get("side") == "sell")
-                    account_available = paper._available_of(position, now.date().isoformat()) - reserved_sells
+                    account_available = paper.available_qty(position, now.date().isoformat()) - reserved_sells
                     if requested != account_available:
                         raise ValueError("科创板模拟卖出至少200股, 不足200股的账户余股须一次卖出")
                 if requested <= 0 or requested > available:

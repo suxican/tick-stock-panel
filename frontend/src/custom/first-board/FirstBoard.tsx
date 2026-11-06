@@ -1,55 +1,44 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useState, type KeyboardEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ChevronUp, RefreshCw, Star } from 'lucide-react'
-import { api, type FirstBoardCandidate, type FirstBoardConfig, type FirstBoardEvent, type FirstBoardEventFilters, type FirstBoardPattern, type FirstBoardRules, type FirstBoardState } from '@/lib/api'
-import type { ColumnConfig } from '@/lib/list-columns'
+import { ChevronDown, ChevronUp, RefreshCw } from 'lucide-react'
+import { api, type FirstBoardConfig, type FirstBoardEvent, type FirstBoardEventFilters, type FirstBoardRules, type FirstBoardSnapshot } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { storage } from '@/lib/storage'
-import { markedFirst, useStockMarks } from '@/lib/useStockMarks'
+import { useStockMarks } from '@/lib/useStockMarks'
 import { useCapabilityMatrix } from '@/lib/useSharedQueries'
 import { cn } from '@/lib/cn'
-import { fmtPct, fmtPrice, priceColorClass } from '@/lib/format'
-import { boardTag } from '@/components/stock-table/primitives'
-import { useTableSort } from '@/components/stock-table/useTableSort'
 import { PageHeader } from '@/components/PageHeader'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { RulesPanel } from './RulesPanel'
 import { ResearchPanel } from './ResearchPanel'
 import { YesterdayFeedback } from './YesterdayFeedback'
 import { OpeningDistribution } from './OpeningDistribution'
-import { AttentionCell, attentionPriority, matchesAttention, type AttentionFilter } from './AttentionCell'
-import { TechnicalEvidence } from './TechnicalEvidence'
 import { DataStatus } from './DataStatus'
-import { FirstAlertRankings } from './FirstAlertRankings'
-import { PriorityCell, currentPriority, matchesPriority, priorityFilters, strongBoards, type PriorityFilter } from './PriorityCell'
-import { beijingDay, buttonClass, ErrorNotice, EventBadge, eventLabels, inputClass, LoadingRows, money, Notice, panelClass, PatternBadge, patternLabels, pct, stamp, StateBadge, stateLabels } from './shared'
+import { CandidateTable, useCandidateView } from './CandidateTable'
+import { EventsPanel } from './EventsPanel'
+import { beijingDay, buttonClass, ErrorNotice, LoadingRows, money, Notice, panelClass, pct, stamp } from './shared'
 
 const tabs = [{ id: 'live', label: '今日盯盘' }, { id: 'events', label: '信号记录' }, { id: 'research', label: '效果验证' }, { id: 'rules', label: '规则版本' }]
 const statuses = { disabled: '监控未开启', waiting: '等待数据', ready: '盯盘中', stale: '数据已过期', closed: '非连续竞价时段', error: '暂不可用' }
-const candidateColumns: ColumnConfig[] = [
-  ['symbol', '股票 / 行业'], ['pattern', '形态'], ['state', '状态'], ['price', '现价'], ['change_pct', '涨幅'],
-  ['distance_to_limit_pct', '距涨停'], ['turnover_rate', '换手率'], ['priority_score', '首板优先分'], ['attention_context', '板块联动'], ['reasons', '入选与阻断原因'], ['quote_time', '报价时间'], ['actions', '模拟操作'],
-].map(([id, label]) => ({ id, label, source: { type: 'builtin', key: id }, visible: true }))
-const sortableColumns = new Set(['pattern', 'state', 'price', 'change_pct', 'distance_to_limit_pct', 'priority_score', 'attention_context'])
-const scoreDescending = { key: 'priority_score', dir: 'desc' } as const
-const changeDescending = { key: 'change_pct', dir: 'desc' } as const
-const categoryOrder = { pattern: Object.keys(patternLabels), state: Object.keys(stateLabels) }
-const categorySortHints: Record<string, string> = {
-  pattern: `升序：${Object.values(patternLabels).join(' → ')}`,
-  state: `升序：${Object.values(stateLabels).join(' → ')}`,
-  attention_context: '按关注优先级排序；升序：未满足 → 单项满足 → 同板块双条件；待确认置底',
-}
+// 盯盘与当日信号需要及时的可成交状态；其他标签页只刷新页头状态。
+const LIVE_POLL_MS = 5000
+const IDLE_POLL_MS = 30000
 
-function candidateSortValue(row: FirstBoardCandidate, column: ColumnConfig) {
-  if (column.id === 'attention_context') return attentionPriority(row.attention_context)
-  if (column.id === 'pattern' || column.id === 'state') {
-    // 分类沿用界面已有的定义顺序，未知分类与缺失数值一样置底。
-    const index = categoryOrder[column.id].indexOf(row[column.id])
-    return index < 0 ? null : index
-  }
-  const value = row[column.id as keyof FirstBoardCandidate]
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
+function PaperAccount({ paper, onOpen }: { paper: FirstBoardSnapshot['paper']; onOpen: (symbol: string, name: string) => void }) {
+  return <section className={panelClass}>
+    <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-sm font-semibold">关联模拟账户</h2><a href="/paper" className="text-xs underline">查看模拟盘</a></div>
+    <p className="mt-2 text-xs leading-relaxed text-secondary">{paper.note || (paper.initialized ? '账户统计包含该账户全部交易，不能解释为首板策略独立胜率。' : '尚未关联可用账户。可先记录信号，在规则版本中选择模拟账户。')}</p>
+    {paper.initialized && paper.stats && <dl className="mt-4 flex flex-wrap gap-x-8 gap-y-3 text-xs">
+      <div><dt className="text-secondary">账户已完成轮次</dt><dd className="mt-1 tabular-nums">{paper.stats.rounds}</dd></div>
+      <div><dt className="text-secondary">账户胜率</dt><dd className="mt-1 tabular-nums">{pct(paper.stats.win_rate, 1)}</dd></div>
+      <div><dt className="text-secondary">账户已实现盈亏（元）</dt><dd className="mt-1 tabular-nums">{money(paper.stats.realized_pnl)}</dd></div>
+    </dl>}
+    {paper.holdings?.length ? <div className="mt-3 overflow-x-auto"><table className="w-full min-w-[440px] text-left text-xs" aria-label="关联账户持仓">
+      <thead><tr className="text-secondary"><th className="py-2 font-normal">股票</th><th className="py-2 font-normal">持仓股数</th><th className="py-2 font-normal">成本价</th><th className="py-2 font-normal">持仓盈亏（元）</th></tr></thead>
+      <tbody>{paper.holdings.map(holding => <tr key={holding.symbol} className="border-t border-border"><td className="py-2"><button onClick={() => onOpen(holding.symbol, holding.symbol)} className="hover:underline">{holding.symbol}</button></td><td className="py-2 tabular-nums">{holding.qty}</td><td className="py-2 tabular-nums">{money(holding.avg_cost)}</td><td className="py-2 tabular-nums">{money(holding.pnl)}</td></tr>)}</tbody>
+    </table></div> : null}
+  </section>
 }
 
 export function FirstBoard() {
@@ -57,36 +46,22 @@ export function FirstBoard() {
   const tab = tabs.some(item => item.id === params.get('tab')) ? params.get('tab')! : 'live'
   const client = useQueryClient()
   const config = useQuery({ queryKey: QK.firstBoardConfig, queryFn: api.firstBoardConfig })
-  const snapshot = useQuery({ queryKey: QK.firstBoardSnapshot, queryFn: api.firstBoardSnapshot, enabled: !!config.data, refetchInterval: 5000, retry: 1 })
-  const matrix = useCapabilityMatrix()
-  const versions = useQuery({ queryKey: QK.firstBoardVersions, queryFn: api.firstBoardVersions, enabled: tab === 'rules' || tab === 'research' })
-  const accounts = useQuery({ queryKey: QK.paperAccounts, queryFn: api.paperAccounts, enabled: tab === 'rules' })
   const [eventDay, setEventDay] = useState(beijingDay)
   const [eventFilters, setEventFilters] = useState<FirstBoardEventFilters>({})
   const pollSignals = eventDay === beijingDay() && !!config.data?.enabled
-  const events = useQuery({ queryKey: QK.firstBoardEvents(eventDay, eventFilters), queryFn: () => api.firstBoardEvents(eventDay, eventFilters), enabled: tab === 'events', refetchInterval: pollSignals ? 5000 : false })
+  const snapshotPoll = tab === 'live' || (tab === 'events' && pollSignals) ? LIVE_POLL_MS : IDLE_POLL_MS
+  const snapshot = useQuery({ queryKey: QK.firstBoardSnapshot, queryFn: api.firstBoardSnapshot, enabled: !!config.data, refetchInterval: snapshotPoll, retry: 1 })
+  const matrix = useCapabilityMatrix()
+  const versions = useQuery({ queryKey: QK.firstBoardVersions, queryFn: api.firstBoardVersions, enabled: tab === 'rules' || tab === 'research' })
+  const accounts = useQuery({ queryKey: QK.paperAccounts, queryFn: api.paperAccounts, enabled: tab === 'rules' })
+  const events = useQuery({ queryKey: QK.firstBoardEvents(eventDay, eventFilters), queryFn: () => api.firstBoardEvents(eventDay, eventFilters), enabled: tab === 'events', refetchInterval: pollSignals ? LIVE_POLL_MS : false })
   const [draft, setDraft] = useState<FirstBoardConfig | null>(null)
-  const [filter, setFilter] = useState<FirstBoardPattern | 'all'>('all')
-  const [stateFilter, setStateFilter] = useState<FirstBoardState | 'all'>('all')
-  const [onlyActionable, setOnlyActionable] = useState(false)
-  const [attentionFilter, setAttentionFilter] = useState<AttentionFilter>('all')
-  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('all')
-  const [boardId, setBoardId] = useState('')
   const [monitorExpanded, setMonitorExpanded] = useState(true)
   const monitorDetailsId = useId()
   const stockMarks = useStockMarks(storage.firstBoardStockMarks)
-  const candidateViewport = useRef<HTMLDivElement>(null)
-  const toggleFocus = (symbol: string) => {
-    if (!stockMarks.marks[symbol]?.focused && candidateViewport.current) candidateViewport.current.scrollTop = 0
-    stockMarks.toggle(symbol, 'focused')
-  }
   const attentionCurrent = !snapshot.isError && snapshot.data?.status === 'ready'
-  const sortValue = useCallback((row: FirstBoardCandidate, column: ColumnConfig) => {
-    if (column.id === 'priority_score') return currentPriority(row, attentionCurrent)
-    return column.id === 'attention_context' && !attentionCurrent ? null : candidateSortValue(row, column)
-  }, [attentionCurrent])
-  const hasScores = snapshot.data?.rows.some(row => currentPriority(row, attentionCurrent) !== null)
-  const { sort, toggle: toggleSort, sortRows } = useTableSort<FirstBoardCandidate>(sortValue, hasScores ? scoreDescending : changeDescending)
+  const view = useCandidateView(snapshot.data?.rows, attentionCurrent, stockMarks.marks)
+  const { rows } = view
   const [stock, setStock] = useState<{ symbol: string; name: string; navList?: { symbol: string; name: string }[] } | null>(null)
   const [feedback, setFeedback] = useState('')
   useEffect(() => { if (config.data && !draft) setDraft(config.data) }, [config.data, draft])
@@ -114,40 +89,12 @@ export function FirstBoard() {
     void client.invalidateQueries({ queryKey: QK.paperAll })
   } })
   const data = snapshot.data
-  const boardIndex = useMemo(() => {
-    if (priorityFilter !== 'industry' && priorityFilter !== 'concept') return null
-    const byRow = new Map<FirstBoardCandidate, Map<string, string>>()
-    const choices = new Map<string, string>()
-    for (const row of data?.rows ?? []) {
-      // Stock rows may have separate patterns and evidence eligibility.
-      const boards = strongBoards(row, priorityFilter, attentionCurrent)
-      byRow.set(row, boards)
-      for (const [id, name] of boards) choices.set(id, name)
-    }
-    return { byRow, choices: [...choices].sort((a, b) => a[1].localeCompare(b[1], 'zh-CN')) }
-  }, [priorityFilter, data?.rows, attentionCurrent])
-  const rows = useMemo(() => {
-    const inPriorityFilter = (row: FirstBoardCandidate) => {
-      if (!boardIndex) return matchesPriority(row, priorityFilter, attentionCurrent)
-      const boards = boardIndex.byRow.get(row)
-      return !!boards && (boardId ? boards.has(boardId) : boards.size > 0)
-    }
-    const selected = (data?.rows ?? []).filter(row =>
-      (filter === 'all' || row.pattern === filter) && (stateFilter === 'all' || row.state === stateFilter)
-      && (!onlyActionable || row.can_buy) && matchesAttention(row.attention_context, attentionFilter, attentionCurrent)
-      && inPriorityFilter(row))
-    const sorted = sortRows(selected, candidateColumns)
-    if (sort?.key === 'priority_score') {
-      const tier = (row: FirstBoardCandidate) => currentPriority(row, attentionCurrent) === null ? 2 : row.can_buy ? 0 : 1
-      sorted.sort((a, b) => tier(a) - tier(b))
-    }
-    return markedFirst(sorted, stockMarks.marks, 'focused')
-  }, [data?.rows, filter, stateFilter, onlyActionable, attentionFilter, priorityFilter, boardIndex, boardId, attentionCurrent, sortRows, sort?.key, stockMarks.marks])
   const capabilities = matrix.data?.capabilities ?? []
   const liveUsable = !snapshot.isError && data?.status === 'ready' && !!config.data?.enabled
     && !matrix.isError && ['daily', 'realtime'].every(id => capabilities.some(item => item.id === id && item.usable))
   const missing = capabilities.filter(item => ['daily', 'realtime'].includes(item.id) && !item.usable)
   const openStock = (symbol: string, name: string) => setStock({ symbol, name })
+  const openList = (symbol: string, name: string, navList: { symbol: string; name: string }[]) => setStock({ symbol, name, navList })
   const selectTab = (id: string) => { const next = new URLSearchParams(params); next.set('tab', id); setParams(next) }
   const loadRules = (rules: FirstBoardRules) => { if (config.data) setDraft({ ...(draft ?? config.data), rules }); selectTab('rules'); setFeedback('实验规则已载入草稿。请审阅参数后保存为新版本。') }
   const sellEvent = (event: FirstBoardEvent) => {
@@ -156,10 +103,22 @@ export function FirstBoard() {
   }
   const navRows = tab === 'live' ? rows : data?.rows
   const navList = useMemo(() => navRows?.filter((row, index, all) => all.findIndex(other => other.symbol === row.symbol) === index).map(row => ({ symbol: row.symbol, name: row.name })), [navRows])
+  const onTabKey = (event: KeyboardEvent, index: number) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length
+    selectTab(tabs[next].id)
+    document.getElementById(`first-board-tab-${tabs[next].id}`)?.focus()
+  }
 
   return <div className="min-w-0">
-    <PageHeader title="首板模式" className="flex-wrap pl-14 lg:pl-5" right={<div className="flex flex-wrap items-center gap-2"><span className="text-xs text-secondary">{data ? statuses[data.status] : '正在连接'}</span><button className={buttonClass} disabled={!config.data || (tab === 'events' ? events.isFetching : snapshot.isFetching || refresh.isPending)} onClick={refreshPage}><RefreshCw className={cn('h-3.5 w-3.5', snapshot.isFetching && 'motion-safe:animate-spin')} />刷新</button></div>} />
-    <div role="tablist" aria-label="首板工作台" className="flex overflow-x-auto border-b border-border px-4">{tabs.map((item, index) => <button key={item.id} id={`first-board-tab-${item.id}`} type="button" role="tab" tabIndex={tab === item.id ? 0 : -1} aria-selected={tab === item.id} aria-controls={`first-board-panel-${item.id}`} onClick={() => selectTab(item.id)} onKeyDown={event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length; selectTab(tabs[next].id); document.getElementById(`first-board-tab-${tabs[next].id}`)?.focus() } }} className={cn('shrink-0 border-b-2 px-4 py-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent', tab === item.id ? 'border-accent font-medium text-foreground' : 'border-transparent text-secondary hover:text-foreground')}>{item.label}</button>)}</div>
+    <PageHeader title="首板模式" className="flex-wrap pl-14 lg:pl-5" right={<div className="flex flex-wrap items-center gap-2">
+      <span className="text-xs text-secondary">{data ? statuses[data.status] : '正在连接'}</span>
+      <button className={buttonClass} disabled={!config.data || (tab === 'events' ? events.isFetching : snapshot.isFetching || refresh.isPending)} onClick={refreshPage}><RefreshCw className={cn('h-3.5 w-3.5', snapshot.isFetching && 'motion-safe:animate-spin')} />刷新</button>
+    </div>} />
+    <div role="tablist" aria-label="首板工作台" className="flex overflow-x-auto border-b border-border px-4">{tabs.map((item, index) => <button key={item.id} id={`first-board-tab-${item.id}`} type="button" role="tab"
+      tabIndex={tab === item.id ? 0 : -1} aria-selected={tab === item.id} aria-controls={`first-board-panel-${item.id}`} onClick={() => selectTab(item.id)} onKeyDown={event => onTabKey(event, index)}
+      className={cn('shrink-0 border-b-2 px-4 py-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent', tab === item.id ? 'border-accent font-medium text-foreground' : 'border-transparent text-secondary hover:text-foreground')}>{item.label}</button>)}</div>
     <div className="space-y-4 p-4 sm:p-5">
       <ErrorNotice error={config.error} retry={() => void config.refetch()} />
       {config.isLoading && <LoadingRows />}
@@ -186,43 +145,19 @@ export function FirstBoard() {
             </header>
             <DataStatus data={data.data_status} retained={snapshot.isError || refresh.isError} />
             <div id={monitorDetailsId} hidden={!monitorExpanded}>
-              <YesterdayFeedback data={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} onOpenStock={(symbol, name, members) => setStock({ symbol, name, navList: members })}>
+              <YesterdayFeedback data={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} onOpenStock={openList}>
                 <OpeningDistribution feedback={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} />
               </YesterdayFeedback>
             </div>
           </section>}
-          <section className={panelClass}><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h2 className="text-sm font-semibold">今日候选 <span className="font-normal text-secondary">{rows.length} 条</span></h2><div className="flex flex-wrap items-center gap-4 text-xs"><label className="flex shrink-0 items-center gap-2 whitespace-nowrap">形态<select className={inputClass} value={filter} onChange={event => setFilter(event.target.value as FirstBoardPattern | 'all')}><option value="all">全部形态</option>{Object.entries(patternLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label className="flex shrink-0 items-center gap-2 whitespace-nowrap">状态<select aria-label="候选状态" className={inputClass} value={stateFilter} onChange={event => setStateFilter(event.target.value as FirstBoardState | 'all')}><option value="all">全部状态</option>{Object.entries(stateLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label className="flex shrink-0 items-center gap-2 whitespace-nowrap">重点关注<select aria-label="重点关注" className={inputClass} value={attentionFilter} onChange={event => setAttentionFilter(event.target.value as AttentionFilter)}><option value="all">全部候选</option><option value="strong">强势板块</option><option value="follow">领涨带动</option><option value="both">同板块双条件</option></select></label><label className="flex shrink-0 items-center gap-2 whitespace-nowrap">评分筛选<select aria-label="评分筛选" className={inputClass} value={priorityFilter} onChange={event => { setPriorityFilter(event.target.value as PriorityFilter); setBoardId('') }}>{Object.entries(priorityFilters).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>{boardIndex && <label className="flex min-w-0 max-w-full items-center gap-2 whitespace-nowrap">板块<select aria-label="具体强势板块" className={cn(inputClass, 'max-w-[min(18rem,65vw)]')} value={boardId} onChange={event => setBoardId(event.target.value)}>
-              <option value="">所有命中板块</option>
-              {boardId && !boardIndex.choices.some(([id]) => id === boardId) && <option value={boardId}>原选板块当前无匹配</option>}
-              {boardIndex.choices.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
-            </select></label>}<label className="flex items-center gap-2"><input type="checkbox" checked={onlyActionable} onChange={event => setOnlyActionable(event.target.checked)} />只看可提示候选</label></div></div>
-            <ErrorNotice error={stockMarks.error} retry={stockMarks.retry} />
-            <div ref={candidateViewport} role="region" aria-label="今日候选列表" tabIndex={0} className="h-[560px] max-h-[70vh] overflow-auto overscroll-contain scrollbar-gutter-stable focus-visible:outline focus-visible:outline-accent">
-            {snapshot.isLoading ? <LoadingRows /> : rows.length ? <table aria-label="首板实时候选" className="w-full min-w-[1380px] text-left text-xs"><thead><tr className="text-secondary">{candidateColumns.map(column => {
-              const sortable = sortableColumns.has(column.id)
-              const active = sort?.key === column.id
-              const Icon = active ? sort.dir === 'asc' ? ArrowUp : ArrowDown : ArrowUpDown
-              const action = active ? sort.dir === 'asc' ? '当前升序，点击降序' : '当前降序，点击恢复默认顺序' : '点击升序排列'
-              return <th key={column.id} scope="col" aria-sort={sortable ? active ? sort.dir === 'asc' ? 'ascending' : 'descending' : 'none' : undefined} className="sticky top-0 z-10 whitespace-nowrap bg-surface px-3 py-3 font-normal first:pl-0">
-                {sortable ? <button type="button" aria-label={`按${column.id === 'attention_context' ? '板块联动关注优先级' : column.label}排序`} title={[action, categorySortHints[column.id]].filter(Boolean).join('；')} className={cn('inline-flex min-h-9 items-center gap-1 rounded hover:text-foreground focus-visible:outline focus-visible:outline-accent', active && 'font-medium text-foreground')} onClick={() => toggleSort(column.id)}>{column.label}<Icon className={cn('h-3 w-3', active && 'text-accent')} aria-hidden="true" /></button> : column.label}
-              </th>
-            })}</tr></thead><tbody>{rows.map(row => { const board = boardTag(row.symbol); return <tr key={`${row.symbol}-${row.pattern}`} className="border-t border-border"><td className="py-3 pr-3 align-top"><button className="text-left font-medium hover:underline focus-visible:outline focus-visible:outline-accent" onClick={() => openStock(row.symbol, row.name)}>{row.name}{board && <span className={`ml-1 shrink-0 inline-flex items-center justify-center w-[18px] h-[18px] rounded text-[9px] font-bold leading-none border ${board.color}`}>{board.label}</span>}<span className="block font-normal text-secondary">{row.symbol}</span></button><span className="mt-1 block text-secondary">{row.sector || '行业未确认'}</span>
-              <button type="button" aria-pressed={!!stockMarks.marks[row.symbol]?.focused} aria-label={`${stockMarks.marks[row.symbol]?.focused ? '取消关注' : '特别关注'} ${row.name} ${row.symbol}`} title={stockMarks.marks[row.symbol]?.focused ? '取消关注' : '特别关注并优先显示'}
-                className={cn('mt-2 inline-flex min-h-8 items-center gap-1 whitespace-nowrap rounded border px-2 text-xs focus-visible:outline focus-visible:outline-accent', stockMarks.marks[row.symbol]?.focused ? 'border-accent/50 bg-accent/10 text-accent' : 'border-border text-secondary hover:text-foreground')}
-                onClick={() => toggleFocus(row.symbol)}><Star className="h-3.5 w-3.5" fill={stockMarks.marks[row.symbol]?.focused ? 'currentColor' : 'none'} aria-hidden="true" />{stockMarks.marks[row.symbol]?.focused ? '取消关注' : '特别关注'}</button>
-              </td><td className="px-3 py-3 align-top"><PatternBadge pattern={row.pattern} label={row.pattern_label} /></td><td className="px-3 py-3 align-top"><StateBadge state={row.state} /></td><td className={cn("px-3 py-3 align-top tabular-nums", priceColorClass(row.price ? row.change_pct : null))}>{fmtPrice(row.price)}</td><td className={cn("px-3 py-3 align-top tabular-nums", priceColorClass(row.change_pct))}>{fmtPct(row.change_pct)}</td><td className="px-3 py-3 align-top tabular-nums">{pct(row.distance_to_limit_pct)}</td><td className="px-3 py-3 align-top tabular-nums">{pct(row.turnover_rate, 1)}</td><td className="px-3 py-3 align-top"><PriorityCell row={row} current={attentionCurrent} /></td><td className="px-3 py-3 align-top"><AttentionCell context={row.attention_context} snapshotCurrent={attentionCurrent} /></td><td className="min-w-56 max-w-80 px-3 py-3 align-top leading-relaxed"><p>{row.blocked_reasons.length ? row.blocked_reasons.join('；') : row.can_buy ? '达到实验提示条件，仍需确认可成交性。' : '继续观察'}</p><TechnicalEvidence facts={row.evidence} pattern={row.pattern} day={data?.as_of ?? ''} historical={!attentionCurrent || row.priority_score?.status === 'stale'} /><details className="mt-2 text-secondary"><summary className="cursor-pointer">入选依据</summary><ul className="mt-1 space-y-1">{row.reasons.map(reason => <li key={reason}>{reason}</li>)}{row.sector_confirmation?.reason && <li>{row.sector_confirmation.reason}</li>}<li>形态参考日期：{String(row.evidence.reference_date ?? '—')}</li>{typeof row.evidence.breakout_price_raw === 'number' && <li>原价突破参考：{money(row.evidence.breakout_price_raw)} 元</li>}</ul></details></td><td className="whitespace-nowrap px-3 py-3 align-top tabular-nums">{stamp(row.quote_time)}</td><td className="px-3 py-3 align-top"><button className={buttonClass} disabled={!liveUsable || !row.can_buy || !row.event_id || !row.suggested_amount || order.isPending} onClick={() => row.event_id && row.suggested_amount && order.mutate({ event_id: row.event_id, side: 'buy', amount: row.suggested_amount })}>模拟买入</button><span className="mt-1 block text-secondary">{row.suggested_amount ? `${money(row.suggested_amount)} 元` : '需关联账户及可用额度'}</span></td></tr> })}</tbody></table> : <p className="py-6 text-sm leading-relaxed text-secondary">{priorityFilter !== 'all' ? '当前评分筛选下暂无候选。可选择全部候选查看缺失证据或最近盘中评分。' : stateFilter !== 'all' ? '当前筛选条件下暂无候选，可切换状态或调整其他筛选条件。' : attentionFilter !== 'all' ? '当前筛选下没有满足重点关注条件的候选。数据不足或过期的候选不计入重点筛选，可选择全部候选查看联动依据。' : onlyActionable ? '当前没有通过全部确认条件的候选，可取消筛选查看阻断原因。' : '暂无匹配的首板候选。系统需要完成日线建立观察池，并等待有效盘中报价；没有候选时不会生成买入提示。'}</p>}
-            </div>
-          </section>
+          <CandidateTable view={view} loading={snapshot.isLoading} current={attentionCurrent} day={data?.as_of ?? ''} marks={stockMarks}
+            canOrder={liveUsable && !order.isPending} onOpen={openStock} onBuy={(eventId, amount) => order.mutate({ event_id: eventId, side: 'buy', amount })} />
           <ErrorNotice error={order.error} />
-          {data?.paper && <section className={panelClass}><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-sm font-semibold">关联模拟账户</h2><a href="/paper" className="text-xs underline">查看模拟盘</a></div><p className="mt-2 text-xs leading-relaxed text-secondary">{data.paper.note || (data.paper.initialized ? '账户统计包含该账户全部交易，不能解释为首板策略独立胜率。' : '尚未关联可用账户。可先记录信号，在规则版本中选择模拟账户。')}</p>{data.paper.initialized && data.paper.stats && <dl className="mt-4 flex flex-wrap gap-x-8 gap-y-3 text-xs"><div><dt className="text-secondary">账户已完成轮次</dt><dd className="mt-1 tabular-nums">{data.paper.stats.rounds}</dd></div><div><dt className="text-secondary">账户胜率</dt><dd className="mt-1 tabular-nums">{pct(data.paper.stats.win_rate, 1)}</dd></div><div><dt className="text-secondary">账户已实现盈亏（元）</dt><dd className="mt-1 tabular-nums">{money(data.paper.stats.realized_pnl)}</dd></div></dl>}{data.paper.holdings?.length ? <div className="mt-3 overflow-x-auto"><table className="w-full min-w-[440px] text-left text-xs" aria-label="关联账户持仓"><thead><tr className="text-secondary"><th className="py-2 font-normal">股票</th><th className="py-2 font-normal">持仓股数</th><th className="py-2 font-normal">成本价</th><th className="py-2 font-normal">持仓盈亏（元）</th></tr></thead><tbody>{data.paper.holdings.map(holding => <tr key={holding.symbol} className="border-t border-border"><td className="py-2"><button onClick={() => openStock(holding.symbol, holding.symbol)} className="hover:underline">{holding.symbol}</button></td><td className="py-2 tabular-nums">{holding.qty}</td><td className="py-2 tabular-nums">{money(holding.avg_cost)}</td><td className="py-2 tabular-nums">{money(holding.pnl)}</td></tr>)}</tbody></table></div> : null}</section>}
+          {data?.paper && <PaperAccount paper={data.paper} onOpen={openStock} />}
           {!!data?.limitations.length && <details className="text-xs text-secondary"><summary className="cursor-pointer">当前实现的边界</summary><ul className="ml-4 mt-2 list-disc space-y-2 leading-relaxed">{data.limitations.map(item => <li key={item}>{item}</li>)}</ul></details>}
         </>}
-        {tab === 'events' && <section className={`${panelClass} space-y-4`}><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-sm font-semibold">信号记录 <span className="font-normal text-secondary">{events.data?.total ?? 0} 条</span></h2><div className="flex flex-wrap items-center gap-3 text-xs">
-          <label className="flex shrink-0 items-center gap-2 whitespace-nowrap">形态<select aria-label="信号形态" className={inputClass} value={eventFilters.pattern ?? 'all'} onChange={event => setEventFilters(current => ({ ...current, pattern: event.target.value === 'all' ? undefined : event.target.value as FirstBoardEventFilters['pattern'] }))}><option value="all">全部形态</option>{Object.entries({ ...patternLabels, exit: '次日退出' }).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-          <label className="flex shrink-0 items-center gap-2 whitespace-nowrap">状态<select aria-label="信号状态" className={inputClass} value={eventFilters.event_type ?? 'all'} onChange={event => setEventFilters(current => ({ ...current, event_type: event.target.value === 'all' ? undefined : event.target.value as FirstBoardEventFilters['event_type'] }))}><option value="all">全部状态</option>{Object.entries(eventLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-          <label className="flex shrink-0 items-center gap-2 whitespace-nowrap">交易日期<input className={inputClass} type="date" max={beijingDay()} value={eventDay} onChange={event => { if (event.target.value) setEventDay(event.target.value) }} /></label></div></div>
-          <FirstAlertRankings key={eventDay} day={eventDay} poll={pollSignals} onOpen={(symbol, name, members) => setStock({ symbol, name, navList: members })} />
-          <p className="text-xs leading-relaxed text-secondary">记录状态变化时的价格、规则版本与阻断原因。历史提示不代表当前仍可买入，模拟委托会在提交时重新核验行情。</p><ErrorNotice error={events.error} retry={() => void events.refetch()} /><ErrorNotice error={order.error} />{events.isLoading ? <LoadingRows /> : events.data?.events.length ? <ul className="divide-y divide-border">{events.data.events.map(event => <li key={event.id} className="space-y-2 py-4"><div className="flex flex-wrap items-center justify-between gap-2"><div className="flex flex-wrap items-center gap-3"><button className="text-sm font-medium hover:underline focus-visible:outline focus-visible:outline-accent" onClick={() => openStock(event.symbol, event.name)}>{event.name} <span className="font-normal text-secondary">{event.symbol}</span></button><EventBadge type={event.event_type} /><PatternBadge pattern={event.pattern} label={event.pattern_label} /></div><span className="text-xs text-secondary">{stamp(event.ts)} · 版本 {event.revision}</span></div><p className="text-sm leading-relaxed">{event.message}</p>{event.evidence.priority_score && <PriorityCell row={{ priority_score: event.evidence.priority_score }} current archived />}{event.pattern !== 'exit' && <TechnicalEvidence facts={event.evidence} pattern={event.pattern} day={event.date} historical />}<div className="flex flex-wrap items-center justify-between gap-3 text-xs text-secondary"><span>信号价格 {money(event.price)} 元 · 行情时间 {stamp(event.quote_time)}</span>{event.event_type === 'exit_candidate' && <button className={buttonClass} disabled={!liveUsable || event.date !== beijingDay() || typeof event.evidence.qty !== 'number' || event.evidence.qty <= 0 || order.isPending} onClick={() => sellEvent(event)}>模拟卖出</button>}</div>{event.blocked_reasons.length > 0 && <p className="text-xs text-secondary">{event.blocked_reasons.join('；')}</p>}</li>)}</ul> : <p className="py-5 text-sm text-secondary">{eventFilters.pattern || eventFilters.event_type ? '当前筛选条件下暂无信号，可切换形态或状态查看其他记录。' : '该日暂无首板信号。开启盯盘后，符合条件的状态变化会记录在这里。'}</p>}</section>}
+        {tab === 'events' && <EventsPanel events={events} day={eventDay} onDay={setEventDay} filters={eventFilters} onFilters={setEventFilters} poll={pollSignals}
+          canSell={liveUsable && !order.isPending} orderError={order.error} onOpen={openStock} onOpenList={openList} onSell={sellEvent} />}
         {tab === 'research' && <><ErrorNotice error={versions.error} retry={() => void versions.refetch()} /><ResearchPanel config={config.data} versions={versions.data?.versions ?? []} onOpenStock={openStock} onLoadRules={loadRules} /></>}
         {tab === 'rules' && draft && <><ErrorNotice error={versions.error ?? accounts.error} retry={() => { void versions.refetch(); void accounts.refetch() }} /><RulesPanel config={config.data} draft={draft} onDraft={setDraft} onSave={() => save.mutate(draft)} versions={versions.data?.versions ?? []} accounts={accounts.data?.accounts ?? []} saving={save.isPending} error={save.error} reload={() => { if (config.data) setDraft(config.data); save.reset() }} /></>}
       </div>}

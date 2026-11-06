@@ -603,6 +603,11 @@ def _available_of(pos: dict, today: str | None = None) -> int:
     return int(sum(lot["qty"] for lot in pos["lots"] if lot["date"] < today))
 
 
+def available_qty(pos: dict, today: str) -> int:
+    """供模式服务按模拟盘同一 T+1 口径核对当日可卖数量。"""
+    return _available_of(pos, today)
+
+
 def _append_fill(data_dir: Path, fill: dict, account_id: str = DEFAULT_ACCOUNT_ID) -> None:
     p = _fills_path(data_dir, account_id)
     with PAPER_LOCK, p.open("a", encoding="utf-8") as f:

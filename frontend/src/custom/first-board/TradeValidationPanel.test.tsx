@@ -157,6 +157,15 @@ it('shows how many technical samples were excluded while there is no common coho
   expect(host.textContent).toContain('尚无同时记录原优先分、均线与 MACD 的可比样本')
   expect(host.querySelector('[aria-label="技术影子排序每日名额"]')).toBeNull()
 })
+it.each([['priority-v2', '完整可比 0 / 4 个股票日'], ['priority-v9', '技术排序规则版本待核验']])('reads technical comparisons against the %s baseline', async (baseline, text) => {
+  const result = replay()
+  result.technical_comparison = { version: 'ma-macd-shadow-v1', baseline, eligible: 4,
+    scored: 0, unscored: 4, priority_known: 2, ma_known: 1, macd_known: 0, score_tolerance: 2,
+    holdout_start: null, groups: [] }
+  calls.firstBoardTradeValidation.mockResolvedValue(result)
+  await render(); await click('运行交易验证')
+  expect(host.textContent).toContain(text)
+})
 
 it('translates known execution reasons while retaining evidence suffixes and unknown codes', async () => {
   const result = replay()

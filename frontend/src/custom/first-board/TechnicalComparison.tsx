@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { FirstBoardPattern, FirstBoardReplayValidation } from '@/lib/api'
+import { priorityVersions } from './PriorityCell'
 import { inputClass, patternLabels, pct } from './shared'
 
 type Comparison = NonNullable<FirstBoardReplayValidation['technical_comparison']>
@@ -11,7 +12,7 @@ export function TechnicalComparison({ report }: { report?: Comparison }) {
   const [window, setWindow] = useState<'all' | 'holdout'>('all')
   const [pattern, setPattern] = useState<'all' | FirstBoardPattern>('all')
   if (!report) return <p className="text-xs text-secondary">此报告未记录均线与 MACD 排序对照。</p>
-  if (report.version !== 'ma-macd-shadow-v1' || report.baseline !== 'priority-v1') {
+  if (report.version !== 'ma-macd-shadow-v1' || !priorityVersions.includes(report.baseline)) {
     return <p className="text-xs text-secondary">此报告的技术排序规则版本待核验。</p>
   }
   const rows = report.groups.filter(row => row.top_n === n && row.window === window)

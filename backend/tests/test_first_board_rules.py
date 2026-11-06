@@ -98,6 +98,27 @@ def test_supported_boards_use_current_effective_limit(symbol):
     assert row["evidence"]["limit_up_price"] == pytest.approx(limit)
 
 
+@pytest.mark.parametrize(("symbol", "price", "limit", "expected"), [
+    ("300001.SZ", 11.4, 12.0, "approaching"), ("688001.SH", 11.4, 12.0, "approaching"),
+    ("600001.SH", 10.5, 11.0, "watch"),
+])
+def test_twenty_percent_boards_use_separate_approaching_distance(symbol, price, limit, expected):
+    values = quote(symbol=symbol, raw_close=price, close=price / 2, raw_high=price, limit_up_price=limit - .005)
+    loose = evaluate_candidates(candidates(symbol), pl.DataFrame([values]),
+                                FirstBoardRules(approaching_distance_20cm=.06), as_of=DAY)[0]
+    assert loose["state"] == expected
+    # 默认两类板块门槛相同, 原有行为不变。
+    assert evaluate(values)["state"] == "watch"
+
+
+def test_historical_chinext_before_reform_uses_main_board_distance():
+    day = date(2020, 8, 21)
+    values = quote(symbol="300001.SZ", date=day, raw_close=10.5, close=5.25, raw_high=10.5, limit_up_price=10.995)
+    rows = pl.DataFrame([values])
+    rules = FirstBoardRules(approaching_distance_20cm=.06)
+    assert evaluate_candidates(candidates("300001.SZ"), rows, rules, as_of=day, historical=True)[0]["state"] == "watch"
+
+
 @pytest.mark.parametrize("updates", [
     {"date": DAY - timedelta(days=1)}, {"symbol": "830001.BJ"}, {"name": "*ST测试"},
     {"raw_close": None}, {"close": None}, {"raw_high": 10.0}, {"raw_high": 11.5},
@@ -157,6 +178,19 @@ def test_candidates_only_use_completed_days_and_adjusted_shapes():
     assert expected.height == 2
     assert actual.equals(expected)
     assert expected["breakout_price"].to_list() == [5.05, 5.05]
+
+
+def test_candidate_volume_baseline_uses_five_completed_sessions():
+    frame = history()
+    frame = frame.with_columns((pl.col("date").rank("dense").cast(pl.Float64) * 100).alias("volume"))
+    as_of = frame["date"].max() + timedelta(days=1)
+    future = frame.tail(1).with_columns(pl.lit(as_of).alias("date"), pl.lit(1e9).alias("volume"))
+    # 最近5个完成交易日为第21–25日; 当日成交量不得进入基准。
+    assert build_candidates(pl.concat([frame, future]), as_of, short_rules())["avg_volume_5"].to_list() == [2300.] * 2
+    halted = frame.with_columns(pl.when(pl.col("date") == frame["date"].max()).then(0.)
+                                .otherwise(pl.col("volume")).alias("volume"))
+    assert build_candidates(halted, as_of, short_rules())["avg_volume_5"].to_list() == [None, None]
+    assert build_candidates(history(), as_of, short_rules())["avg_volume_5"].to_list() == [None, None]
 
 
 def test_history_gap_duplicate_and_missing_column_are_rejected():

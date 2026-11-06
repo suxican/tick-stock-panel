@@ -49,6 +49,7 @@ class FirstBoardRules(BaseModel):
     oversold_window: int = Field(default=60, ge=20, le=120)
     oversold_min_drawdown: float = Field(default=0.25, gt=0, lt=1)
     approaching_distance: float = Field(default=0.03, ge=0, le=0.10)
+    approaching_distance_20cm: float = Field(default=0.03, ge=0, le=0.20)
     min_change_pct: float = Field(default=0.05, ge=0, le=0.20)
     min_turnover_rate: float = Field(default=2.0, ge=0, le=100)
     max_turnover_rate: float = Field(default=30.0, gt=0, le=100)
@@ -88,6 +89,15 @@ def _empty_candidates() -> pl.DataFrame:
         "reference_price": pl.Float64, "reference_adjusted_close": pl.Float64,
         "breakout_price": pl.Float64, "state": pl.String,
     })
+
+
+def _avg_volume(df: pl.DataFrame, window: int) -> pl.Expr:
+    """量比分母: 窗口内任一日成交量缺失或非正时为空, 不以部分样本估计。"""
+    if "volume" not in df.columns:
+        return pl.lit(None, dtype=pl.Float64)
+    volume = pl.col("volume").cast(pl.Float64, strict=False)
+    return (pl.when(volume.is_finite() & (volume > 0)).then(volume).otherwise(None)
+            .rolling_mean(window, min_samples=window).over("symbol"))
 
 
 def _features(history: pl.DataFrame, rules: FirstBoardRules) -> pl.DataFrame:
@@ -173,6 +183,7 @@ def _features(history: pl.DataFrame, rules: FirstBoardRules) -> pl.DataFrame:
         pl.col("high").rolling_max(5, min_samples=5).over("symbol").alias("recent_high"),
         pl.col("high").rolling_max(rules.oversold_window, min_samples=rules.oversold_window)
         .over("symbol").alias("_oversold_high"),
+        _avg_volume(df, 5).alias("_avg_volume_5"),
     ).with_columns(
         (pl.col("platform_high") / pl.col("_platform_low") - 1).alias("platform_range"),
         (1 - pl.col("close") / pl.col("platform_high")).alias("platform_high_distance"),
@@ -223,7 +234,7 @@ def build_candidates(history: pl.DataFrame, as_of: date, rules: FirstBoardRules)
         return _empty_candidates()
     latest = df.filter(pl.col("date") == df["date"].max())
     rows = [_pattern_rows(latest, rules, pattern) for pattern in rules.enabled_patterns]
-    result = pl.concat(rows, how="diagonal_relaxed")
+    result = pl.concat(rows, how="diagonal_relaxed").rename({"_avg_volume_5": "avg_volume_5"})
     return result.drop([c for c in result.columns if c.startswith("_")]).sort(["symbol", "pattern"])
 
 
@@ -260,6 +271,12 @@ def first_board_limit_pct(symbol: str, trade_date: date) -> float:
     if symbol.endswith(".SZ") and symbol.startswith(("300", "301")) and trade_date < GEM_REGISTRATION_DATE:
         return MAIN_BOARD_LIMIT
     return price_limit_pct(symbol, trade_date)
+
+
+def approaching_distance(rules: FirstBoardRules, symbol: str, trade_date: date) -> float:
+    """临近涨停门槛按当日涨跌幅制度取值, 20% 限价板块单独设置。"""
+    wide = first_board_limit_pct(symbol, trade_date) > MAIN_BOARD_LIMIT + 1e-9
+    return rules.approaching_distance_20cm if wide else rules.approaching_distance
 
 
 def first_board_limit_price(symbol: str, trade_date: date, previous: float | None, *,
@@ -321,7 +338,10 @@ def evaluate_candidates(
     universe = re.compile(_UNIVERSE_PATTERNS[rules.universe])
     if "date" in current.columns:
         current = current.with_columns(pl.col("date").cast(pl.Date, strict=False))
-    quote_rows = current.to_dicts() if "symbol" in current.columns else []
+    quote_rows = []
+    if "symbol" in current.columns:
+        wanted = [str(symbol) for symbol in candidates["symbol"].unique().to_list()]
+        quote_rows = current.filter(pl.col("symbol").cast(pl.String, strict=False).is_in(wanted)).to_dicts()
     quotes = {str(row["symbol"]): row for row in quote_rows}
     duplicates = {symbol for symbol, count in Counter(str(row["symbol"]) for row in quote_rows).items()
                   if count > 1}
@@ -368,7 +388,8 @@ def evaluate_candidates(
         high = _finite(quote.get("raw_high"))
         change, distance = price / reference - 1, (limit_price - price) / limit_price
         evidence.update(limit_up_price=limit_price, raw_prev_close=reference,
-                        breakout_price_raw=candidate["breakout_price"] / factor, amount=amount)
+                        breakout_price_raw=candidate["breakout_price"] / factor, amount=amount,
+                        volume=_finite(quote.get("volume")), avg_volume_5=_finite(candidate.get("avg_volume_5")))
         row.update(change_pct=change, distance_to_limit_pct=distance)
         if (price > limit_price + 0.005
                 or (high is not None and (high + 0.005 < price or high > limit_price + 0.005))):
@@ -385,7 +406,7 @@ def evaluate_candidates(
                 reasons.append("尚未突破历史形态参考高点")
             if not meets_min_change(change, rules.min_change_pct):
                 reasons.append("涨幅未达到实验门槛")
-            if distance > rules.approaching_distance:
+            if distance > approaching_distance(rules, symbol, as_of):
                 reasons.append("距离涨停仍超过实验门槛")
             if turnover is None or turnover < rules.min_turnover_rate:
                 reasons.append("换手率缺失或未达到实验门槛")
@@ -408,7 +429,8 @@ def pattern_strategy_meta(pattern: Pattern) -> dict:
         "platform_near_high": "平台距高点上限(比例)", "trend_window": "趋势观察窗口",
         "trend_min_return": "趋势涨幅下限(比例)", "trend_max_return": "趋势涨幅上限(比例)",
         "oversold_window": "超跌观察窗口", "oversold_min_drawdown": "超跌最小回撤(比例)",
-        "approaching_distance": "距涨停上限(比例)", "min_change_pct": "最低涨幅(比例)",
+        "approaching_distance": "距涨停上限(比例)",
+        "approaching_distance_20cm": "20%涨跌幅板块距涨停上限(比例)", "min_change_pct": "最低涨幅(比例)",
         "min_turnover_rate": "最低换手率(%)", "max_turnover_rate": "最高换手率(%)",
         "min_amount": "最低成交额(元)",
     }

@@ -211,12 +211,44 @@ def test_options_reject_boolean_numbers(field):
         execution.ExecutionOptions(**{field: True})
 
 
-@pytest.mark.parametrize("field,value", [("exit_loss_pct", ".03"), ("exit_loss_pct", True), ("revision", True)])
+@pytest.mark.parametrize("field,value", [
+    ("exit_loss_pct", ".03"), ("exit_loss_pct", True), ("revision", True),
+    ("exit_profit_pct", 0), ("exit_profit_pct", True), ("exit_profit_pct", .6), ("exit_hold_limit_up", 1),
+])
 def test_invalid_saved_exit_config_is_unverifiable_not_a_runtime_exception(setup, field, value):
     repo, _ = setup
     data = sample()
     data["metadata"]["config"][field] = value
     assert run(repo, [data])["trades"][0]["status"] == "unverifiable"
+
+
+def test_take_profit_and_limit_up_hold_follow_recorded_config(setup):
+    repo, days = setup
+    profit = sample()
+    profit["metadata"]["config"]["exit_profit_pct"] = .01
+    trade = run(repo, [profit])["trades"][0]
+    assert trade["status"] == "closed" and trade["exit_signal_at"] == f"{days[1]}T09:32:00+08:00"
+    repo.frames[days[1]] = bars(days[1], 11.)
+    assert run(repo, [sample()])["trades"][0]["exit_signal_at"] == f"{days[1]}T10:30:00+08:00"
+    # 全天收于涨停时暂缓定时退出, 次一交易日按原退出时间继续。
+    hold = sample()
+    hold["metadata"]["config"]["exit_hold_limit_up"] = True
+    trade = run(repo, [hold])["trades"][0]
+    assert trade["status"] == "closed" and trade["exit_signal_at"] == f"{days[2]}T10:30:00+08:00"
+
+
+def test_mixed_priority_versions_rank_only_the_newest_within_a_day():
+    def trade(symbol, version, score, day="2026-10-19"):
+        return {"signal_at": f"{day}T10:00:00+08:00", "date": day, "symbol": symbol, "status": "closed",
+                "net_return": .01, "gross_return": .01, "net_pnl": 1., "_baseline": .05,
+                "_base_score": score, "_full_score": score, "_hot_known": False, "_priority_version": version}
+    trades = [trade("A", "priority-v1", 90), trade("B", "priority-v2", 50), trade("C", "priority-v2", 40),
+              trade("D", "priority-v1", 70, "2026-10-20")]
+    report = execution._priority_comparison(trades, [])
+    assert report["version"] == "priority-v2" and (report["scored"], report["unscored"]) == (3, 1)
+    top = next(g for g in report["groups"] if (g["variant"], g["top_n"], g["window"]) == ("popularity", 3, "all"))
+    assert top["signals"] == 3
+    assert execution._priority_comparison(trades[3:], [])["version"] == "priority-v1"
 
 
 def test_entry_window_must_allow_a_completed_endpoint():

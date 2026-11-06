@@ -20,6 +20,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.market_time import CN_TZ
 from app.services.first_board_attention import _validate_minutes
 from app.services.first_board_portfolio import minimum_buy_qty
+from app.services.first_board_priority import RULE_VERSION as PRIORITY_VERSION
+from app.services.first_board_priority import SUPPORTED_VERSIONS as PRIORITY_VERSIONS
 from app.services.huichun_calendar import BUNDLED_CALENDAR_PATH, load_market_calendar
 from app.services.minute_adjust import minute_basis_is_raw
 from app.strategy.paper import apply_slippage, buy_fee, sell_fee
@@ -86,7 +88,7 @@ def _trade(sample: dict, row: dict, revision: int, candidates: list[dict], *, sh
     stamp = _stamp(sample["observed_at"])
     identity = f"{revision}:{stamp.isoformat()}:{row['symbol']}"
     scored_candidates = [c for c in candidates if isinstance(c.get("priority_score"), dict)
-                         and c["priority_score"].get("version") == "priority-v1"
+                         and c["priority_score"].get("version") in PRIORITY_VERSIONS
                          and c["priority_score"].get("status") in ({"shadow"} if shadow else {"ready", "partial"})]
     base_scores, full_scores = [], []
     hot_known = False
@@ -133,6 +135,7 @@ def _trade(sample: dict, row: dict, revision: int, candidates: list[dict], *, sh
         "_shadow": shadow, "_role": role, "_base_score": max(base_scores, default=None),
         "_full_score": max(full_scores, default=None), "_hot_known": hot_known,
         "_priority_candidate": priority_candidate,
+        "_priority_version": priority_candidate["priority_score"]["version"] if priority_candidate else None,
         "_baseline": next(iter(changes)) if len(changes) == 1 else None,
         "_entry_factor": None, "_previous_close": None, "_exit_sessions": 0,
     }
@@ -295,6 +298,12 @@ def _config_valid(trade: dict) -> bool:
         loss = _number(config["exit_loss_pct"])
     except (KeyError, TypeError, ValueError):
         return False
+    # 旧版配置没有止盈与涨停持有字段, 缺省即未启用。
+    profit = config.get("exit_profit_pct")
+    if profit is not None and (type(profit) not in (int, float) or not 0 < profit <= .5):
+        return False
+    if type(config.get("exit_hold_limit_up", False)) is not bool:
+        return False
     return (loss is not None and 0 < loss <= .2 and deadline.second == 0 and deadline.microsecond == 0
             and deadline.tzinfo is None
             and (time(9, 30) <= deadline < time(11, 30) or time(13) <= deadline < time(14, 57)))
@@ -365,7 +374,10 @@ def _exit(trade: dict, rows: list[dict], facts, options: ExecutionOptions) -> No
         return
     config = trade["_config"]
     deadline = time.fromisoformat(config["exit_time"])
-    threshold = trade["entry_cost"] / trade["qty"] * (1 - config["exit_loss_pct"])
+    cost = trade["entry_cost"] / trade["qty"]
+    threshold = cost * (1 - config["exit_loss_pct"])
+    target = cost * (1 + config["exit_profit_pct"]) if config.get("exit_profit_pct") is not None else None
+    hold_limit_up = config.get("exit_hold_limit_up") is True
     for row in rows:
         endpoint = row["datetime"]
         available = _available_at(endpoint)
@@ -379,7 +391,11 @@ def _exit(trade: dict, rows: list[dict], facts, options: ExecutionOptions) -> No
         if row["low"] < down - .011 or row["high"] > up + .011:
             _invalidate(trade, "minute_prices_outside_daily_limits")
             return
-        if trade["exit_order_at"] is None and (available.time().replace(tzinfo=None) >= deadline or row["close"] <= threshold):
+        # 与盘中提示同口径: 止损优先; 启用涨停持有时, 收于涨停的分钟暂缓定时与止盈退出。
+        planned = ((available.time().replace(tzinfo=None) >= deadline
+                    or (target is not None and row["close"] >= target))
+                   and not (hold_limit_up and row["close"] >= up - .005))
+        if trade["exit_order_at"] is None and (planned or row["close"] <= threshold):
             if issue := _prefix_issue(rows, endpoint):
                 _invalidate(trade, "minute_window_invalid: " + issue)
                 return
@@ -459,6 +475,20 @@ def _rank_outcomes(rows: list[dict]) -> dict:
             "filled": sum(r.get("entry_at") is not None for r in rows), "worst_net_return": min(closed, default=None)}
 
 
+def _newest_version(items: list, trade=lambda item: item) -> list:
+    """升级当日可能混有新旧优先分; 名次只在同一版本内比较, 旧版本计为未评分。"""
+    versions = {trade(item).get("_priority_version") for item in items} - {None}
+    if len(versions) <= 1:
+        return items
+    newest = max(versions, key=PRIORITY_VERSIONS.index)
+    return [item for item in items if trade(item).get("_priority_version") == newest]
+
+
+def _compared_version(groups: Iterable[list], trade=lambda item: item) -> str:
+    versions = {trade(item).get("_priority_version") for items in groups for item in items} - {None}
+    return max(versions, key=PRIORITY_VERSIONS.index, default=PRIORITY_VERSION)
+
+
 def _priority_day(items: Iterable[dict], key: str) -> list[dict]:
     # Arrival time consumes the available daily slots. A score can only order
     # candidates on the same observation, with the symbol resolving equal scores.
@@ -470,6 +500,7 @@ def _priority_comparison(trades: list[dict], shadows: list[dict]) -> dict:
     for trade in trades:
         if trade["_full_score"] is not None:
             days[trade["date"]].append(trade)
+    days = {day: _newest_version(items) for day, items in days.items()}
     dates = sorted(days)
     cutoff = dates[max(1, int(len(dates) * .7))] if len(dates) >= 2 else None
     groups = []
@@ -489,7 +520,7 @@ def _priority_comparison(trades: list[dict], shadows: list[dict]) -> dict:
                 groups.append({"variant": variant, "top_n": n, "window": window, **_rank_outcomes(picked),
                                "segments": {k: _rank_outcomes(v) for k, v in subsets.items()}})
     scored = sum(map(len, days.values()))
-    return {"version": "priority-v1", "scored": scored, "unscored": len(trades) - scored,
+    return {"version": _compared_version(days.values()), "scored": scored, "unscored": len(trades) - scored,
             "popularity_known": sum(r["_hot_known"] for items in days.values() for r in items),
             "holdout_start": cutoff, "groups": groups, "shadow": _rank_outcomes(shadows)}
 
@@ -596,9 +627,11 @@ def rank_first_alerts(events: Iterable[dict], *, day: date, revision: int, refer
         }
     # Individual evidence coverage differs for legacy alerts. Never convert
     # missing scores to bottom places; compare technical variants on common rows.
-    ranked = {variant: _priority_day((t for t in alerts if t[key] is not None), key)
-              for variant, key in (("change", "_baseline"), ("base", "_base_score"), ("priority", "_full_score"))}
-    technical, _ = _technical_day(complete)
+    scored = _newest_version([t for t in alerts if t["_full_score"] is not None])
+    ranked = {variant: _priority_day((t for t in pool if t[key] is not None), key)
+              for variant, key, pool in (("change", "_baseline", alerts), ("base", "_base_score", scored),
+                                         ("priority", "_full_score", scored))}
+    technical, _ = _technical_day(_newest_version(complete, itemgetter(0)))
     ranked.update({("technical_baseline" if variant == "baseline" else variant): items
                    for variant, items in technical.items()})
     for variant, items in ranked.items():
@@ -651,6 +684,7 @@ def _technical_comparison(trades: list[dict]) -> dict:
         macd_known += macd is not None
         if ma is not None and macd is not None:
             days[trade["date"]].append((trade, ma, macd))
+    days = {day: _newest_version(items, itemgetter(0)) for day, items in days.items()}
     dates = sorted(days)
     cutoff = dates[max(1, int(len(dates) * .7))] if len(dates) >= 2 else None
     ranked = {day: _technical_day(items) for day, items in days.items()}
@@ -666,7 +700,8 @@ def _technical_comparison(trades: list[dict]) -> dict:
                 groups.append({"variant": variant, "window": window, "top_n": n, **_technical_outcomes(day_picks),
                                "by_pattern": {p: _technical_outcomes(day_picks, p) for p in TECHNICAL_PATTERNS}})
     scored = sum(map(len, days.values()))
-    return {"version": TECHNICAL_VERSION, "baseline": "priority-v1", "score_tolerance": SCORE_TOLERANCE,
+    return {"version": TECHNICAL_VERSION, "baseline": _compared_version(days.values(), itemgetter(0)),
+            "score_tolerance": SCORE_TOLERANCE,
             "eligible": len(trades), "priority_known": priority_known, "ma_known": ma_known,
             "macd_known": macd_known, "scored": scored, "unscored": len(trades) - scored,
             "holdout_start": cutoff, "groups": groups}

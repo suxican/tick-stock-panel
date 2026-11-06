@@ -29,9 +29,10 @@ function config(): FirstBoardConfig {
   return { schema_version: 1, revision: 1, updated_at: '2026-09-30T09:30:00+08:00', enabled: true, notify: true, require_sector_confirmation: true,
     allowed_market_states: ['strong', 'lean_strong', 'range'], max_quote_age_seconds: 30, paper_account_id: 'test', max_positions: 4,
     max_stock_weight: .25, max_sector_weight: .5, total_exposure: .5, exit_time: '10:30', exit_loss_pct: .03,
+    exit_profit_pct: null, exit_hold_limit_up: false, feedback_gate: false, feedback_min_mean_change: 0, feedback_min_up_ratio: .5,
     rules: { universe: 'main_board_non_st', lookback_days: 10, enabled_patterns: ['platform', 'trend', 'oversold'], min_history_days: 60,
       platform_window: 20, platform_max_range: .18, platform_near_high: .08, trend_window: 20, trend_min_return: .03,
-      trend_max_return: .4, oversold_window: 60, oversold_min_drawdown: .25, approaching_distance: .03, min_change_pct: .05,
+      trend_max_return: .4, oversold_window: 60, oversold_min_drawdown: .25, approaching_distance: .03, approaching_distance_20cm: .03, min_change_pct: .05,
       min_turnover_rate: 2, max_turnover_rate: 30, min_amount: 50_000_000 } }
 }
 function snapshot(): FirstBoardSnapshot {
@@ -246,6 +247,24 @@ it('ranks actionable scores first and shows only historical evidence after close
   await click('刷新')
   expect(host.querySelector('[data-priority-cell]')?.textContent).toContain('最近信号评分')
   expect(host.querySelector('[data-priority-cell] strong')).toBeNull()
+})
+it('ranks priority-v2 scores like earlier versions and leaves unknown versions unscored', async () => {
+  const score: NonNullable<FirstBoardCandidate['priority_score']> = {
+    version: 'priority-v2', status: 'ready', score: 76, known_max: 100, can_buy: true, role: 'unknown', reason: '当时行情', primary_sector: null,
+    parts: { stock: { points: 30, max_points: 40, reason: '距涨停 1.00%（10/15），量比 3.00（15/15），首次临板为开盘后 15 分钟（5/10）' } },
+  }
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [
+    candidate('A', { priority_score: { ...score, version: 'priority-v9', score: 99 } }), candidate('B', { priority_score: score }),
+  ] })
+  await render()
+  expect(candidateNames()).toEqual(['B', 'A'])
+  const rows = host.querySelectorAll('table[aria-label="首板实时候选"] tbody tr')
+  expect(rows[1].textContent).toContain('暂无评分')
+  const cell = rows[0].querySelector('[data-priority-cell]')!
+  expect(cell.textContent).toContain('76 分')
+  await act(async () => { const detail = cell.querySelector('details')!; detail.open = true; detail.dispatchEvent(new Event('toggle')) })
+  expect(cell.textContent).toContain('个股量价　30 / 40')
+  expect(cell.textContent).toContain('量比 3.00（15/15）')
 })
 async function toggleFocus(name: string, symbol: string, focused = false) {
   const control = host.querySelector<HTMLButtonElement>(`button[aria-label="${focused ? '取消关注' : '特别关注'} ${name} ${symbol}"]`)
@@ -965,6 +984,49 @@ it('converts displayed percentages and 万元 to exact backend units before savi
   expect(saved.rules.min_amount).toBe(60_000_000)
   expect(saved.rules.min_turnover_rate).toBe(2)
   expect(saved.revision).toBe(1)
+})
+async function toggle(label: string) {
+  const input = [...host.querySelectorAll('label')].find(item => item.textContent?.includes(label))!.querySelector('input')!
+  await act(async () => input.click())
+  await settle()
+}
+it('saves the 20% threshold, feedback gate and optional exits in backend units', async () => {
+  await render('rules')
+  expect(host.textContent).not.toContain('昨日首板今日平均涨幅下限')
+  await numberInput('20% 涨跌幅股票距涨停价最多', '5')
+  await toggle('要求昨日首板反馈达标')
+  expect(host.textContent).toContain('样本少于 10 只')
+  await numberInput('昨日首板今日平均涨幅下限', '-1')
+  await numberInput('昨日首板今日上涨占比下限', '60')
+  await numberInput('盈利退出提示阈值', '5')
+  await toggle('涨停时暂缓定时与盈利退出')
+  await click('保存为新版本')
+  const saved = calls.firstBoardSaveConfig.mock.calls[0][0]
+  expect(saved.rules).toMatchObject({ approaching_distance: .03, approaching_distance_20cm: .05 })
+  expect(saved).toMatchObject({ feedback_gate: true, feedback_min_mean_change: -.01, feedback_min_up_ratio: .6, exit_profit_pct: .05, exit_hold_limit_up: true })
+})
+it('clears an existing take-profit exit and hides feedback thresholds once the gate is off', async () => {
+  calls.firstBoardConfig.mockResolvedValue({ ...config(), feedback_gate: true, feedback_min_mean_change: .01, exit_profit_pct: .05 })
+  await render('rules')
+  const takeProfit = [...host.querySelectorAll('label')].find(item => item.textContent?.includes('盈利退出提示阈值'))!.querySelector('input')!
+  expect(takeProfit.value).toBe('5')
+  await numberInput('盈利退出提示阈值', '')
+  expect(takeProfit.value).toBe('')
+  await toggle('要求昨日首板反馈达标')
+  expect(host.textContent).not.toContain('昨日首板今日平均涨幅下限')
+  await click('保存为新版本')
+  expect(calls.firstBoardSaveConfig.mock.calls[0][0]).toMatchObject({ exit_profit_pct: null, feedback_gate: false, feedback_min_mean_change: .01 })
+})
+it('polls the snapshot every 5 seconds only for live monitoring or same-day signals', async () => {
+  const intervals = () => client.getQueryCache().find({ queryKey: QK.firstBoardSnapshot })?.observers.map(item => item.options.refetchInterval)
+  await render('rules')
+  expect(intervals()).toEqual([30000])
+  await click('今日盯盘')
+  expect(intervals()).toEqual([5000])
+  await click('信号记录')
+  expect(intervals()).toEqual([5000])
+  await numberInput('交易日期', '2020-01-02')
+  expect(intervals()).toEqual([30000])
 })
 it('preserves a rejected draft and offers reload after optimistic-concurrency conflict', async () => {
   await render('rules')

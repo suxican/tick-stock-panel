@@ -8,7 +8,8 @@ const groups: { title: string; fields: Field[] }[] = [
   { title: '候选范围与实时确认', fields: [
     { key: 'lookback_days', label: '最近无收盘涨停的交易日数', min: 1, max: 60 },
     { key: 'min_history_days', label: '最少历史交易日数', min: 20, max: 250 },
-    { key: 'approaching_distance', label: '距涨停价最多（%）', min: 0, max: 10, step: 0.1, scale: 100 },
+    { key: 'approaching_distance', label: '10% 涨跌幅股票距涨停价最多（%）', min: 0, max: 10, step: 0.1, scale: 100 },
+    { key: 'approaching_distance_20cm', label: '20% 涨跌幅股票距涨停价最多（%）', min: 0, max: 20, step: 0.1, scale: 100 },
     { key: 'min_change_pct', label: '盘中最低涨幅（%）', min: 0, max: 20, step: 0.1, scale: 100 },
     { key: 'min_turnover_rate', label: '最低换手率（%）', min: 0, max: 100, step: 0.1 },
     { key: 'max_turnover_rate', label: '最高换手率（%）', min: 0.1, max: 100, step: 0.1 },
@@ -49,7 +50,7 @@ export function RulesPanel({ config, draft, onDraft, onSave, versions, accounts,
     if (Number.isFinite(value)) onDraft({ ...draft, rules: { ...draft.rules, [key]: value } })
   }
   function submit(event: FormEvent) { event.preventDefault(); if (!invalid) onSave() }
-  const configNumber = (key: 'max_positions' | 'max_quote_age_seconds' | 'max_stock_weight' | 'max_sector_weight' | 'total_exposure' | 'exit_loss_pct', label: string, min: number, max: number, scale = 1) =>
+  const configNumber = (key: 'max_positions' | 'max_quote_age_seconds' | 'max_stock_weight' | 'max_sector_weight' | 'total_exposure' | 'exit_loss_pct' | 'feedback_min_mean_change' | 'feedback_min_up_ratio', label: string, min: number, max: number, scale = 1) =>
     <label className="space-y-1.5 text-xs text-secondary" key={key}><span>{label}</span><input className={inputClass} type="number" required min={min} max={max} step={scale === 100 ? 0.1 : 1} value={Number((draft[key] * scale).toFixed(4))} onChange={e => { if (Number.isFinite(e.target.valueAsNumber)) onDraft({ ...draft, [key]: e.target.valueAsNumber / scale }) }} /></label>
 
   return <div className="space-y-4">
@@ -64,8 +65,16 @@ export function RulesPanel({ config, draft, onDraft, onSave, versions, accounts,
           <label className="flex items-center gap-2"><input type="checkbox" checked={draft.enabled} onChange={e => onDraft({ ...draft, enabled: e.target.checked })} />开启自动盯盘</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={draft.notify} onChange={e => onDraft({ ...draft, notify: e.target.checked })} />发送信号通知</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={draft.require_sector_confirmation} onChange={e => onDraft({ ...draft, require_sector_confirmation: e.target.checked })} />要求行业联动确认</label>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={draft.feedback_gate} onChange={e => onDraft({ ...draft, feedback_gate: e.target.checked })} />要求昨日首板反馈达标</label>
         </div>
         <p className="max-w-prose text-xs leading-relaxed text-secondary">行业联动采用实验判据：至少 3 只有效成员、其中至少 2 只涨幅达 5%，行业平均涨幅至少 1%。它用于辅助确认，不能等同完整题材主线。</p>
+        {draft.feedback_gate && <div className="space-y-3">
+          <p className="max-w-prose text-xs leading-relaxed text-secondary">昨日首板今日整体表现须达到下限才提示买入；样本少于 10 只、行情覆盖不足 80% 或不是当日盘中实测时，同样暂停提示。</p>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {configNumber('feedback_min_mean_change', '昨日首板今日平均涨幅下限（%）', -20, 20, 100)}
+            {configNumber('feedback_min_up_ratio', '昨日首板今日上涨占比下限（%）', 0, 100, 100)}
+          </div>
+        </div>}
         <fieldset className="space-y-2"><legend className="mb-2 text-xs text-secondary">允许提示买入的市场环境</legend><div className="flex flex-wrap gap-x-5 gap-y-2 text-sm">{marketStates.map(item => <label key={item.value} className="flex items-center gap-2"><input type="checkbox" checked={draft.allowed_market_states.includes(item.value)} onChange={e => onDraft({ ...draft, allowed_market_states: e.target.checked ? [...draft.allowed_market_states, item.value] : draft.allowed_market_states.filter(value => value !== item.value) })} />{item.label}</label>)}</div></fieldset>
         <fieldset className="space-y-2"><legend className="mb-2 text-xs text-secondary">启用形态</legend><div className="flex flex-wrap gap-x-5 gap-y-2 text-sm">{(Object.keys(patternLabels) as (keyof typeof patternLabels)[]).map(pattern => <label key={pattern} className="flex items-center gap-2"><input type="checkbox" checked={draft.rules.enabled_patterns.includes(pattern)} onChange={e => onDraft({ ...draft, rules: { ...draft.rules, enabled_patterns: e.target.checked ? [...draft.rules.enabled_patterns, pattern] : draft.rules.enabled_patterns.filter(value => value !== pattern) } })} />{patternLabels[pattern]}</label>)}</div></fieldset>
       </fieldset>
@@ -82,6 +91,8 @@ export function RulesPanel({ config, draft, onDraft, onSave, versions, accounts,
           {configNumber('total_exposure', '总仓位上限（%）', 0.1, 100, 100)}
           <label className="space-y-1.5 text-xs text-secondary"><span>次日退出检查时间（北京时间）</span><input type="time" required className={inputClass} value={draft.exit_time} onChange={e => onDraft({ ...draft, exit_time: e.target.value })} /></label>
           {configNumber('exit_loss_pct', '亏损退出提示阈值（%）', 0.1, 20, 100)}
+          <label className="space-y-1.5 text-xs text-secondary"><span>盈利退出提示阈值（%，留空不启用）</span><input className={inputClass} type="number" min={0.1} max={50} step={0.1} value={draft.exit_profit_pct == null ? '' : Number((draft.exit_profit_pct * 100).toFixed(4))} onChange={e => { if (!e.target.value) onDraft({ ...draft, exit_profit_pct: null }); else if (Number.isFinite(e.target.valueAsNumber)) onDraft({ ...draft, exit_profit_pct: e.target.valueAsNumber / 100 }) }} /></label>
+          <label className="flex items-center gap-2 self-end text-sm"><input type="checkbox" checked={draft.exit_hold_limit_up} onChange={e => onDraft({ ...draft, exit_hold_limit_up: e.target.checked })} />涨停时暂缓定时与盈利退出</label>
         </div>
         <a href="/paper" className="inline-block text-xs text-accent underline underline-offset-2">管理模拟账户</a>
       </fieldset>

@@ -208,9 +208,14 @@ def _remaining_cost_lots(fills: list[dict], position: dict, day: str) -> list[di
 
 def exit_candidates(
     data_dir: Path, account_id: str | None, prices: dict[str, float], *, now: datetime,
-    exit_time: str = "10:30", exit_loss_pct: float = 0.03,
+    exit_time: str = "10:30", exit_loss_pct: float = 0.03, exit_profit_pct: float | None = None,
+    limit_prices: dict[str, float] | None = None,
 ) -> list[dict]:
-    """仅提示与首板买单关联且 T+1 可卖的持仓; 止损按未被待卖占用的批次成本。"""
+    """仅提示与首板买单关联且 T+1 可卖的持仓; 止损/止盈按未被待卖占用的批次成本。
+
+    limit_prices 为涨停判定价时启用涨停持有: 价格不低于判定价时暂缓定时与止盈退出,
+    止损不受影响; 缺少判定价无法确认涨停, 按原规则提示。
+    """
     if not account_id:
         return []
     local_now = now.astimezone(CN_TZ) if now.tzinfo else now.replace(tzinfo=CN_TZ)
@@ -219,7 +224,9 @@ def exit_candidates(
     except (TypeError, ValueError):
         return []
     loss_limit = _number(exit_loss_pct, positive=True)
-    if loss_limit is None or loss_limit >= 1 or deadline.tzinfo is not None:
+    profit_limit = _number(exit_profit_pct, positive=True) if exit_profit_pct is not None else None
+    if (loss_limit is None or loss_limit >= 1 or deadline.tzinfo is not None
+            or (exit_profit_pct is not None and profit_limit is None)):
         return []
     day = local_now.date().isoformat()
     with paper.PAPER_LOCK:
@@ -272,17 +279,21 @@ def exit_candidates(
                     quantity = lot["qty"] - occupied
                     linked += quantity
                     cost += quantity * lot["unit_cost"]
-                available = min(int(linked), paper._available_of(position, day) - pending_sells[symbol])
+                available = min(int(linked), paper.available_qty(position, day) - pending_sells[symbol])
                 if available <= 0:
                     continue
                 average = cost / linked
                 if not math.isfinite(average) or average <= 0:
                     continue
                 loss = price <= average * (1 - loss_limit) + 1e-9
-                if not loss and local_now.time() < deadline:
+                profit = profit_limit is not None and price >= average * (1 + profit_limit) - 1e-9
+                limit = (limit_prices or {}).get(symbol)
+                sealed = limit is not None and price >= limit
+                if not loss and (sealed or (not profit and local_now.time() < deadline)):
                     continue
                 result.append({"account_id": account_id, "symbol": symbol, "qty": available,
                                "price": price, "reason": "达到实验止损门槛, 待人工确认退出" if loss
+                               else "达到实验止盈门槛, 待人工确认退出" if profit
                                else "已到次日退出时间, 待人工确认退出"})
             return result
         except (ValueError, TypeError, KeyError, OSError, OverflowError):

@@ -27,12 +27,11 @@ _SHADOW_TYPE = pl.Struct({
 
 def _sessions(as_of: date) -> list[date]:
     start = as_of - timedelta(days=240)
-    with data_integrity._CAL_LOCK:
-        calendar = data_integrity._CAL[1]
-        if calendar and min(calendar) <= start and as_of <= max(calendar):
-            if as_of not in calendar:
-                return []
-            return sorted(d for d in calendar if d < as_of)[-MACD_SESSIONS:]
+    calendar = data_integrity.cached_trading_calendar()
+    if calendar and min(calendar) <= start and as_of <= max(calendar):
+        if as_of not in calendar:
+            return []
+        return sorted(d for d in calendar if d < as_of)[-MACD_SESSIONS:]
     days = load_market_calendar(BUNDLED_CALENDAR_PATH, start=start, end=as_of)
     return days[:-1][-MACD_SESSIONS:] if days and days[-1] == as_of else []
 

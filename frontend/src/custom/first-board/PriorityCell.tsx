@@ -8,6 +8,8 @@ const statusLabels: Record<FirstBoardPriorityStatus, string> = {
 }
 const roleLabels = { leader: '板内领涨', follower: '跟随走强', ordinary: '一般成员', unknown: '角色待确认' }
 const partLabels = { stock: '个股量价', sector: '板块强度', timing: '分时确认', popularity: '个股人气' } as const
+/** 归档信号仍保留旧版评分；新版本追加在末尾。 */
+export const priorityVersions = ['priority-v1', 'priority-v2']
 export const priorityFilters = { all: '全部候选', actionable: '可提示有分', concept: '强概念／题材成员', industry: '强行业成员', watch: '观察有分', shadow: '强板块影子候选', incomplete: '有分但缺证据' } as const
 export type PriorityFilter = keyof typeof priorityFilters
 
@@ -51,7 +53,7 @@ export function strongBoards(row: FirstBoardCandidate, kind: 'industry' | 'conce
 
 export function currentPriority(row: Pick<FirstBoardCandidate, 'priority_score'>, current: boolean) {
   const p = row.priority_score
-  return current && p?.version === 'priority-v1' && ['ready', 'partial', 'watch', 'shadow'].includes(p.status)
+  return current && !!p && priorityVersions.includes(p.version) && ['ready', 'partial', 'watch', 'shadow'].includes(p.status)
     && typeof p.score === 'number' && Number.isFinite(p.score) ? p.score : null
 }
 
@@ -71,7 +73,7 @@ export function PriorityCell({ row, current, archived = false }: {
   const p = row.priority_score
   const previous = row.last_priority
   const score = currentPriority(row, current)
-  if (!p || p.version !== 'priority-v1') return <span className="text-secondary">暂无评分</span>
+  if (!p || !priorityVersions.includes(p.version)) return <span className="text-secondary">暂无评分</span>
   const status = current ? statusLabels[p.status] : '非当前评分'
   const group = p.primary_sector
   const popularity = p.radar?.popularity

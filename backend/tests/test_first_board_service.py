@@ -136,6 +136,57 @@ def test_minimum_change_config_refresh_and_restart(service, monkeypatch):
     assert service.snapshot()["coverage"]["candidate_count"] == 1
 
 
+def test_feedback_gate_is_optional_and_needs_measured_feedback(service, monkeypatch):
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    row = service.snapshot()["rows"][0]
+    assert row["can_buy"] and "feedback_gate" not in row["evidence"]
+    service.save_config({**service.get_config(), "feedback_gate": True})
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    row = service.snapshot()["rows"][0]
+    assert not row["can_buy"] and not row["evidence"]["feedback_gate"]["allowed"]
+    assert any("昨日首板反馈" in reason for reason in row["blocked_reasons"])
+    summary = {"sample_count": 12, "coverage": 1., "mean_change_pct": .02, "up_ratio": .6, "small_sample": False}
+    feedback = {"status": "ready", "quote_mode": "live", "as_of": str(NOW.date()), "groups": {"all": summary}}
+    monkeypatch.setattr(service._feedback, "evaluate", lambda *args, **kwargs: json.loads(json.dumps(feedback)))
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    assert service.snapshot()["rows"][0]["can_buy"]
+    summary["up_ratio"] = .4
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    row = service.snapshot()["rows"][0]
+    assert not row["can_buy"] and any("未达到反馈门槛" in reason for reason in row["blocked_reasons"])
+
+
+@pytest.mark.parametrize("change", [
+    {"status": "stale"}, {"quote_mode": "snapshot"}, {"as_of": "2026-10-15"},
+    {"small_sample": True}, {"coverage": .5}, {"mean_change_pct": None},
+])
+def test_feedback_gate_fails_closed_without_same_day_live_sample(change):
+    summary = {"sample_count": 12, "coverage": 1., "mean_change_pct": .02, "up_ratio": .6, "small_sample": False}
+    feedback = {"status": "ready", "quote_mode": "live", "as_of": str(NOW.date()), "groups": {"all": summary}}
+    config = fb.FirstBoardConfig(feedback_gate=True)
+    assert fb._feedback_gate(feedback, config, NOW.date())["allowed"]
+    for key, value in change.items():
+        (feedback if key in feedback else summary)[key] = value
+    gate = fb._feedback_gate(feedback, config, NOW.date())
+    assert not gate["allowed"] and "无法确认" in gate["reason"]
+    assert fb._feedback_gate(feedback, fb.FirstBoardConfig(), NOW.date()) is None
+
+
+def test_first_approach_time_survives_restart_and_feeds_priority(service, monkeypatch):
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    assert service.snapshot()["rows"][0]["evidence"]["first_approach_at"] == NOW.isoformat()
+    later = NOW + timedelta(minutes=20)
+    monkeypatch.setattr(fb, "_now", lambda: later)
+    reopened = fb.FirstBoardService(service.repo, history_loader=lambda *_: pl.DataFrame())
+    monkeypatch.setattr(reopened, "_prepare", lambda *_: None)
+    reopened._candidates, reopened._environment = service._candidates, service._environment
+    reopened._sectors = service._sectors
+    reopened.process_snapshot(quotes(now=later), later.date(), now=later)
+    row = reopened.snapshot()["rows"][0]
+    assert row["evidence"]["first_approach_at"] == NOW.isoformat()
+    assert "首次临板为开盘后 30 分钟" in row["priority_score"]["parts"]["stock"]["reason"]
+
+
 def test_falling_below_minimum_leaves_pool_and_reentry_has_a_new_signal(service):
     service.process_snapshot(quotes(), NOW.date(), now=NOW)
     first_id = service.snapshot()["rows"][0]["event_id"]
@@ -377,6 +428,64 @@ def test_worker_stops_without_blocking_process(service):
     thread = service._thread
     service.stop()
     assert thread is not None and not thread.is_alive()
+
+
+def test_snapshot_reads_only_refresh_without_recent_evaluation(service, monkeypatch):
+    clock = [fb.time.monotonic() + 100]
+    monkeypatch.setattr(fb.time, "monotonic", lambda: clock[0])
+
+    def passive_read() -> bool:
+        service._refresh_requested = service._force_refresh_requested = False
+        service.request_refresh()
+        return service._refresh_requested
+
+    assert passive_read()  # 尚未评估过: 页面读取需要补算
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    clock[0] += 10
+    assert not passive_read()  # 刚由行情投递完成评估, 读取不再重复计算
+    clock[0] += fb._PASSIVE_REFRESH_SECONDS
+    assert passive_read()  # 盘后长时间无投递时低频补算
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    clock[0] += 10
+    service.request_refresh(force=True)
+    assert service._refresh_requested and service._force_refresh_requested
+    other = fb.FirstBoardService(service.repo, history_loader=lambda *_: pl.DataFrame())
+    other.save_config({**other.get_config(), "notify": False})
+    clock[0] += 10
+    service.get_config()  # 其他实例保存新版本后快照清空, 下一次读取须立即补算
+    assert passive_read()
+
+
+def test_returned_snapshot_and_events_are_isolated_copies(service):
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    snapshot = service.snapshot()
+    snapshot["rows"][0]["attention_context"]["reasons"].append("调用方修改")
+    snapshot["rows"][0]["evidence"]["environment"]["allowed"] = False
+    events = service.events(NOW.date())
+    events[0]["evidence"]["environment"]["allowed"] = False
+    again = service.snapshot()["rows"][0]
+    assert "调用方修改" not in again["attention_context"]["reasons"]
+    assert again["evidence"]["environment"]["allowed"] is True
+    assert service.events(NOW.date())[0]["evidence"]["environment"]["allowed"] is True
+
+
+def test_multi_pattern_rows_share_consistent_context_expiry(service, monkeypatch):
+    prepare = service._prepare
+
+    def prepare_patterns(*args):
+        prepare(*args)
+        candidate = service._candidates.to_dicts()[0]
+        service._candidates = pl.DataFrame([{**candidate, "pattern": p} for p in ("platform", "trend")])
+
+    monkeypatch.setattr(service, "_prepare", prepare_patterns)
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    monkeypatch.setattr(fb, "_now", lambda: NOW + timedelta(seconds=31))
+    rows = service.snapshot()["rows"]
+    assert len(rows) == 2
+    for row in rows:
+        assert row["attention_context"]["status"] == "stale"
+        assert row["attention_context"]["reasons"].count("行情已过期或当前不在有效观察时段") == 1
+        assert not row["can_buy"]
 
 
 def test_simulated_order_uses_live_event_and_prevents_duplicates(service):

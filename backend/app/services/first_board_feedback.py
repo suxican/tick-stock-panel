@@ -160,9 +160,7 @@ class FirstBoardFeedback:
                 raise ValueError("缺少前三个交易日的独立指数日线，无法确认昨日首板")
             from app.services import data_integrity
 
-            with data_integrity._CAL_LOCK:
-                cached = data_integrity._CAL[1]
-                calendar = sorted(cached) if cached else []
+            calendar = sorted(data_integrity.cached_trading_calendar() or ())
             if (calendar and calendar[0] <= as_of <= calendar[-1]
                     and (as_of not in calendar or [day for day in calendar if day < as_of][-3:] != sessions)):
                 raise ValueError("指数历史与已缓存交易日历不一致，请补齐历史数据")

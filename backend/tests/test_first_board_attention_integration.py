@@ -249,7 +249,7 @@ def test_priority_is_frozen_with_signal_and_sample_and_expires_on_read(rig, monk
     rig.svc.process_snapshot(quotes(), NOW.date(), now=NOW)
     row = rig.svc.snapshot()["rows"][0]
     score = row["priority_score"]
-    assert score["version"] == "priority-v1" and score["score"] is not None
+    assert score["version"] == "priority-v2" and score["score"] is not None
     assert score["can_buy"] and score["parts"]["popularity"]["points"] is None
     assert rig.svc.events(NOW.date())[0]["evidence"]["priority_score"]["version"] == score["version"]
     assert samples(rig)[0]["rows"][0]["candidates"][0]["priority_score"]["score"] == score["score"]

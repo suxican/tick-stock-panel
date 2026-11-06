@@ -140,7 +140,7 @@ class _PriorityGroup(_PriorityOutcomes):
 
 
 class _PriorityComparison(_Contract):
-    version: Literal["priority-v1"]
+    version: Literal["priority-v1", "priority-v2"]
     scored: Count
     unscored: Count
     popularity_known: Count
@@ -182,7 +182,7 @@ class _TechnicalGroup(_TechnicalOutcomes):
 
 class _TechnicalComparison(_Contract):
     version: Literal["ma-macd-shadow-v1"]
-    baseline: Literal["priority-v1"]
+    baseline: Literal["priority-v1", "priority-v2"]
     score_tolerance: Literal[2.0]
     eligible: Count
     priority_known: Count

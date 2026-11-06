@@ -417,6 +417,13 @@ def _trading_calendar() -> set[date] | None:
         return _CAL[1]
 
 
+def cached_trading_calendar() -> frozenset[date] | None:
+    """只读最近一次取得的交易日集合, 不触发远程探测; 从未取到过时为 None。"""
+    with _CAL_LOCK:
+        cached = _CAL[1]
+        return frozenset(cached) if cached else None
+
+
 def scan_recent_integrity(
     data_dir: Path,
     *,

@@ -6170,6 +6170,8 @@ export interface FirstBoardRules {
   oversold_window: number
   oversold_min_drawdown: number
   approaching_distance: number
+  /** 20% 涨跌幅限制股票(创业板注册制后、科创板)的距涨停门槛。 */
+  approaching_distance_20cm: number
   min_change_pct: number
   /** enriched 百分数值: 2 表示 2%, 与 change_pct 的小数制不同。 */
   min_turnover_rate: number
@@ -6193,6 +6195,12 @@ export interface FirstBoardConfig {
   total_exposure: number
   exit_time: string
   exit_loss_pct: number
+  /** null 表示不启用止盈提示。 */
+  exit_profit_pct: number | null
+  exit_hold_limit_up: boolean
+  feedback_gate: boolean
+  feedback_min_mean_change: number
+  feedback_min_up_ratio: number
 }
 export interface FirstBoardAttentionGroup {
   id: string

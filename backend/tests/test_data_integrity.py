@@ -769,6 +769,21 @@ def test_calendar_fetch_failure_serves_last_known(monkeypatch):
     assert _trading_calendar() == _CAL_FAKE_2026_09
 
 
+def test_cached_calendar_reader_never_probes_remote(monkeypatch):
+    """只读缓存的公开入口: 过期或从未取到时都不触发 fuyao 探测。"""
+    def _probe(name):
+        raise AssertionError("cached reader must not probe providers")
+
+    monkeypatch.setattr(app.data_providers, "custom",
+                        SimpleNamespace(is_custom_provider=_probe, get_provider=_probe))
+    assert di.cached_trading_calendar() is None
+    di._CAL = (0.0, set(_CAL_FAKE_2026_09))  # TTL 已过仍只返回已缓存结果
+    cached = di.cached_trading_calendar()
+    assert cached == frozenset(_CAL_FAKE_2026_09)
+    di._CAL[1].add(date(2026, 9, 25))
+    assert date(2026, 9, 25) not in cached
+
+
 def test_scan_no_false_missing_when_etf_lags_over_holiday(tmp_path, monkeypatch):
     """端到端: ETF 表停在休市前最后一个交易日 + 日历可用 → 扫描不误报 missing。"""
     _patch_fuyao_calendar(monkeypatch, _CAL_FAKE_2026_09)
