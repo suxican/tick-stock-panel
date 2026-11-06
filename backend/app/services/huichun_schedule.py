@@ -6,7 +6,7 @@ import logging
 import threading
 from collections.abc import Callable, Iterable
 from contextlib import nullcontext
-from datetime import date, datetime
+from datetime import date, datetime, time
 
 from app.market_time import CN_TZ, cn_now
 from app.services.data_integrity import CLOSE_CUTOFF
@@ -39,7 +39,7 @@ class HuichunArchiveSchedule:
     """Coalesce pipeline wakes on a single worker. No thread while idle."""
 
     def __init__(
-        self, service, *, repair: Callable[[date, Callable[[int, int], None]], None],
+        self, service, *, repair: Callable[[date, Callable[[int, int], None]], str | None],
         retry_delays=(60, 180, 600),
     ):
         self.service = service
@@ -80,9 +80,21 @@ class HuichunArchiveSchedule:
                 day, self._pending = self._pending, None
             self._attempts(day)
 
+    def _retry_windows(self, day: date):
+        yield from (0, *self._delays)
+        # The close pipeline can remain busy beyond the short backoff. Keep two
+        # bounded chances later today; a missed day must stay a historical backfill.
+        for hour in (18, 20):
+            now = cn_now()
+            if now.date() != day:
+                return
+            delay = (datetime.combine(day, time(hour), CN_TZ) - now).total_seconds()
+            if delay > 0:
+                yield delay
+
     def _attempts(self, day: date) -> None:
         outcome = "retry"
-        for delay in (0, *self._delays):
+        for delay in self._retry_windows(day):
             with self._condition:
                 if self._condition.wait_for(lambda: self._closed or self._pending is not None, timeout=delay):
                     return
@@ -90,7 +102,8 @@ class HuichunArchiveSchedule:
                 return
             try:
                 if outcome == "waiting":
-                    self.repair(day, self._check_running)
+                    if self.repair(day, self._check_running) == "busy":
+                        logger.info("回春 %s 定向核准通道占用，等待后续补查", day)
                     self._check_running(0, 0)
                 outcome = self.service.try_auto_archive(day)
                 if outcome in {"done", "skip"}:
@@ -119,7 +132,7 @@ class HuichunArchiveSchedule:
             thread.join(timeout=5)
 
 
-def repair_daily_evidence(service, state, day: date, on_chunk_done=None) -> None:
+def repair_daily_evidence(service, state, day: date, on_chunk_done=None) -> str | None:
     """Re-read only unresolved symbols from the routed daily source. Do not recurse into the pipeline."""
     from app.services import kline_sync
     from app.services.heavy_job_limiter import HeavyJobLimitTimeoutError, shared_heavy_job_limiter
@@ -127,7 +140,7 @@ def repair_daily_evidence(service, state, day: date, on_chunk_done=None) -> None
 
     owner = f"huichun-confirm:{day}"
     if not try_acquire_run_slot(owner):
-        return
+        return "busy"
     try:
         with shared_heavy_job_limiter.slot("exclusive", timeout=0):
             if cn_now().date() != day:
@@ -141,6 +154,6 @@ def repair_daily_evidence(service, state, day: date, on_chunk_done=None) -> None
                     )
     except HeavyJobLimitTimeoutError:
         # A user-initiated write or rebuild takes priority over this bounded retry.
-        return
+        return "busy"
     finally:
         release_run_slot(owner)

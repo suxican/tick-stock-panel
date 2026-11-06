@@ -1,7 +1,7 @@
 import asyncio
 import threading
 from contextlib import contextmanager, nullcontext
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from functools import partial
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -82,6 +82,106 @@ def test_schedule_coalesces_same_job_and_can_stop_a_retry(monkeypatch):
     repair.assert_not_called()
 
 
+def retry_clock(monkeypatch, schedule, *, start=NOW, interrupt=None):
+    from app.services import huichun_schedule as module
+
+    clock = [start]
+    monkeypatch.setattr(module, "cn_now", lambda: clock[0])
+
+    def wait_for(predicate, timeout):
+        if timeout > 600 and interrupt:
+            interrupt(schedule, clock)
+        else:
+            clock[0] += timedelta(seconds=timeout)
+        return predicate()
+
+    monkeypatch.setattr(schedule._condition, "wait_for", wait_for)
+    return clock
+
+
+def test_evening_recheck_repairs_and_archives_after_short_retries_exhausted(monkeypatch, caplog):
+    service, repair = Mock(), Mock()
+    repair.side_effect = ["busy", "busy", "busy", None]
+    schedule = HuichunArchiveSchedule(service, repair=repair)
+    clock = retry_clock(monkeypatch, schedule)
+    attempted = []
+
+    def archive(day):
+        assert day == DAY
+        attempted.append(clock[0])
+        return "done" if clock[0].hour >= 18 else "waiting"
+
+    service.try_auto_archive.side_effect = archive
+    with caplog.at_level("INFO"):
+        schedule._attempts(DAY)
+    assert [stamp.strftime("%H:%M") for stamp in attempted] == ["16:00", "16:01", "16:04", "16:14", "18:00"]
+    assert repair.call_count == 4
+    assert all(call.args[0] == DAY for call in repair.call_args_list)
+    assert sum("核准通道占用" in record.message for record in caplog.records) == 3
+    service.record_daily_waiting.assert_not_called()
+
+
+@pytest.mark.parametrize("start,expected", [(NOW, 6), (NOW.replace(hour=21), 4)])
+def test_evening_rechecks_are_bounded_and_do_not_replay_past_times(monkeypatch, start, expected):
+    service, repair = Mock(), Mock()
+    service.try_auto_archive.return_value = "waiting"
+    schedule = HuichunArchiveSchedule(service, repair=repair)
+    clock = retry_clock(monkeypatch, schedule, start=start)
+    schedule._attempts(DAY)
+    assert service.try_auto_archive.call_count == expected
+    assert repair.call_count == expected - 1
+    assert clock[0].date() == DAY
+
+
+@pytest.mark.parametrize("interruption", ["close", "new_receipt", "next_day"])
+def test_evening_wait_stops_on_shutdown_superseding_receipt_or_next_day(monkeypatch, interruption):
+    service, repair = Mock(), Mock()
+    service.try_auto_archive.return_value = "waiting"
+    schedule = HuichunArchiveSchedule(service, repair=repair)
+
+    def interrupt(schedule, clock):
+        if interruption == "close":
+            schedule._closed = True
+        elif interruption == "new_receipt":
+            schedule._pending = DAY
+        else:
+            clock[0] += timedelta(days=1)
+
+    retry_clock(monkeypatch, schedule, interrupt=interrupt)
+    schedule._attempts(DAY)
+    assert service.try_auto_archive.call_count == 4
+    assert repair.call_count == 3
+
+
+def test_evening_provider_failures_remain_bounded_and_report_failure(monkeypatch):
+    service, repair = Mock(), Mock(side_effect=ValueError("provider unavailable"))
+    service.try_auto_archive.return_value = "waiting"
+    schedule = HuichunArchiveSchedule(service, repair=repair)
+    retry_clock(monkeypatch, schedule)
+    schedule._attempts(DAY)
+    assert repair.call_count == 5
+    assert service.record_daily_waiting.call_count == 5
+    service.try_auto_archive.assert_called_once_with(DAY)
+
+
+def test_close_interrupts_real_evening_wait_without_starting_repair(monkeypatch):
+    from app.services import huichun_schedule as module
+
+    monkeypatch.setattr(module, "cn_now", lambda: NOW)
+    attempted = threading.Event()
+    service, repair = Mock(), Mock()
+    service.try_auto_archive.side_effect = lambda _day: attempted.set() or "waiting"
+    schedule = HuichunArchiveSchedule(service, repair=repair, retry_delays=())
+    try:
+        schedule.offer(job())
+        assert attempted.wait(3)
+        schedule.close()
+        assert schedule._thread is None
+        repair.assert_not_called()
+    finally:
+        schedule.close()
+
+
 @pytest.mark.parametrize("entry", ["scheduled", "manual", "other"])
 @pytest.mark.parametrize("fail", [False, True])
 def test_pipeline_only_offers_success_after_releasing_slot(monkeypatch, entry, fail):
@@ -158,7 +258,7 @@ def test_targeted_repair_uses_only_unconfirmed_symbols_and_releases_write_slot(m
     confirm.assert_called_once_with(state.repo, state.capabilities, DAY, ["600001.SH"], on_chunk_done=None)
     assert pipeline_jobs.try_acquire_run_slot("other-sync")
     try:
-        module.repair_daily_evidence(service, state, DAY)
+        assert module.repair_daily_evidence(service, state, DAY) == "busy"
         assert confirm.call_count == 1
     finally:
         pipeline_jobs.release_run_slot("other-sync")

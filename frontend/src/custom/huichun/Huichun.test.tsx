@@ -203,6 +203,58 @@ it('matches volatility before checking returns and preserves unpriced cases in t
   expect(host.textContent).toContain('1 对可比样本')
 })
 
+it('switches research horizons with separate effective counts and leaves legacy outcomes unknown', async () => {
+  const base = { id: 'new', symbol: '600001.SH', name: '甲', signal_date: '2026-09-30',
+    rules: config().rules, rule_revision: 1, zero_distance: .018, origin: 'forward', board: 'main',
+    cohort: 'confirmed', shape_t5: { status: 'ok', return_pct: .05 },
+    execution: { status: 'unknown_rules', gross_return_pct: null, net_return_pct: null } }
+  calls.huichunResearch.mockResolvedValue({ updated_at: null, limitations: [], records: [
+    { ...base, observations: [{ horizon: 20, status: 'ok', return_pct: .08, mfe_pct: .12, mae_pct: -.04,
+      benchmark_status: 'ok', benchmark_return_pct: .03, excess_return_pct: .05,
+      benchmark_sample_count: 4900, benchmark_universe_count: 5100 }] },
+    { ...base, id: 'legacy', name: '旧样本' },
+  ] })
+  await render('research')
+  const horizon = host.querySelector<HTMLSelectElement>('select[aria-label="研究观察窗口"]')!
+  expect(horizon).not.toBeNull()
+  await act(async () => { horizon.value = '20'; horizon.dispatchEvent(new Event('change', { bubbles: true })) })
+  const summary = host.querySelector('table[aria-label="研究分组统计"] tbody tr')!
+  expect(summary.textContent).toContain('+8.00%')
+  expect(summary.textContent).toContain('+5.00 个百分点')
+  expect(summary.children[2].textContent).toContain('（1）')
+  const rows = host.querySelectorAll('table[aria-label="研究样本明细"] tbody tr')
+  expect(rows[0].textContent).toContain('最大浮盈 +12.00%')
+  expect(rows[0].textContent).toContain('最大浮亏 -4.00%')
+  expect(rows[0].textContent).toContain('4900 / 5100')
+  expect(rows[1].textContent).toContain('待刷新')
+  expect(rows[1].textContent).not.toContain('+5.00%')
+})
+
+it('keeps calendar expiry visible outside collapsed scan history', async () => {
+  calls.huichunDailyRuns.mockResolvedValue({ tracking_since: null, records: [], calendar_status: 'verified',
+    calendar_coverage_end: '2026-12-31', calendar_validity_status: 'expiring', calendar_days_remaining: 20 })
+  await render()
+  const notice = host.querySelector('[role="status"][aria-label="交易日历状态"]')!
+  expect(notice.textContent).toContain('2026-12-31')
+  expect(notice.textContent).toContain('20 天')
+  expect(notice.closest('details')).toBeNull()
+})
+
+it('does not label missing stock excess as calculated when the market benchmark is available', async () => {
+  calls.huichunResearch.mockResolvedValue({ updated_at: null, limitations: [], records: [{
+    id: 'gap', symbol: '600001.SH', name: '缺口样本', signal_date: '2026-09-30', cohort: 'confirmed',
+    origin: 'forward', board: 'main', rules: config().rules, rule_revision: 1, zero_distance: .01,
+    shape_t5: { status: 'unknown_gap', return_pct: null },
+    execution: { status: 'unknown_rules', gross_return_pct: null, net_return_pct: null },
+    observations: [{ horizon: 5, status: 'unknown_gap', return_pct: null, mfe_pct: null, mae_pct: null,
+      benchmark_status: 'ok', benchmark_return_pct: .02, excess_return_pct: null,
+      benchmark_sample_count: 4900, benchmark_universe_count: 5100 }],
+  }] })
+  await render('research')
+  const row = host.querySelector('table[aria-label="研究样本明细"] tbody tr')!
+  expect(row.children[5].textContent).toBe('行情缺失')
+})
+
 it('shows unavailable conversion separately from a resolved zero conversion rate', async () => {
   const state = observationSnapshot([])
   state.scan!.watch_conversion = [
@@ -225,7 +277,9 @@ it('keeps current ST warnings separate from historical eligibility and explains 
   await render()
   expect(candidateRows()).toHaveLength(1)
   expect(candidateRows()[0].textContent).toContain('当前风险警示')
-  expect(candidateRows()[0].textContent).toContain('复权未核验')
+  expect(candidateRows()[0].textContent).not.toContain('复权未核验')
+  expect(host.textContent).toContain('复权未核验')
+  expect([...host.querySelectorAll('summary')].some(item => item.textContent === '口径与操作说明')).toBe(true)
   expect(host.textContent).toContain('异常日起隔离 1 只')
   expect(host.textContent).not.toContain('旧版数据口径，请重新筛选')
   expect(host.textContent).not.toContain('按当前名称排除 ST')

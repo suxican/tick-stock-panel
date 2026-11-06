@@ -1,4 +1,4 @@
-import type { HuichunCandidate, HuichunCoverage, HuichunDailyRun, HuichunDailyRuns, HuichunObservation, HuichunSnapshot } from '@/lib/api'
+import type { HuichunCalendarStatus, HuichunCandidate, HuichunCoverage, HuichunDailyRun, HuichunDailyRuns, HuichunObservation, HuichunSnapshot } from '@/lib/api'
 import { pct, stamp } from './shared'
 
 const stages = [
@@ -23,7 +23,7 @@ function runLabel(row: HuichunDailyRun) {
 
 export function DailyRuns({ data }: { data: HuichunDailyRuns }) {
   const latest = data.records[0]
-  return <details className="border-t border-border pt-3 text-xs">
+  return <><CalendarNotice data={data} /><details className="border-t border-border pt-3 text-xs">
     <summary className="cursor-pointer leading-relaxed">
       <span className="font-medium">盘后扫描记录</span>
       {latest && <span className="ml-2 text-secondary">{latest.date} · {runLabel(latest)}</span>}
@@ -44,7 +44,16 @@ export function DailyRuns({ data }: { data: HuichunDailyRuns }) {
           ].filter(Boolean).join(' · ') || '—'}</td>
         </tr>)}</tbody>
       </table></div>}
-  </details>
+  </details></>
+}
+
+function CalendarNotice({ data }: { data: HuichunCalendarStatus }) {
+  const state = data.calendar_validity_status
+  if (state !== 'expiring' && state !== 'expired') return null
+  return <p role="status" aria-label="交易日历状态" className="my-3 text-xs leading-relaxed text-warning">
+    {state === 'expired' ? `交易日历已于 ${data.calendar_coverage_end} 到期，监控与新收益计算等待日历更新。`
+      : `交易日历覆盖至 ${data.calendar_coverage_end}，剩余 ${data.calendar_days_remaining} 天。请在到期前更新交易日历。`}
+  </p>
 }
 
 export function StageCounts({ coverage, day }: { coverage: HuichunCoverage; day: string }) {
@@ -56,6 +65,7 @@ export function StageCounts({ coverage, day }: { coverage: HuichunCoverage; day:
   const reasons = Object.entries(coverage.first_cross_rejection_reasons ?? {})
     .filter(([key, count]) => key in rejectionLabels && count > 0)
   return <section aria-label="截止日筛选统计" className="my-4 border-y border-border py-3">
+    {coverage.history_truncated && <p className="mb-3 text-xs text-secondary">可核验计算区间自 {coverage.calculation_start_date} 起，较早行情未参与指标计算，预热从此重新累计。</p>}
     <div className="flex flex-wrap items-baseline justify-between gap-2">
       <h3 className="text-xs font-medium">{day} 筛选统计</h3>
       {coverage.publication_status && <span className="text-xs text-secondary">{publicationLabels[coverage.publication_status]}

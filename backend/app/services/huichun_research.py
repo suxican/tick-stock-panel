@@ -29,7 +29,10 @@ LIMITATIONS = [
     "净结果为独立单笔日线代理，每笔预算1万元、买卖各10基点不利滑点、佣金万三最低5元、卖出印花税按日期。无法确认限价或公司行动时留空。",
     "开盘涨停不买、跌停不卖，受阻不追单、不假定排队成交；缺口留空。未建模开盘成交量、仓位竞争和组合回撤。",
     "波动率为信号当日及以前、同一连续行情段内最近20个日收益率的样本标准差，未年化；不足21根收盘价时留空。",
+    "T+5/10/20为信号收盘至对应交易日收盘的复权观察；最大浮盈/浮亏取T+1至T+N复权最高/最低价相对信号收盘的极值，并包含基准零变化，不代表可成交收益。",
+    "市场基准为同日沪深主板、创业板及科创板中完整观察窗口可计算股票的等权报价收益，逐窗列出有效数/信号日有效数。缺口和异常复权按扫描口径隔离，上市年龄及历史交易资格未匹配；这是事后可观察样本基准，非可交易组合。",
 ]
+HORIZONS = (5, 10, 20)
 
 
 def volatility_at_cross(indicators, crosses):
@@ -160,7 +163,39 @@ def _open_proxy(row, window, bars, events, names, listing, execution):
     return "ok"
 
 
-def evaluate(row, window, bars, events, names, listing, invalid_from, *, baseline_changed=False):
+def _price_observations(row, window, bars, events, invalid_from, baseline_changed, benchmarks):
+    observations = []
+    for horizon in HORIZONS:
+        status = ("baseline_changed" if row["signal_revised"] or baseline_changed else
+                  "no_calendar" if not window else _observed(window, bars, events, invalid_from, horizon))
+        benchmark = (benchmarks or {}).get(horizon, {})
+        item = {
+            "horizon": horizon, "status": status, "return_pct": None, "mfe_pct": None, "mae_pct": None,
+            "benchmark_status": benchmark.get("status", "no_calendar" if not window else
+                                              "pending" if len(window) <= horizon else "unavailable"),
+            "benchmark_return_pct": benchmark.get("return_pct"),
+            "benchmark_sample_count": benchmark.get("sample_count", 0),
+            "benchmark_universe_count": benchmark.get("universe_count", 0),
+            "excess_return_pct": None,
+        }
+        if status == "ok":
+            multiplier, high, low = 1., row["base_close"], row["base_close"]
+            for day in window[1:horizon + 1]:
+                multiplier *= events.get(day, 1.)
+                high = max(high, bars[day]["high"] * multiplier)
+                low = min(low, bars[day]["low"] * multiplier)
+            item.update(
+                return_pct=bars[window[horizon]]["close"] * multiplier / row["base_close"] - 1.,
+                mfe_pct=high / row["base_close"] - 1., mae_pct=low / row["base_close"] - 1.,
+            )
+            if item["benchmark_status"] == "ok" and item["benchmark_return_pct"] is not None:
+                item["excess_return_pct"] = item["return_pct"] - item["benchmark_return_pct"]
+        observations.append(item)
+    return observations
+
+
+def evaluate(row, window, bars, events, names, listing, invalid_from, *, baseline_changed=False,
+             benchmarks=None):
     shape = {"status": "pending", "return_pct": None}
     execution = {"status": "pending", "entry_date": str(window[1]) if len(window) > 1 else None,
                  "exit_date": str(window[2]) if len(window) > 2 else None,
@@ -168,7 +203,10 @@ def evaluate(row, window, bars, events, names, listing, invalid_from, *, baselin
                  "shares": None, "entry_price": None, "exit_price": None,
                  "buy_fee": None, "sell_fee": None, "entry_cost": None}
     row.update(shape_t5=shape, execution=execution)
-    row["horizons_mature"] = len(window) >= 6
+    row["observations"] = _price_observations(
+        row, window, bars, events, invalid_from, baseline_changed, benchmarks,
+    )
+    row["horizons_mature"] = len(window) > max(HORIZONS)
     if row["signal_revised"] or baseline_changed:
         shape["status"] = execution["status"] = "baseline_changed"
         return
@@ -201,6 +239,64 @@ def _instrument_facts(repo):
     return facts
 
 
+def market_benchmarks(service, requests, calendar, listings):
+    """One bounded-symbol history pass shared by all requested dates/horizons.
+
+    Full history is needed for the scanner's dated factor quarantine. Reading
+    only the forward window could silently admit a previously quarantined stock.
+    No benchmark universe is selected using the candidate's future outcome.
+    """
+    if not requests:
+        return {}
+    # Runtime import reuses the scanner universe without a module import cycle.
+    from app.services.huichun_mode import _screening_stock
+
+    indices = {day: i for i, day in enumerate(calendar)}
+    targets = {(day, horizon): calendar[indices[day] + horizon]
+               for day, horizons in requests.items() for horizon in horizons}
+    end = max(targets.values())
+    symbols = sorted({row[0] for row in service.repo.execute_all(
+        "SELECT DISTINCT symbol FROM kline_daily WHERE date <= ?", [end],
+    ) if _screening_stock(row[0])})
+    counts, sums, universe = defaultdict(int), defaultdict(float), defaultdict(int)
+    for offset in range(0, len(symbols), 512):
+        service._check_stop()
+        batch = symbols[offset:offset + 512]
+        raw = service._raw(batch, end, start=calendar[0])
+        factors = service._factors(batch, end)
+        prepared, _ = service._prepare_scan_batch(
+            raw, factors, calendar=calendar, end=end, listings=listings,
+            expected_symbols=batch, calendar_verified=True,
+        )
+        frame = prepared.frame.sort("symbol", "date")
+        if frame.is_empty():
+            continue
+        for day, count in frame.filter(pl.col("date").is_in(list(requests))).group_by("date").len().iter_rows():
+            universe[day] += count
+        groups = ["symbol", "segment_id"]
+        for horizon in HORIZONS:
+            dates = [day for day, h in targets if h == horizon]
+            if not dates:
+                continue
+            observations = frame.with_columns(
+                pl.col("date").shift(-horizon).over(groups).alias("_end"),
+                (pl.col("close").shift(-horizon).over(groups) / pl.col("close") - 1.).alias("_return"),
+            ).filter(pl.col("date").is_in(dates))
+            for day, end_day, value in observations.select("date", "_end", "_return").iter_rows():
+                if end_day == targets[day, horizon] and value is not None and math.isfinite(value):
+                    counts[day, horizon] += 1
+                    sums[day, horizon] += value
+    result = defaultdict(dict)
+    for day, horizon in targets:
+        count = counts[day, horizon]
+        result[day][horizon] = {
+            "status": "ok" if count else "unavailable",
+            "return_pct": sums[day, horizon] / count if count else None,
+            "sample_count": count, "universe_count": universe[day],
+        }
+    return dict(result)
+
+
 def refresh(service, previous, scan, controls, now):
     """Re-evaluate bounded monthly cohorts; archived rows are never silently dropped."""
     records = {row["id"]: row for row in previous["records"]}
@@ -216,9 +312,22 @@ def refresh(service, previous, scan, controls, now):
         day = row["signal_date"]
         rescanned = (scan is not None and scan["start_date"] <= day <= scan["end_date"]
                      and row["rule_revision"] == scan["rule_revision"])
-        if day >= recent_since or rescanned or not row.get("horizons_mature"):
+        if day >= recent_since or rescanned or not row.get("horizons_mature") or not row.get("observations"):
             groups[day[:7]].append(row)
     instruments = _instrument_facts(service.repo) if groups and official else {}
+    requests = {}
+    if official:
+        for group in groups.values():
+            for row in group:
+                day = date.fromisoformat(row["signal_date"])
+                idx = bisect_left(calendar, day)
+                if idx < len(calendar) and calendar[idx] == day:
+                    mature = tuple(h for h in HORIZONS if idx + h < len(calendar))
+                    if mature:
+                        requests[day] = mature
+    benchmarks = market_benchmarks(
+        service, requests, calendar, {symbol: facts[0] for symbol, facts in instruments.items() if facts[0]},
+    )
     for group in groups.values():
         service._check_stop()
         valid_rows = []
@@ -228,7 +337,7 @@ def refresh(service, previous, scan, controls, now):
             if not official or idx == len(calendar) or calendar[idx] != day:
                 evaluate(row, [], {}, {}, {}, None, None)
             else:
-                valid_rows.append((row, calendar[idx:idx + 6]))
+                valid_rows.append((row, calendar[idx:idx + max(HORIZONS) + 1]))
         if not valid_rows:
             continue
         start = min(window[0] for _, window in valid_rows)
@@ -265,6 +374,6 @@ def refresh(service, previous, scan, controls, now):
             ))
             invalid_from = invalid[symbol] or date.min if symbol in invalid else None
             evaluate(row, window, bars[symbol], event_lookup[symbol], names, listing,
-                     invalid_from, baseline_changed=changed)
+                     invalid_from, baseline_changed=changed, benchmarks=benchmarks.get(base))
     return {"records": sorted(records.values(), key=lambda r: (r["signal_date"], r["symbol"]),
                               reverse=True), "updated_at": now.isoformat()}

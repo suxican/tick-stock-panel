@@ -525,6 +525,15 @@ class KlineRepository:
             finally:
                 cursor.close()
 
+    def execute_frame(self, sql: str, params: list | None = None) -> pl.DataFrame:
+        """Read a columnar result through Arrow, with the same limits as tuple reads."""
+        with self._read_limiter:
+            cursor = self._new_cursor()
+            try:
+                return cursor.execute(sql, params or []).pl()
+            finally:
+                cursor.close()
+
     def refresh_view(self, name: str, glob: str) -> bool:
         """重建指向 parquet glob 的视图 (创建时绑定文件结构, 不读取全部数据行)。
 

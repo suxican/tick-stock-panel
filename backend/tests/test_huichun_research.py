@@ -150,6 +150,128 @@ def test_open_locked_at_limit_carries_price_observation_only(i, price, status):
         assert row["execution"]["shares"] > 0 and row["execution"]["sell_fee"] is None
 
 
+def test_extended_observations_use_causal_high_low_and_separate_horizon_statuses():
+    days = [DAY + timedelta(days=i) for i in range(21)]
+    bars = {day: {"open": 10., "close": 10., "high": 11., "low": 9.} for day in days}
+    # A 2-for-1 split must not appear as a 50% loss or affect the earlier window.
+    for day in days[7:]:
+        bars[day] = {"open": 5., "close": 5., "high": 5.5, "low": 4.5}
+    bars[days[9]]["high"] = 6.
+    bars[days[12]]["low"] = 4.
+    row = register()["test"]
+    evaluate(row, days, bars, {days[7]: 2.}, {}, None, None, benchmarks={
+        5: {"status": "ok", "return_pct": .03, "sample_count": 3, "universe_count": 4},
+        10: {"status": "ok", "return_pct": -.02, "sample_count": 2, "universe_count": 4},
+    })
+    observations = {item["horizon"]: item for item in row["observations"]}
+    assert row["horizons_mature"]
+    assert row["shape_t5"]["return_pct"] == observations[5]["return_pct"] == 0.
+    for horizon, high, low in ((5, .1, -.1), (10, .2, -.1), (20, .2, -.2)):
+        assert observations[horizon]["status"] == "ok"
+        assert observations[horizon]["mfe_pct"] == pytest.approx(high)
+        assert observations[horizon]["mae_pct"] == pytest.approx(low)
+    assert observations[5]["excess_return_pct"] == pytest.approx(-.03)
+    assert observations[10]["excess_return_pct"] == pytest.approx(.02)
+    assert observations[5]["benchmark_sample_count"] == 3
+    assert observations[5]["benchmark_universe_count"] == 4
+    assert observations[20]["benchmark_status"] == "unavailable"
+    assert observations[20]["excess_return_pct"] is None
+
+    evaluate(row, days[:11], bars, {days[7]: 2.}, {}, None, None)
+    assert not row["horizons_mature"]
+    assert [item["status"] for item in row["observations"]] == ["ok", "ok", "pending"]
+    bars.pop(days[12])
+    evaluate(row, days, bars, {days[7]: 2.}, {}, None, None)
+    assert [item["status"] for item in row["observations"]] == ["ok", "ok", "unknown_gap"]
+    assert row["observations"][2]["mfe_pct"] is None
+    evaluate(row, days, bars, {}, {}, None, days[9])
+    assert [item["status"] for item in row["observations"]] == ["ok", "invalid_factor", "invalid_factor"]
+    evaluate(row, days, bars, {}, {}, None, None, baseline_changed=True)
+    assert all(item["status"] == "baseline_changed" for item in row["observations"])
+    assert all(item["return_pct"] is None for item in row["observations"])
+
+
+def test_benchmark_batches_dates_and_excludes_gaps_invalid_factors_and_other_assets():
+    from types import SimpleNamespace
+
+    from app.services.huichun_mode import HuichunModeService
+    from app.services.huichun_research import market_benchmarks
+
+    days = [DAY + timedelta(days=i) for i in range(22)]
+    symbols = ["600001.SH", "600002.SH", "600003.SH", "600004.SH", "510300.SH"]
+    raw = pl.DataFrame([{
+        "symbol": symbol, "date": day, "open": 10. + i / 10, "close": 10. + i / 10,
+        "high": 11. + i / 10, "low": 9. + i / 10, "volume": 1000., "amount": 10000.,
+    } for symbol in symbols for i, day in enumerate(days)
+        if not (symbol == "600002.SH" and i == 7)])
+    factors = pl.DataFrame({"symbol": ["600003.SH", "600004.SH"],
+                            "trade_date": [days[3], None], "ex_factor": [10., 1.]})
+    calls = []
+    service = SimpleNamespace(
+        repo=SimpleNamespace(execute_all=lambda *args: [(symbol,) for symbol in symbols]),
+        _check_stop=lambda: None,
+        _raw=lambda batch, end, **kwargs: (calls.append(tuple(batch)) or raw.filter(pl.col("symbol").is_in(batch))),
+        _factors=lambda batch, end: factors.filter(pl.col("symbol").is_in(batch)),
+        _calendar_source="official_exchange_calendar",
+        _factor_failure_dates=HuichunModeService._factor_failure_dates,
+    )
+    service._prepare_scan_batch = lambda *args, **kwargs: HuichunModeService._prepare_scan_batch(service, *args, **kwargs)
+    got = market_benchmarks(service, {days[0]: (5, 10, 20), days[1]: (5,), days[10]: (5,)}, days, {})
+    assert calls == [tuple(symbols[:4])]
+    assert got[days[0]][5] == {"status": "ok", "return_pct": pytest.approx(.05),
+                              "sample_count": 2, "universe_count": 3}
+    assert got[days[0]][10]["sample_count"] == 1
+    assert got[days[0]][20]["return_pct"] == pytest.approx(.2)
+    assert got[days[1]][5]["return_pct"] == pytest.approx(10.6 / 10.1 - 1)
+    # An earlier anomaly remains quarantined even when outside this observation window.
+    assert got[days[10]][5]["sample_count"] == got[days[10]][5]["universe_count"] == 2
+    assert got[days[10]][5]["return_pct"] == pytest.approx(11.5 / 11. - 1)
+    assert market_benchmarks(service, {}, days, {}) == {}
+    assert len(calls) == 1
+
+
+def test_refresh_upgrades_mature_legacy_rows_without_relabeling_or_per_row_market_reads(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.services import huichun_research
+    from app.services.huichun_mode import HuichunModeService
+
+    days = [DAY + timedelta(days=i) for i in range(60)]
+    symbol = candidate()["symbol"]
+    raw = pl.DataFrame([{
+        "symbol": symbol, "date": day, "open": 10. + i / 10, "close": 10. + i / 10,
+        "high": 11. + i / 10, "low": 9. + i / 10, "volume": 1000., "amount": 10000.,
+    } for i, day in enumerate(days[:21])])
+    factors = pl.DataFrame(schema=huichun_research.FACTOR_SCHEMA)
+    reads = []
+    service = SimpleNamespace(
+        repo=SimpleNamespace(execute_all=lambda *args: [(symbol,)]),
+        _check_stop=lambda: None, _calendar=lambda: days,
+        _raw=lambda batch, end, **kwargs: (reads.append(tuple(batch)) or raw),
+        _factors=lambda batch, end: factors, _baseline=lambda *args: "snapshot",
+        _calendar_source="official_exchange_calendar",
+        _factor_failure_dates=HuichunModeService._factor_failure_dates,
+    )
+    service._prepare_scan_batch = lambda *args, **kwargs: HuichunModeService._prepare_scan_batch(service, *args, **kwargs)
+    monkeypatch.setattr(huichun_research, "_instrument_facts", lambda repo: {})
+    original = register()["test"]
+    original["horizons_mature"] = True  # Old persisted records matured at T+5.
+    original["shape_t5"] = {"status": "ok", "return_pct": .05}
+    first_seen = original["first_seen_at"]
+    previous = {"records": [original, {**original, "id": "control", "cohort": "zero_control"}]}
+    now = datetime(2026, 12, 15, 16, tzinfo=CN_TZ)
+    result = huichun_research.refresh(service, previous, None, [], now)
+    assert len(reads) == 2  # One shared benchmark pass, one monthly candidate batch.
+    for row in result["records"]:
+        assert row["first_seen_at"] == first_seen and row["origin"] == "forward"
+        assert row["shape_t5"]["return_pct"] == pytest.approx(.05)
+        assert row["observations"][2]["return_pct"] == pytest.approx(.2)
+        assert row["observations"][2]["excess_return_pct"] == pytest.approx(0.)
+        assert row["horizons_mature"]
+    huichun_research.refresh(service, result, None, [], now)
+    assert len(reads) == 2  # Already-mature archives do not trigger another history pass.
+
+
 def test_research_persistence_refresh_restart_and_failed_commit(tmp_path, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

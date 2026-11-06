@@ -6788,12 +6788,20 @@ export interface HuichunDailyRun {
   last_attempt_at: string | null
   backfilled_at: string | null
 }
-export interface HuichunDailyRuns {
+export interface HuichunCalendarStatus {
+  calendar_coverage_start?: string | null
+  calendar_coverage_end?: string | null
+  calendar_validity_status?: 'valid' | 'expiring' | 'expired' | 'unavailable'
+  calendar_days_remaining?: number | null
+  calculation_start_date?: string | null
+  history_truncated?: boolean
+}
+export interface HuichunDailyRuns extends HuichunCalendarStatus {
   tracking_since: string | null
   calendar_status: 'verified' | 'unavailable'
   records: HuichunDailyRun[]
 }
-export interface HuichunCoverage {
+export interface HuichunCoverage extends HuichunCalendarStatus {
   stage_counts?: { universe: number; valid_close: number; warmup_ready: number; qualified_waiting_first_cross: number;
     first_cross_today: number; first_cross_rejected_today: number; confirmed_today: number; pending_today: number }
   factor_issue_dates?: { date: string; count: number }[]
@@ -6855,6 +6863,18 @@ export interface HuichunSnapshot {
   } | null
   config_revision: number
 }
+export interface HuichunResearchObservation {
+  horizon: 5 | 10 | 20
+  status: string
+  return_pct: number | null
+  mfe_pct: number | null
+  mae_pct: number | null
+  benchmark_status: string
+  benchmark_return_pct: number | null
+  excess_return_pct: number | null
+  benchmark_sample_count: number
+  benchmark_universe_count: number
+}
 export interface HuichunResearchRecord {
   id: string
   symbol: string
@@ -6871,6 +6891,7 @@ export interface HuichunResearchRecord {
   first_seen_at: string
   volatility_20?: number | null
   shape_t5: { status: string; return_pct: number | null }
+  observations?: HuichunResearchObservation[]
   execution: { status: string; entry_date: string | null; exit_date: string | null; gross_return_pct: number | null; net_return_pct: number | null;
     shares?: number | null; entry_price?: number | null; exit_price?: number | null; buy_fee?: number | null; sell_fee?: number | null; entry_cost?: number | null }
 }

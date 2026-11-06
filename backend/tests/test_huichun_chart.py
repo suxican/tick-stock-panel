@@ -97,6 +97,32 @@ def test_chart_uses_full_history_a0_macd_not_generic_12_26(chart_env):
     assert env.service._latest_observed_date == date(2020, 1, 1)
 
 
+def test_chart_clips_uncovered_prefix_and_restarts_indicators(chart_env):
+    env = chart_env
+    content = json.loads(env.service._calendar_path.read_text(encoding="utf-8"))
+    content["coverage_start"] = str(env.days[100])
+    env.service._calendar_path.write_text(json.dumps(content), encoding="utf-8")
+    result = build_huichun_chart(env.service, request(env))
+    assert result["huichun"]["calendar_source"] == "official_exchange_calendar"
+    assert result["huichun"]["calculation_start_date"] == str(env.days[100])
+    assert result["rows"][0]["date"] == str(env.days[100])
+    assert result["rows"][0]["macd_dif"] == 0
+    expected = ema(env.values[100:], 10)[-1] - ema(env.values[100:], 20)[-1]
+    assert result["rows"][-1]["macd_dif"] == pytest.approx(expected)
+    assert env.service._calendar_source == "sentinel_scan_source"
+
+
+def test_chart_does_not_render_uncovered_history_as_verified(chart_env):
+    env = chart_env
+    content = json.loads(env.service._calendar_path.read_text(encoding="utf-8"))
+    content["coverage_start"] = str(env.days[100])
+    env.service._calendar_path.write_text(json.dumps(content), encoding="utf-8")
+    result = build_huichun_chart(env.service, request(env, as_of=env.days[99]))
+    assert result["rows"] == []
+    assert result["huichun"]["calendar_source"] == "observed_market_daily_dates"
+    assert result["huichun"]["calculation_start_date"] is None
+
+
 def test_adjustment_event_scales_ohlc_and_indicators_together(chart_env):
     env = chart_env
     base = build_huichun_chart(env.service, request(env))

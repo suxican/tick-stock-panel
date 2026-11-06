@@ -10,7 +10,7 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.services.huichun_audit import _table_exists
-from app.services.huichun_calendar import load_market_calendar
+from app.services.huichun_calendar import calendar_health, read_market_calendar
 from app.services.huichun_mode import (
     DATA_POLICY_VERSION,
     HuichunModeService,
@@ -52,10 +52,14 @@ def _chart_calendar(service: HuichunModeService, as_of: date) -> tuple[list[date
     if not observed or service._calendar_path is None:
         return observed, source
     try:
-        calendar = load_market_calendar(service._calendar_path, start=observed[0], end=as_of)
+        evidence = read_market_calendar(service._calendar_path)
+        first = max(observed[0], evidence.coverage_start)
+        if as_of < first:
+            return [], source
+        calendar = evidence.sessions(start=first, end=as_of)
     except (OSError, ValueError):
         return observed, source
-    if set(observed) - set(calendar):
+    if {d for d in observed if d >= first} - set(calendar):
         raise ValueError("日线日期与独立交易日历冲突，请检查数据")
     return calendar, "official_exchange_calendar"
 
@@ -95,6 +99,9 @@ def build_huichun_chart(service: HuichunModeService, request: HuichunChartReques
         "factor_status": "no_events_unverified",
         "invalid_from": None,
         "calendar_source": calendar_source,
+        **calendar_health(service._calendar_path, now.date()),
+        "calculation_start_date": str(calendar[0]) if calendar else None,
+        "history_truncated": False,
         "rule_revision": request.rule_revision,
         "rules": request.rules.model_dump(),
         "data_policy_version": DATA_POLICY_VERSION,
@@ -108,6 +115,9 @@ def build_huichun_chart(service: HuichunModeService, request: HuichunChartReques
     }
     if calendar:
         raw = service._raw([request.symbol], request.as_of)
+        metadata["history_truncated"] = (
+            not raw.is_empty() and raw["date"].min() < calendar[0]
+        )
         factors = service._factors([request.symbol], request.as_of)
         prepared, issues = service._prepare_scan_batch(
             raw, factors, calendar=calendar, end=request.as_of, listings=listings,

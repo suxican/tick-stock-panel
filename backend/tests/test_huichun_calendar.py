@@ -174,3 +174,47 @@ def test_official_calendar_includes_pandemic_extension_and_ignores_makeup_weeken
     assert days[-1] == date(2026, 12, 31)
     assert len(days) == len(set(days))
     assert all(day.weekday() < 5 for day in days)
+
+
+@pytest.mark.parametrize("today,status,remaining", [
+    (date(2024, 12, 12), "unavailable", 31),
+    (date(2025, 1, 1), "expiring", 11),
+    (date(2025, 1, 12), "expiring", 0),
+    (date(2025, 1, 13), "expired", -1),
+])
+def test_calendar_health_exposes_coverage_and_expiry(tmp_path, calendar_data, today, status, remaining):
+    from app.services.huichun_calendar import calendar_health
+
+    path = tmp_path / "calendar.json"
+    path.write_text(json.dumps(calendar_data), encoding="utf-8")
+    health = calendar_health(path, today)
+    assert health == {
+        "calendar_coverage_start": "2025-01-01", "calendar_coverage_end": "2025-01-12",
+        "calendar_validity_status": status, "calendar_days_remaining": remaining,
+    }
+
+
+def test_calendar_health_does_not_trust_malformed_evidence(tmp_path, calendar_data):
+    from app.services.huichun_calendar import calendar_health
+
+    path = tmp_path / "calendar.json"
+    calendar_data["closures"][0]["source_id"] = "missing"
+    path.write_text(json.dumps(calendar_data), encoding="utf-8")
+    health = calendar_health(path, date(2025, 1, 1))
+    assert health["calendar_validity_status"] == "unavailable"
+    assert health["calendar_coverage_end"] is None
+
+
+@pytest.mark.parametrize("today,status,remaining", [
+    (date(2025, 1, 29), "valid", 31),
+    (date(2025, 1, 30), "expiring", 30),
+])
+def test_calendar_health_thirty_day_boundary(tmp_path, calendar_data, today, status, remaining):
+    from app.services.huichun_calendar import calendar_health
+
+    path = tmp_path / "calendar.json"
+    calendar_data["coverage_end"] = "2025-03-01"
+    path.write_text(json.dumps(calendar_data), encoding="utf-8")
+    health = calendar_health(path, today)
+    assert health["calendar_validity_status"] == status
+    assert health["calendar_days_remaining"] == remaining

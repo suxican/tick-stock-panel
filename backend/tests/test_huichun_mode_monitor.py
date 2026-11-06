@@ -107,6 +107,52 @@ def replace_factors(svc, factors):
     factors.write_parquet(svc.repo.store.data_dir / "adj_factor/test.parquet")
 
 
+def test_calendar_prefix_is_clipped_without_certifying_uncovered_history(watch_environment):
+    svc, _, _, days, path = watch_environment
+    content = json.loads(path.read_text(encoding="utf-8"))
+    content["coverage_start"] = str(days[100])
+    path.write_text(json.dumps(content), encoding="utf-8")
+    result = svc._scan("calendar-prefix", module.HuichunScanRequest(
+        start_date=days[0], end_date=days[-1],
+    ), svc._read_config())
+    assert result["coverage"]["calendar_source"] == "official_exchange_calendar"
+    assert result["coverage"]["calculation_start_date"] == str(days[100])
+    assert result["coverage"]["history_truncated"] is True
+    assert result["coverage"]["publication_status"] == "ready"
+    assert result["start_date"] == str(days[100])
+    # A pre-coverage warmup must not authorize a post-coverage G/D/R cycle.
+    assert result["candidates"] == []
+    with pytest.raises(ValueError, match="日历覆盖"):
+        svc._scan("uncovered", module.HuichunScanRequest(
+            start_date=days[0], end_date=days[99],
+        ), svc._read_config())
+
+
+def test_expired_calendar_still_withholds_current_publication(watch_environment):
+    svc, _, _, days, path = watch_environment
+    content = json.loads(path.read_text(encoding="utf-8"))
+    content["coverage_end"] = str(days[-2])
+    path.write_text(json.dumps(content), encoding="utf-8")
+    result = svc._scan("calendar-expired", module.HuichunScanRequest(
+        start_date=days[-1], end_date=days[-1],
+    ), svc._read_config())
+    assert result["coverage"]["calendar_validity_status"] == "expired"
+    assert result["coverage"]["calendar_source"] == "observed_market_daily_dates"
+    assert result["coverage"]["publication_status"] == "calendar_unverified"
+
+
+def test_clipping_calendar_does_not_hide_closed_days_within_coverage(watch_environment):
+    svc, _, _, days, path = watch_environment
+    content = json.loads(path.read_text(encoding="utf-8"))
+    content["coverage_start"] = str(days[100])
+    content["closures"] = [{
+        "start_date": str(days[101]), "end_date": str(days[101]), "source_id": "synthetic",
+    }]
+    path.write_text(json.dumps(content), encoding="utf-8")
+    with pytest.raises(ValueError, match="日线日期与独立交易日历冲突"):
+        svc._calendar()
+
+
 @pytest.mark.parametrize("when,day_offset,expected", [
     ("scan", 1, "completed"), ("scan", 0, "failed"),
     ("tracking_read", 1, "failed"), ("after_scan", 0, "failed"),

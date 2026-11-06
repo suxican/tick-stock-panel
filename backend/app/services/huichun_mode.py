@@ -43,7 +43,12 @@ from app.services.huichun_audit import (
     _table_exists,
     prepare_batch,
 )
-from app.services.huichun_calendar import BUNDLED_CALENDAR_PATH, load_market_calendar
+from app.services.huichun_calendar import (
+    BUNDLED_CALENDAR_PATH,
+    calendar_health,
+    load_market_calendar,
+    read_market_calendar,
+)
 from app.strategy.huichun_a0 import A0Params, audit_a0
 from app.strategy.huichun_watch import (
     new_conversion_counts,
@@ -172,6 +177,7 @@ class HuichunModeService:
         self._thread: threading.Thread | None = None
         self._refresh_requested = False
         self._calendar_source = "observed_market_daily_dates"
+        self._calendar_details: dict = {}
         self._latest_observed_date: date | None = None
         self._calendar_path = calendar_path
         if calendar_path is None:
@@ -263,7 +269,11 @@ class HuichunModeService:
         with self._lock, _WRITE_LOCK:
             ledger = copy.deepcopy(self._snapshot["daily_runs"])
             revision = self._read_config().revision
-        return huichun_daily_runs.daily_summary(ledger, self._calendar_path, _now().date(), revision, limit)
+        today = _now().date()
+        return {
+            **huichun_daily_runs.daily_summary(ledger, self._calendar_path, today, revision, limit),
+            **calendar_health(self._calendar_path, today),
+        }
 
     def daily_preflight(self, day: date) -> dict:
         """Inspect only the current and preceding session before any expensive scan or repair."""
@@ -674,17 +684,22 @@ class HuichunModeService:
         ]
         self._latest_observed_date = observed[-1] if observed else None
         self._calendar_source = "observed_market_daily_dates"
+        self._calendar_details = calendar_health(self._calendar_path, now.date())
+        self._calendar_details["history_truncated"] = False
         if observed and self._calendar_path is not None:
             cutoff = now.date() if now.hour >= 15 else now.date() - timedelta(days=1)
             try:
-                calendar = load_market_calendar(self._calendar_path, start=observed[0], end=cutoff)
+                evidence = read_market_calendar(self._calendar_path)
+                first = max(observed[0], evidence.coverage_start)
+                calendar = evidence.sessions(start=first, end=cutoff)
             except (OSError, ValueError):
                 # Unavailable evidence is an explicit observation-only fallback.
                 logger.warning("Huichun market calendar unavailable or outside coverage")
             else:
-                if set(observed) - set(calendar):
+                if {d for d in observed if d >= first} - set(calendar):
                     raise ValueError("日线日期与独立交易日历冲突，请检查数据")
                 self._calendar_source = "official_exchange_calendar"
+                self._calendar_details["history_truncated"] = observed[0] < first
                 return calendar
         return observed
 
@@ -715,7 +730,7 @@ class HuichunModeService:
             marks = ",".join("?" for _ in symbols)
             clauses.append(f"symbol IN ({marks})")
             args.extend(symbols)
-        rows = self.repo.execute_all(
+        frame = self.repo.execute_frame(
             f"SELECT {','.join(columns)} FROM kline_daily WHERE {' AND '.join(clauses)} ORDER BY symbol,date",
             args,
         )
@@ -725,7 +740,7 @@ class HuichunModeService:
         }
         if "daily_batch_finalized" in schema:
             schema["daily_batch_finalized"] = pl.Boolean
-        return pl.DataFrame(rows, schema=schema, orient="row")
+        return frame.cast(schema)
 
     @staticmethod
     def _factor_failure_dates(raw, factors, calendar) -> dict[str, date | None]:
@@ -792,7 +807,8 @@ class HuichunModeService:
         remain quarantined until the source is corrected; restarting indicators
         after a bad corporate action would silently invent a valid price basis.
         """
-        raw = raw.filter(pl.col("date") <= end)
+        # Uncovered history cannot seed indicators in an independently verified window.
+        raw = raw.filter(pl.col("date").is_between(calendar[0], end))
         factors = factors.filter(pl.col("trade_date").is_null() | (pl.col("trade_date") <= end))
         issues = self._factor_failure_dates(raw, factors, calendar)
         undated = [symbol for symbol, day in issues.items() if day is None]
@@ -835,6 +851,10 @@ class HuichunModeService:
         start = request.start_date or end
         if start > end or end > self._latest_observed_date:
             raise ValueError("筛选日期范围无效或晚于最新已收盘数据日")
+        if self._calendar_source == "official_exchange_calendar":
+            if end < calendar[0]:
+                raise ValueError("所选日期早于独立交易日历覆盖范围")
+            start = max(start, calendar[0])
         calendar = [d for d in calendar if d <= end]
         if not calendar:
             raise ValueError("所选日期之前没有日线数据")
@@ -875,7 +895,7 @@ class HuichunModeService:
         for offset in range(0, len(symbols), 128):
             self._check_stop()
             batch = symbols[offset : offset + 128]
-            raw, factors = self._raw(batch, end), self._factors(batch, end)
+            raw, factors = self._raw(batch, end, start=calendar[0]), self._factors(batch, end)
             market.update(huichun_coverage.market_counts(raw, day_at_cutoff, previous_day, observed_at))
             prepared, issues = self._prepare_scan_batch(
                 raw, factors, calendar=calendar, end=end,
@@ -1022,6 +1042,8 @@ class HuichunModeService:
                 "gap_symbol_count": gaps,
                 "latest_daily_date": str(calendar[-1]),
                 "calendar_source": self._calendar_source,
+                **self._calendar_details,
+                "calculation_start_date": str(calendar[0]),
             },
             "limitations": list(_LIMITATIONS),
         }

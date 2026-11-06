@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -45,15 +46,32 @@ def _date(value: object, label: str) -> date:
     return date.fromisoformat(value)
 
 
-def load_market_calendar(path: Path, *, start: date, end: date) -> list[date]:
-    """Return sorted sessions, inclusive; reject incomplete or malformed evidence.
+@dataclass(frozen=True)
+class MarketCalendar:
+    coverage_start: date
+    coverage_end: date
+    closed_ordinals: frozenset[int]
+
+    def sessions(self, *, start: date, end: date) -> list[date]:
+        if type(start) is not date or type(end) is not date or start > end:
+            raise ValueError("Calendar request requires date values with start <= end")
+        if start < self.coverage_start or end > self.coverage_end:
+            raise ValueError("Calendar coverage does not contain the requested interval")
+        return [
+            day
+            for ordinal in range(start.toordinal(), end.toordinal() + 1)
+            if ordinal not in self.closed_ordinals
+            and (day := date.fromordinal(ordinal)).weekday() < 5
+        ]
+
+
+def read_market_calendar(path: Path) -> MarketCalendar:
+    """Validate the entire evidence file before exposing coverage or sessions.
 
     Sources must use exchange or CNInfo HTTP(S) domains. This verifies the file
     contract, not that a linked announcement proves the supplied closure dates.
     Every row is validated even if it lies outside the requested subinterval.
     """
-    if type(start) is not date or type(end) is not date or start > end:
-        raise ValueError("Calendar request requires date values with start <= end")
     content = _fields(
         json.loads(path.read_text(encoding="utf-8-sig"), object_pairs_hook=_object),
         {"version", "coverage_start", "coverage_end", "weekends_closed", "sources", "closures"},
@@ -67,8 +85,6 @@ def load_market_calendar(path: Path, *, start: date, end: date) -> list[date]:
     coverage_end = _date(content["coverage_end"], "coverage_end")
     if coverage_start > coverage_end:
         raise ValueError("Calendar coverage_start exceeds coverage_end")
-    if start < coverage_start or end > coverage_end:
-        raise ValueError("Calendar coverage does not contain the requested interval")
 
     if not isinstance(content["sources"], list) or not content["sources"]:
         raise ValueError("Calendar sources must be a non-empty array")
@@ -109,8 +125,31 @@ def load_market_calendar(path: Path, *, start: date, end: date) -> list[date]:
             raise ValueError(f"Closure {index} has invalid dates or exceeds calendar coverage")
         closed.update(range(first.toordinal(), last.toordinal() + 1))
 
-    return [
-        day
-        for ordinal in range(start.toordinal(), end.toordinal() + 1)
-        if ordinal not in closed and (day := date.fromordinal(ordinal)).weekday() < 5
-    ]
+    return MarketCalendar(coverage_start, coverage_end, frozenset(closed))
+
+
+def load_market_calendar(path: Path, *, start: date, end: date) -> list[date]:
+    """Return sorted sessions, inclusive; never infer uncovered sessions."""
+    return read_market_calendar(path).sessions(start=start, end=end)
+
+
+def calendar_health(path: Path | None, today: date) -> dict:
+    """Small live status for existing screens, independent of the last scan date."""
+    result = {
+        "calendar_coverage_start": None, "calendar_coverage_end": None,
+        "calendar_validity_status": "unavailable", "calendar_days_remaining": None,
+    }
+    if path is None:
+        return result
+    try:
+        evidence = read_market_calendar(path)
+    except (OSError, ValueError):
+        return result
+    remaining = (evidence.coverage_end - today).days
+    status = ("expired" if remaining < 0 else "unavailable" if today < evidence.coverage_start
+              else "expiring" if remaining <= 30 else "valid")
+    return {
+        "calendar_coverage_start": str(evidence.coverage_start),
+        "calendar_coverage_end": str(evidence.coverage_end),
+        "calendar_validity_status": status, "calendar_days_remaining": remaining,
+    }
