@@ -1,6 +1,7 @@
 import { Globe2 } from 'lucide-react'
 import type { MarketGameOverseasContext } from '@/lib/api'
 import { cn } from '@/lib/cn'
+import { InfoTip } from './InfoTip'
 
 const up = 'text-red-700 dark:text-bull'
 const down = 'text-emerald-700 dark:text-bear'
@@ -30,13 +31,13 @@ export function OverseasPanel({ data, mode }: { data?: MarketGameOverseasContext
   const title = mode === 'frozen' ? '海外市场 · 计划冻结证据' : '海外市场 · 本次观察'
   return <section aria-label={title} className="min-w-0 rounded-card border border-border bg-surface/80 p-4">
     <div className="flex flex-wrap items-center justify-between gap-2">
-      <h2 className="flex items-center gap-2 text-sm font-semibold"><Globe2 aria-hidden className="h-4 w-4 shrink-0 text-accent" />{title}</h2>
+      <h2 className="flex items-center gap-2 text-sm font-semibold"><Globe2 aria-hidden className="h-4 w-4 shrink-0 text-accent" />{title}{data && <InfoTip title="海外因素说明" className="-ml-1"><p>{mode === 'frozen' ? '保留生成计划时的海外证据。' : '保留本次取得的快照，不回填原计划。'}</p><p>海外因素用于补充情景与风险提示，仍需 A 股自身量价、板块扩散和原计划条件确认，不自动增加仓位。</p></InfoTip>}</h2>
       {data && <span className={cn('text-xs font-medium', data.state === 'ready' ? 'text-secondary' : warning)}>{contextLabels[data.state]}</span>}
     </div>
-    {!data ? <p className="mt-3 max-w-prose text-xs leading-relaxed text-secondary">{mode === 'frozen' ? '这份报告没有冻结的海外行情。生成新计划时记录纳斯达克、韩国 KS11、三星与 SK 海力士；历史报告不补入后来行情。' : '这次观察没有记录海外行情。下次刷新观察时按当时可用的数据记录，原计划保持冻结。'}</p> : <>
+    {!data ? <p className="mt-3 max-w-prose text-xs leading-relaxed text-secondary">{mode === 'frozen' ? '这份报告未采集外围行情。可在资金观察中按需刷新，新增观察不回填原计划。' : '这次观察没有记录海外行情。下次刷新观察时按当时可用的数据记录，原计划保持冻结。'}</p> : <>
       <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1"><span className={cn('text-sm font-semibold', factorClass(data.risk_state))}>{riskLabels[data.risk_state]}</span><p className="max-w-prose text-xs leading-relaxed text-secondary">{data.summary}</p></div>
       <p className="mt-2 text-xs leading-relaxed text-secondary">截止 {time(data.cutoff)} · 取得 {time(data.fetched_at)}（北京时间）</p>
-      <p className="mt-1 break-words text-xs leading-relaxed text-secondary">来源 {data.source || '未提供'} · {mode === 'frozen' ? '保留生成计划时的海外证据。' : '保留本次取得的快照，不回填原计划。'}</p>
+      <p className="mt-1 break-words text-xs leading-relaxed text-secondary">来源 {data.source || '未提供'}</p>
       {data.quotes.length > 0 ? <div className="mt-4 grid grid-cols-1 gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-4">
         {data.quotes.map(quote => <article key={quote.symbol} aria-label={quote.name} className="min-w-0 border-t border-border pt-3">
           <div className="flex flex-wrap items-baseline justify-between gap-2"><h3 className="text-sm font-medium">{quote.name}</h3><span className={cn('font-mono text-base font-semibold', signedClass(quote.change_pct))}>{percent(quote.change_pct)}</span></div>
@@ -52,7 +53,6 @@ export function OverseasPanel({ data, mode }: { data?: MarketGameOverseasContext
       </div> : <p className="mt-4 text-xs text-secondary">暂没有可核验的海外报价，缺失涨跌幅不记为零。</p>}
       {data.factors.length > 0 && <div className="mt-4 divide-y divide-border border-t border-border">{data.factors.map(factor => <div key={factor.id} className="grid gap-x-5 gap-y-1 py-3 text-xs sm:grid-cols-[minmax(150px,0.4fr)_1fr]"><div className="flex flex-wrap items-baseline gap-x-3 gap-y-1"><h3 className="font-medium">{factor.label}</h3><span className={cn('font-medium', factorClass(factor.state))}>{factorLabels[factor.state]}</span>{factor.change_pct != null && <span className={cn('font-mono', signedClass(factor.change_pct))}>{percent(factor.change_pct)}</span>}</div><p className="max-w-prose leading-relaxed text-secondary">{factor.explanation}</p></div>)}</div>}
       <div className="mt-2 border-t border-border pt-3 text-xs leading-relaxed"><h3 className="font-medium">与散户情绪联动</h3><p className="mt-1 max-w-prose text-secondary">{data.psychology_link}</p>{data.affected_sectors.length > 0 && <p className="mt-2 text-secondary">重点复核方向：{data.affected_sectors.join('、')}</p>}</div>
-      <p className="mt-2 max-w-prose text-xs leading-relaxed text-secondary">海外因素用于补充情景与风险提示，仍需 A 股自身量价、板块扩散和原计划条件确认，不自动增加仓位。</p>
       {data.state === 'unavailable' && <a href="/settings?tab=data-sources" className="mt-2 inline-flex min-h-9 items-center text-xs text-accent underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">检查海外行情数据源</a>}
       {data.limitations.length > 0 && <details className="mt-2 text-xs"><summary className="min-h-8 cursor-pointer py-2 font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">海外证据边界 · {data.limitations.length} 项</summary><ul className="max-w-prose space-y-1 leading-relaxed text-secondary">{data.limitations.map((item, index) => <li key={index}>{item}</li>)}</ul></details>}
     </>}

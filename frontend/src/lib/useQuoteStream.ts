@@ -158,6 +158,7 @@ export function useQuoteStream(
         _setStatus('connected')
         // Reconnect may have missed a notification; read snapshots without creating work.
         invalidatePrefixes(SSE_INVALIDATE_PREFIXES.filter(p => pagesRef.current?.[p] !== false))
+        qc.invalidateQueries({ queryKey: QK.positionTAll, refetchType: refetchType() })
         refreshStrategies()
       }
 
@@ -236,6 +237,9 @@ export function useQuoteStream(
             const alerts: StrategyAlertEvent[] = data.alerts || []
             if (alerts.length > 0) {
               handleAlerts(alerts)
+              if (alerts.some(alert => alert.source === 'position_t')) {
+                qc.invalidateQueries({ queryKey: QK.positionTAll, refetchType: refetchType() })
+              }
               // 实时刷新触发记录列表 + 监控中心徽标
               qc.invalidateQueries({ queryKey: ['alerts'] })
               qc.invalidateQueries({ queryKey: ['alerts-total'] })
@@ -280,6 +284,7 @@ export function useQuoteStream(
     const onVisibility = () => {
       if (document.visibilityState === 'hidden') return
       invalidatePrefixes(SSE_INVALIDATE_PREFIXES.filter(p => pagesRef.current?.[p] !== false))
+      qc.invalidateQueries({ queryKey: QK.positionTAll, refetchType: 'active' })
       refreshStrategies()
     }
     document.addEventListener('visibilitychange', onVisibility)

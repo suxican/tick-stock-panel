@@ -7,10 +7,11 @@ import type { MarketGameEvaluation, MarketGameReport, MarketGamePsychology } fro
 import { MarketGame } from './MarketGame'
 import extension from './extension'
 
-const calls = vi.hoisted(() => ({ analyze: vi.fn(), reports: vi.fn(), report: vi.fn(), explain: vi.fn(), evaluation: vi.fn() }))
+const calls = vi.hoisted(() => ({ analyze: vi.fn(), reports: vi.fn(), report: vi.fn(), explain: vi.fn(), evaluation: vi.fn(), capital: vi.fn(), model: vi.fn() }))
 vi.mock('@/lib/api', () => ({ api: {
   marketGameAnalyze: calls.analyze, marketGameReports: calls.reports, marketGameReport: calls.report,
   marketGameExplain: calls.explain, marketGameEvaluation: calls.evaluation,
+  marketGameCapital: calls.capital, marketGameModel: calls.model,
 } }))
 vi.mock('@/components/StockPreviewDialog', () => ({ StockPreviewDialog: ({ symbol, triggerInfo }: {
   symbol: string; triggerInfo: { message: string }
@@ -27,6 +28,7 @@ beforeEach(() => {
   calls.analyze.mockResolvedValue(report())
   calls.report.mockImplementation(async (id: string) => report(id))
   calls.explain.mockResolvedValue({ content: '这是一份可选的解释。' })
+  calls.capital.mockRejectedValue(new Error('尚无资金观察'))
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -95,6 +97,49 @@ it('registers a lazy independent route and matching navigation', () => {
   expect(extension.routes?.[0].path).toBe('/market-game')
   expect(extension.navigation?.[0].routeId).toBe(extension.routes?.[0].id)
   expect(extension.navigation?.[0].label).toBe('超短线博弈')
+})
+
+it('keeps supplemental research out of the primary views and fetches it only when opened', async () => {
+  await render()
+  await click('生成盘后计划')
+  expect([...host.querySelectorAll('[role="tab"]')].map(item => item.textContent)).toEqual(['博弈总览', '情绪与心理', '证据与复盘'])
+  expect(host.textContent).toContain('短线趋势回踩候选')
+  expect(host.querySelector('section[aria-label="海外市场 · 计划冻结证据"]')).toBeNull()
+  expect(calls.capital).not.toHaveBeenCalled()
+  expect(calls.model).not.toHaveBeenCalled()
+  const advanced = [...host.querySelectorAll('details')].find(item => item.firstElementChild?.textContent === '补充研究')!
+  expect(advanced.open).toBe(false)
+  await act(async () => advanced.querySelector('summary')!.click())
+  await settle()
+  expect(calls.capital).not.toHaveBeenCalled()
+  await click('资金观察')
+  expect(calls.capital).toHaveBeenCalledWith('plan-one')
+  await click('外围环境')
+  expect(host.querySelector('section[aria-label="海外市场 · 计划冻结证据"]')).not.toBeNull()
+  expect(calls.model).not.toHaveBeenCalled()
+  calls.analyze.mockResolvedValue(report('plan-two'))
+  await click('生成盘后计划')
+  const nextAdvanced = [...host.querySelectorAll('details')].find(item => item.firstElementChild?.textContent === '补充研究')!
+  expect(nextAdvanced.open).toBe(false)
+  expect(host.querySelector('section[aria-label="海外市场 · 计划冻结证据"]')).toBeNull()
+  expect(calls.capital).toHaveBeenCalledTimes(1)
+})
+
+it('shows risk vetoes independently of a repairing market phase and handles absent legacy risk fields', async () => {
+  const saved = report()
+  saved.market_state = { ...saved.market_state, risk_vetoes: ['指数短期回撤，暂停新增仓位'], max_boards: 5, promotion_rate: .3, phase_basis: '当日与前日的广度、连板变化' }
+  calls.analyze.mockResolvedValue(saved)
+  await render()
+  await click('生成盘后计划')
+  const risk = host.querySelector('section[aria-label="新增风险限制"]')!
+  expect(risk.textContent).toContain('指数短期回撤，暂停新增仓位')
+  expect(host.textContent).toContain('修复')
+  expect(host.textContent).toContain('最高连板 5 板')
+  expect(host.textContent).toContain('晋级率 30%')
+  calls.analyze.mockResolvedValue(report('legacy'))
+  await click('生成盘后计划')
+  expect(host.querySelector('section[aria-label="新增风险限制"]')).toBeNull()
+  expect(host.textContent).not.toContain('指数短期回撤，暂停新增仓位')
 })
 
 it('starts with an explicit empty state and generates latest post-close using decimal risk units', async () => {

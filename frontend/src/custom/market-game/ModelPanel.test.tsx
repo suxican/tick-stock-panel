@@ -38,7 +38,7 @@ function frozenReport(): MarketGameReport {
 it('reads saved research only and keeps old reports explicitly unavailable', async () => {
   await render()
   expect(calls.read).toHaveBeenCalledWith('one'); expect(calls.evaluate).not.toHaveBeenCalled()
-  expect(host.textContent).toContain('此报告未保存竞争环境')
+  expect(host.textContent).toContain('此报告未启用竞争环境研究')
   expect(host.textContent).toContain('此报告未冻结反馈假设')
   expect(host.textContent).toContain('尚未保存模型验证')
   await click('更新模型验证')

@@ -18,11 +18,11 @@ import {
 } from '@/lib/stockAnalysisStore'
 
 /**
- * 个股分析页 —— 日 K + 关键价位(压力/支撑/密集区/枢轴/前高前低)+ AI 四维分析。
+ * 个股分析页 —— 日 K + 关键价位(压力/支撑/密集区/枢轴/前高前低)+ AI 综合分析与条件化操作建议。
  *
  * 与财务分析页的区别:
  *  - 以【行情 + 关键价位】为视觉主体(专用日 K 图表,不复用个股对话框图表)
- *  - AI 分析输出客观技术状态与风险提示(非买卖建议、非财务质量评级)
+ *  - AI 分析结合多维证据输出操作建议、触发条件与失效条件
  *  - 报告胶囊用蓝色系,与财务分析(紫色)并存
  */
 export function StockAnalysis() {
@@ -81,7 +81,7 @@ export function StockAnalysis() {
     <>
       <PageHeader
         title="个股分析"
-        subtitle="日 K · 关键价位 · AI 四维分析(技术 / 基本面 / 财务 / 消息面)"
+        subtitle="日 K · 关键价位 · AI 综合分析与操作建议"
         right={
           <div className="flex items-center gap-2">
             <LastStockChip stock={lastStock} onSelect={onSelect} />
@@ -133,7 +133,7 @@ export function StockAnalysis() {
               <EmptyState
                 icon={LineChart}
                 title="选择一只股票开始分析"
-                hint="搜索代码或名称,查看日 K 与关键价位,并可让 AI 进行技术面 / 基本面 / 财务面 / 消息面四维综合分析。"
+                hint="搜索代码或名称，查看日 K、关键价位及 AI 操作建议。"
               />
             ) : (
               <StockAnalysisBoard symbol={symbol} />

@@ -166,7 +166,7 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
                   <Loader2 className="absolute -inset-1 h-12 w-12 text-sky-400/40 animate-spin" style={{ animationDuration: '3s' }} />
                 </div>
                 <div className="text-xs text-secondary">AI 正在分析行情与关键价位…</div>
-                <div className="text-[10px] text-muted">读取日 K / 技术指标 / 压力支撑 / 财务,生成四维分析</div>
+                <div className="text-[10px] text-muted">结合行情、关键价位与财务数据，生成分析和操作建议</div>
               </div>
             )}
 
@@ -242,7 +242,7 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
             <p className="mt-1.5 text-[10px] text-muted/50 leading-relaxed">
               {isHistory
                 ? '历史报告为静态记录;修改关注重点后将作为新任务重新生成。报告仅供参考,不构成投资建议。'
-                : '报告由项目已配置的 AI 模型基于本地行情与财务数据生成;消息面维度暂依据价量异动推断。报告仅供参考,不构成投资建议。'}
+                : '基于已同步数据生成；缺失维度标明待验证，操作建议需结合触发与失效条件。'}
             </p>
           </div>
         </motion.div>

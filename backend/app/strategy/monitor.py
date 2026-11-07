@@ -1380,6 +1380,10 @@ class MonitorRuleEngine:
             return []
         if s is None:
             return []
+        if s.meta.get("realtime_supported") is False:
+            # 收盘研究策略可能读取完整历史，不能在行情回调线程执行。
+            logger.debug("策略 %s 仅支持日线筛选，跳过实时监控", sid)
+            return []
 
         # 运行策略: 复用当前 enriched DataFrame 跳过数据加载
         overrides = {}

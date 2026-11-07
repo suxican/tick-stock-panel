@@ -5,6 +5,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { AlertEvent } from '@/lib/api'
 import { AlertToastContainer, pushAlertToast } from './AlertToast'
+import { playNotificationSound } from '@/lib/notificationSound'
 
 vi.mock('framer-motion', () => ({
   AnimatePresence: ({ children }: { children: ReactNode }) => children,
@@ -27,6 +28,7 @@ function Location() {
   return <output>{location.pathname}{location.search}</output>
 }
 beforeEach(async () => {
+  vi.clearAllMocks()
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   vi.useFakeTimers()
   host = document.createElement('div')
@@ -77,4 +79,20 @@ it('labels huichun notifications and opens their monitor records', async () => {
   expect(host.textContent).toContain('回春 A0 确认')
   await act(async () => host.querySelector<HTMLElement>('[role="button"]')!.click())
   expect(host.querySelector('output')?.textContent).toBe('/monitor')
+})
+
+it('opens a position T notification at its account and plan, with one sound per event', async () => {
+  const event = { ts: 1, source: 'position_t', type: 'position_t', event_id: 'pt-ready-1', kind: 'second_leg_ready', account_id: 'account A', plan_id: 'p1', symbol: '600000.SH', message: '第二笔卖出条件满足', expires_at: new Date(Date.now() + 10000).toISOString() } as AlertEvent
+  await act(async () => { pushAlertToast(event); pushAlertToast(event) })
+  expect(host.textContent).toContain('持仓做 T')
+  expect(host.querySelectorAll('[role="button"]')).toHaveLength(1)
+  expect(playNotificationSound).toHaveBeenCalledTimes(1)
+  await act(async () => host.querySelector<HTMLElement>('[role="button"]')!.click())
+  expect(host.querySelector('output')?.textContent).toBe('/lots?account_id=account+A&plan_id=p1&symbol=600000.SH')
+})
+
+it('does not show or sound expired position T opportunities', async () => {
+  await act(async () => pushAlertToast({ ts: 1, source: 'position_t', type: 'position_t', event_id: 'pt-expired', kind: 'signal', account_id: 'a', message: '候选', expires_at: new Date(Date.now() - 1).toISOString() } as AlertEvent))
+  expect(host.querySelector('[role="button"]')).toBeNull()
+  expect(playNotificationSound).not.toHaveBeenCalled()
 })

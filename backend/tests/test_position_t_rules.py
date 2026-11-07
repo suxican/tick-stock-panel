@@ -72,6 +72,63 @@ def test_candidates_use_completed_minute_and_explicit_evidence(direction):
     assert again["net_min"] == result["net_min"]
 
 
+@pytest.mark.parametrize("direction,price", [
+    ("buy_sell", 9.60), ("buy_sell", 9.78), ("buy_sell", 9.80),
+    ("sell_buy", 10.40), ("sell_buy", 10.22), ("sell_buy", 10.20),
+])
+@pytest.mark.parametrize("changed", ["trade", "book", "both"])
+def test_realtime_structure_invalidation_cannot_trigger(direction, price, changed):
+    b, q, e, p, a, n, c = sample_context(direction)
+    assert evaluate_candidate(b, q, e, p, a, n, direction, c)["state"] == "triggered"
+    if changed in {"trade", "both"}:
+        q["price"] = price
+    if changed in {"book", "both"}:
+        q.update(bid=price-.01, ask=price+.01)
+    result = evaluate_candidate(b, q, e, p, a, n, direction, c)
+    assert result["state"] == "blocked", result
+    assert result["quantity"] == 0
+    assert result["net_min"] is None
+    assert "实时" in " ".join(result["reasons"])
+
+
+def test_afternoon_warmup_explains_earliest_ready_time():
+    b, q, e, p, a, n, c = sample_context()
+    morning = [{**b[0], "datetime": n.replace(hour=9, minute=31, second=0) + timedelta(minutes=i)}
+               for i in range(120)]
+    afternoon = [{**b[0], "datetime": n.replace(hour=13, minute=1, second=0) + timedelta(minutes=i)}
+                 for i in range(23)]
+    for count in (5, 22, 23):
+        now = afternoon[count-1]["datetime"] + timedelta(seconds=5)
+        q.update(market_ts=now, received_ts=now)
+        e.update(market_ts=now, sector_ts=now)
+        p["snapshot_at"] = a["snapshot_at"] = now
+        result = evaluate_candidate([*morning, *afternoon[:count]], q, e, p, a, now, "buy_sell", c)
+        if count < 23:
+            assert result["state"] == "paused"
+            message = " ".join(result["reasons"])
+            assert "午后" in message and "13:23" in message and f"{count}/23" in message
+        else:
+            assert result["state"] == "none", result
+
+
+def test_shared_first_leg_deadline_uses_created_time_and_trading_sessions():
+    from app.strategy.position_t import first_leg_expired, trading_seconds
+
+    created = datetime(2026, 10, 16, 11, 28, tzinfo=CN_TZ)
+
+    def calendar(day):
+        return day == created.date()
+
+    assert trading_seconds(created, created.replace(hour=13, minute=2, second=59), calendar) == 299
+    assert not first_leg_expired(created, created.replace(hour=13, minute=2, second=59), calendar, "14:00")
+    assert first_leg_expired(created, created.replace(hour=13, minute=3), calendar, "14:00")
+    assert first_leg_expired(created, created + timedelta(days=1), calendar, "14:00")
+    assert first_leg_expired(created.replace(hour=13, minute=59), created.replace(hour=14, minute=0), calendar, "14:00")
+    assert trading_seconds(created, created + timedelta(minutes=5), lambda day: None) == 0
+    assert not first_leg_expired(created, created + timedelta(minutes=5), lambda day: None, "14:00")
+    assert first_leg_expired("2026-10-16T03:28:00+00:00", "2026-10-16T05:03:00+00:00", calendar, "14:00")
+
+
 @pytest.mark.parametrize("mutation,reason", [
     (lambda b, q, e, p, a, n, c: q.update(market_ts=n-timedelta(seconds=11)), "报价过期"),
     (lambda b, q, e, p, a, n, c: q.pop("ask"), "买卖报价"),

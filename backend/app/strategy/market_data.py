@@ -37,7 +37,12 @@ def _get_repo():
         with _lock:
             if _repo is None:
                 from app.tickflow.repository import DataStore, KlineRepository
-                _repo = KlineRepository(DataStore())
+                repo = KlineRepository(DataStore())
+                # This private reader lives across daily publications. DuckDB's
+                # external cache can retain same-second replaced Parquet metadata,
+                # even after refreshing a view, so trust the repository files.
+                repo.execute_all("SET enable_external_file_cache = false")
+                _repo = repo
     return _repo
 
 
@@ -118,6 +123,17 @@ def get_daily(symbol, start=None, end=None, columns=None):
     except Exception as exc:
         logger.warning("market_data get_daily failed %s: %s", symbol, exc)
         return pl.DataFrame()
+
+
+def filter_huichun_a0(frame: pl.DataFrame, params: dict) -> pl.DataFrame:
+    """回春 A0 已收盘形态；复用模式的数据准备，参数由调用策略独立提供。
+
+    frame 限定输出股票和日期，指标始终使用仓库中完整的安全历史。
+    保留输入行情列；缺数据、复权和日历口径沿用回春模式，不读取或修改其规则。
+    """
+    from app.services.huichun_screener import filter_huichun_a0 as screen
+
+    return screen(_get_repo(), frame, params)
 
 
 def list_index_symbols() -> list[dict]:

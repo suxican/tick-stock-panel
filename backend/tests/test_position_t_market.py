@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import polars as pl
+import pytest
 
 from app.market_time import CN_TZ
 from app.services.position_t_market import PositionTMarket, market_time_ms, normalize_bars
@@ -42,7 +43,7 @@ def test_security_metadata_unknown_status_and_stale_book_fail_closed(tmp_path):
     assert market.trading_day(datetime(2027, 1, 4).date()) is None
 
 
-def test_collect_batches_and_caches_minutes_respects_global_pause(tmp_path, monkeypatch):
+def _market_context(tmp_path, monkeypatch):
     now = datetime(2026, 10, 16, 10, 20, 5, tzinfo=CN_TZ)
     stamp = now.timestamp() * 1000
     raw = {"symbol": "600000.SH", "source": "fixture", "last_price": 10, "prev_close": 10,
@@ -68,17 +69,93 @@ def test_collect_batches_and_caches_minutes_respects_global_pause(tmp_path, monk
     monkeypatch.setattr("app.services.preferences.get_minute_data_provider", lambda: "tickflow")
     pos = {"account_id": "a", "symbol": "600000.SH", "board": "main", "benchmark_symbol": "000001.SH", "sector_id": "industry:test"}
     accounts = {"a": {"config": {**DEFAULT_CONFIG, "minute_timestamp_semantics": "end"}}}
+    return adapter, pos, accounts, fetch, now
+
+
+def test_collect_batches_and_caches_minutes_respects_global_pause(tmp_path, monkeypatch):
+    adapter, pos, accounts, fetch, now = _market_context(tmp_path, monkeypatch)
     result = adapter.collect([pos], accounts, now)[("a", "600000.SH")]
     assert result["quote"]["data_errors"] == []
     assert result["bars"][0]["volume_shares"] == 10000
     assert result["environment"]["market_return_5m"] == .001
     adapter.collect([pos], accounts, now + timedelta(seconds=3))
     assert fetch.call_count == 1
-    quote_service.status = lambda: {"enabled": False}
+    adapter.quotes.status = lambda: {"enabled": False}
     paused = adapter.collect([pos], accounts, now)[("a", "600000.SH")]
     assert paused["bars"] == []
-    assert depth.get_order_books.call_count == 2
+    assert adapter.depth.get_order_books.call_count == 2
     assert any("全局实时" in x for x in paused["quote"]["data_errors"])
+
+
+@pytest.mark.parametrize("stamp", [
+    "2026-10-16T09:29:59+08:00", "2026-10-16T11:30:00+08:00",
+    "2026-10-16T14:57:00+08:00", "2026-10-16T04:00:00+00:00",
+    "2026-10-17T10:00:00+08:00", "2026-10-01T10:00:00+08:00",
+    "2027-01-04T10:00:00+08:00",
+])
+def test_closed_market_never_reads_quotes_metadata_or_history(tmp_path, monkeypatch, stamp):
+    adapter, pos, accounts, fetch, _ = _market_context(tmp_path, monkeypatch)
+    readers = [
+        (adapter.repo, "get_instruments"), (adapter.repo, "get_daily"),
+        (adapter.quotes, "status"), (adapter.quotes, "get_market_records"),
+        (adapter.depth, "get_order_books"), (adapter.sectors, "build_snapshots"),
+    ]
+    for obj, name in readers:
+        setattr(obj, name, Mock(side_effect=AssertionError("must not read market data")))
+    assert adapter.collect([pos], accounts, datetime.fromisoformat(stamp)) == {}
+    fetch.assert_not_called()
+    for obj, name in readers:
+        getattr(obj, name).assert_not_called()
+
+
+@pytest.mark.parametrize("semantics", ["start", "end"])
+def test_delayed_complete_minute_retries_once_after_grace(tmp_path, monkeypatch, semantics):
+    adapter, pos, accounts, fetch, now = _market_context(tmp_path, monkeypatch)
+    accounts["a"]["config"]["minute_timestamp_semantics"] = semantics
+    stamp = now.replace(second=0, tzinfo=None) - timedelta(minutes=semantics == "start")
+    latest = fetch.return_value.with_columns(pl.lit(stamp.isoformat()).alias("datetime"))
+    delayed = latest.with_columns(pl.lit((stamp-timedelta(minutes=1)).isoformat()).alias("datetime"))
+    fetch.side_effect = [delayed, latest]
+    first = adapter.collect([pos], accounts, now)[("a", pos["symbol"])]
+    assert first["bars"][-1]["end"] == "2026-10-16T10:19:00+08:00"
+    adapter.collect([pos], accounts, now + timedelta(seconds=5))
+    assert fetch.call_count == 1
+    ready = adapter.collect([pos], accounts, now + timedelta(seconds=10))[("a", pos["symbol"])]
+    assert ready["bars"][-1]["end"] == "2026-10-16T10:20:00+08:00"
+    for seconds in (15, 30, 50):
+        adapter.collect([pos], accounts, now + timedelta(seconds=seconds))
+    assert fetch.call_count == 2
+
+
+def test_missing_minutes_do_not_retry_without_bound(tmp_path, monkeypatch):
+    adapter, pos, accounts, fetch, now = _market_context(tmp_path, monkeypatch)
+    fetch.return_value = pl.DataFrame()
+    for seconds in (0, 5, 10, 15, 30, 50):
+        result = adapter.collect([pos], accounts, now + timedelta(seconds=seconds))[("a", pos["symbol"])]
+        assert result["bars"] == []
+    assert fetch.call_count == 2
+    adapter.collect([pos], accounts, now + timedelta(minutes=1))
+    assert fetch.call_count == 3
+
+
+@pytest.mark.parametrize("semantics", ["end", "unknown"])
+def test_complete_or_unconfirmed_minute_semantics_do_not_need_retry(tmp_path, monkeypatch, semantics):
+    adapter, pos, accounts, fetch, now = _market_context(tmp_path, monkeypatch)
+    accounts["a"]["config"]["minute_timestamp_semantics"] = semantics
+    for seconds in (0, 10, 25, 50):
+        adapter.collect([pos], accounts, now + timedelta(seconds=seconds))
+    assert fetch.call_count == 1
+
+
+def test_failed_retry_does_not_repeat_or_cross_source(tmp_path, monkeypatch):
+    adapter, pos, accounts, fetch, now = _market_context(tmp_path, monkeypatch)
+    fetch.side_effect = [pl.DataFrame(), RuntimeError("provider unavailable")]
+    adapter.collect([pos], accounts, now)
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        adapter.collect([pos], accounts, now + timedelta(seconds=10))
+    result = adapter.collect([pos], accounts, now + timedelta(seconds=20))[("a", pos["symbol"])]
+    assert result["bars"] == []
+    assert fetch.call_count == 2
 
 
 def test_raw_quote_accessor_keeps_market_source_time_and_returns_copy(monkeypatch):

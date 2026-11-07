@@ -59,7 +59,7 @@ def test_extension_generates_archives_and_reopens_using_current_repository(tmp_p
     def no_live_quotes():
         pytest.fail("historical analysis must never fetch current overseas quotes")
 
-    monkeypatch.setattr("app.services.market_game_service.collect_overseas_quotes", no_live_quotes)
+    monkeypatch.setattr("app.services.market_game_overseas.collect_overseas_quotes", no_live_quotes)
     store = DataStore(tmp_path)
     repo = KlineRepository(store)
     _seed_prices(repo)

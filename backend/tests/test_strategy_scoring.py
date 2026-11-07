@@ -110,3 +110,40 @@ def test_effective_scoring_keeps_legacy_merge_and_supports_full_replace():
         "scoring": {},
         "scoring_replace": True,
     }) == {}
+
+
+def test_backtest_symbol_order_is_not_a_numeric_score():
+    # A0 is unscored and lists codes alphabetically. Keep input alignment for
+    # the candidate masks; the simulator breaks equal-score ties by symbol.
+    panel = _candidates().reverse()
+    strategy = SimpleNamespace(meta={
+        "scoring": {}, "order_by": "symbol", "descending": False,
+    })
+    result = StrategyBacktestService._apply_score(
+        panel, strategy, None, universe_mask=pl.Series([True, False]),
+    )
+    assert result["symbol"].to_list() == ["B", "A"]
+    assert result["score"].dtype == pl.Float64
+    assert result["score"].to_list() == [0.0, 0.0]
+    assert result.drop("score").equals(panel)
+
+
+@pytest.mark.parametrize("descending,direction", [(True, 1), (False, -1)])
+def test_backtest_numeric_order_still_sets_score_direction(descending, direction):
+    strategy = SimpleNamespace(meta={
+        "scoring": {}, "order_by": "close", "descending": descending,
+    })
+    result = StrategyBacktestService._apply_score(
+        _candidates(), strategy, None, universe_mask=pl.Series([True, False]),
+    )
+    assert result["score"].to_list() == pytest.approx([11.0 * direction, 0.0])
+
+
+def test_saved_scoring_still_takes_precedence_over_symbol_order():
+    strategy = SimpleNamespace(meta={
+        "scoring": {}, "order_by": "symbol", "descending": False,
+    })
+    result = StrategyBacktestService._apply_score(
+        _candidates(), strategy, {"scoring": {"vol_ratio_5d": 1.0}},
+    )
+    assert result["score"].to_list() == pytest.approx([100.0, 0.0])

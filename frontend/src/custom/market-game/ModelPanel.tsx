@@ -5,6 +5,7 @@ import { api, type MarketGameEcology, type MarketGameFeedbackHypothesis, type Ma
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
 import { ExecutionPanel } from './ExecutionPanel'
+import { InfoTip } from './InfoTip'
 
 const panel = 'min-w-0 rounded-card border border-border bg-surface/80 p-4'
 const button = 'inline-flex min-h-10 items-center justify-center gap-2 rounded-btn border border-border px-3 py-2 text-xs font-medium transition-colors hover:bg-elevated focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50'
@@ -31,8 +32,8 @@ function Lines({ items }: { items: string[] }) {
   return <ul className="space-y-1 leading-relaxed">{items.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul>
 }
 
-function Section({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
-  return <section aria-label={title} className={panel}><h2 className="text-sm font-semibold">{title}</h2>{hint && <p className="mt-1 max-w-prose text-xs leading-relaxed text-secondary">{hint}</p>}<div className="mt-4">{children}</div></section>
+function Section({ title, hint, children }: { title: string; hint?: ReactNode; children: ReactNode }) {
+  return <section aria-label={title} className={panel}><h2 className="flex items-center gap-1 text-sm font-semibold">{title}{hint && <InfoTip title={`${title}说明`}>{hint}</InfoTip>}</h2><div className="mt-3">{children}</div></section>
 }
 
 function Limits({ items, label = '数据与判断边界' }: { items: string[]; label?: string }) {
@@ -52,7 +53,7 @@ function Ecology({ data }: { data?: MarketGameEcology | null }) {
   const [visibleSectors, setVisibleSectors] = useState(20)
   return <>
     <Section title="市场竞争环境" hint="竞争状态描述成交活跃、集中与扩散特征，成交额不等于新增资金。">
-      {!data ? <p className="text-sm leading-relaxed text-secondary">此报告未保存竞争环境。新生成的计划会冻结当时可核验的指标；旧报告不补写历史结论。</p> : <>
+      {!data ? <p className="text-sm leading-relaxed text-secondary">此报告未启用竞争环境研究。核心候选为空时暂不计算，已归档报告保留原有内容。</p> : <>
         <div className="flex flex-wrap items-baseline justify-between gap-2"><h3 className={cn('text-lg font-semibold', ecologyColor[data.state])}>{data.label}</h3><span className="text-xs text-secondary">日线样本覆盖 {percent(data.coverage)} · 行情 {data.as_of}</span></div>
         <p className="mt-2 max-w-prose text-sm leading-relaxed">{data.interpretation}</p>
         <dl className="mt-4 grid grid-cols-2 gap-x-5 gap-y-4 border-y border-border py-4 lg:grid-cols-3">{data.metrics.map(metric => <div key={metric.id} className="min-w-0"><dt className="text-xs text-secondary">{metric.label}</dt><dd className="mt-1 font-mono text-[16px] leading-6">{metricValue(metric)}</dd><dd className="mt-1 text-xs leading-relaxed text-secondary">{metric.reason}<span className="block">有效样本 {metric.sample_size}</span></dd></div>)}</dl>
@@ -61,10 +62,10 @@ function Ecology({ data }: { data?: MarketGameEcology | null }) {
         <Limits items={data.limitations} />
       </>}
     </Section>
-    {data && <Section title="板块竞争" hint="重叠板块成交额分摊，上涨覆盖和平均涨跌按有效成分股等权；变化需要可比的历史成员和行情。">
+    {data && <Section title="板块竞争" hint={<><p>重叠板块成交额分摊，上涨覆盖和平均涨跌按有效成分股等权；变化需要可比的历史成员和行情。</p><p>板块成交份额不表示资金净流入。</p></>}>
       {data.sectors.length ? <div className="overflow-x-auto"><table className="w-full min-w-[800px] text-left text-xs"><caption className="sr-only">冻结的板块成交份额、参与广度与相对表现</caption><thead className="border-b border-border text-secondary"><tr>{['板块 / 有效成员', '成交份额', '份额变化', '上涨覆盖', '平均涨跌', '相对表现', '结构判断'].map(label => <th scope="col" key={label} className="py-2 pr-4 font-medium">{label}</th>)}</tr></thead><tbody>{data.sectors.slice(0, visibleSectors).map(sector => <tr key={sector.name} className="border-b border-border/60"><td className="py-3 pr-4 font-medium">{sector.name}<span className="mt-1 block font-normal text-secondary">{sector.member_count} 只</span></td><td className="pr-4 font-mono">{percent(sector.amount_share)}</td><td className={cn('pr-4 font-mono', signed(sector.share_change))}>{sector.share_change == null ? '—' : `${number(sector.share_change * 100)} 个百分点`}</td><td className="pr-4 font-mono">{percent(sector.breadth)}</td><td className={cn('pr-4 font-mono', signed(sector.avg_return))}>{percent(sector.avg_return)}</td><td className={cn('pr-4 font-mono', signed(sector.relative_return))}>{percent(sector.relative_return)}</td><td className="max-w-xs py-3"><span className="font-medium">{sector.status}</span><div className="mt-1 text-secondary"><Lines items={sector.evidence} /></div></td></tr>)}</tbody></table></div> : <p className="text-sm text-secondary">没有可核验的板块成员，暂不推断板块竞争。</p>}
       {data.sectors.length > 20 && <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs"><span className="text-secondary">已显示 {Math.min(visibleSectors, data.sectors.length)} / {data.sectors.length} 个板块 · 按成交份额排序</span>{visibleSectors < data.sectors.length && <button type="button" className={button} onClick={() => setVisibleSectors(count => count + 20)}>再显示 20 个板块</button>}</div>}
-      <p className="mt-3 text-xs leading-relaxed text-secondary">{data.comparison_date ? `份额对比日 ${data.comparison_date}` : '份额变化尚未核验，缺失数据以 — 显示。'} 板块成交份额不表示资金净流入。</p>
+      <p className="mt-3 text-xs leading-relaxed text-secondary">{data.comparison_date ? `份额对比日 ${data.comparison_date}` : '份额变化尚未核验，缺失数据以 — 显示。'}</p>
     </Section>}
   </>
 }
@@ -98,7 +99,7 @@ function FeedbackRecord({ observation, latest }: { observation: MarketGameFeedba
 
 function Feedback({ observations }: { observations: MarketGameFeedbackObservation[] }) {
   return <Section title="反馈兑现记录" hint="仅检查原计划固定样本。价格方向与反馈机制分别判断；下跌和恐慌卖出也可能形成自我加强。">
-    {observations.length ? <div>{observations.slice(0, 60).map((observation, index) => <FeedbackRecord key={`${observation.hypothesis_id}-${observation.observed_at}-${index}`} observation={observation} latest={index === 0} />)}</div> : <p className="text-sm leading-relaxed text-secondary">尚无反馈兑现记录。先在“资金行为与情绪博弈”记录可用分钟观察，再更新模型验证。</p>}
+    {observations.length ? <div>{observations.slice(0, 60).map((observation, index) => <FeedbackRecord key={`${observation.hypothesis_id}-${observation.observed_at}-${index}`} observation={observation} latest={index === 0} />)}</div> : <p className="text-sm leading-relaxed text-secondary">尚无反馈兑现记录。先在“补充研究 → 资金观察”记录可用分钟观察，再更新模型验证。</p>}
   </Section>
 }
 export function ModelPanel({ report }: { report: MarketGameReport }) {
@@ -116,11 +117,11 @@ export function ModelPanel({ report }: { report: MarketGameReport }) {
   const invalidRefresh = refresh.isSuccess && refresh.variables === report.id && refresh.data.report_id !== report.id
   return <>
     <section aria-label="模型验证操作" className={panel}>
-      <div className="flex flex-wrap items-center justify-between gap-3"><div className="min-w-0"><h2 className="flex items-center gap-2 text-sm font-semibold"><Scale className="h-4 w-4 text-accent" />存量博弈模型</h2><p className="mt-1 max-w-prose text-xs leading-relaxed text-secondary">竞争环境 → 反馈兑现 → 执行评估 → 策略适应性。当前并行观察，不授权交易，不自动调整原计划仓位。</p></div><button type="button" className={button} disabled={!envelope || refreshing} onClick={() => refresh.mutate(report.id)}><RefreshCw className={cn('h-3.5 w-3.5', refreshing && 'animate-spin motion-reduce:animate-none')} />{refreshing ? '正在验证…' : '更新模型验证'}</button></div>
+      <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="flex min-w-0 items-center gap-2 text-sm font-semibold"><Scale aria-hidden className="h-4 w-4 text-accent" />存量博弈模型<InfoTip title="存量博弈模型说明"><p>竞争环境 → 反馈兑现 → 执行评估 → 策略适应性。当前并行观察，不授权交易，不自动调整原计划仓位。</p><p>更新验证会检查当前可用数据；冻结的环境与假设保持原样。</p></InfoTip></h2><button type="button" className={button} disabled={!envelope || refreshing} onClick={() => refresh.mutate(report.id)}><RefreshCw className={cn('h-3.5 w-3.5', refreshing && 'animate-spin motion-reduce:animate-none')} />{refreshing ? '正在验证…' : '更新模型验证'}</button></div>
       {query.isLoading && <div role="status" className="mt-3"><p className="text-xs text-secondary">正在读取模型验证…</p><div aria-hidden className="mt-2 h-12 animate-pulse rounded-btn bg-elevated motion-reduce:animate-none" /></div>}
       {(query.isError || mismatched) && <div role="alert" className="mt-3 flex flex-wrap items-center gap-3 text-xs"><span>模型验证读取失败：{mismatched ? '返回的计划不匹配。' : errorText(query.error)}</span><button type="button" className={button} onClick={() => void query.refetch()}>重试读取模型验证</button></div>}
       {(refreshError || invalidRefresh) && <p role="alert" className="mt-3 text-xs leading-relaxed">模型验证更新失败：{invalidRefresh ? '返回的计划不匹配。' : errorText(refresh.error)} 保留上一份已保存结果。</p>}
-      {envelope && <p className="mt-3 text-xs text-secondary">{envelope.evaluated_at ? `验证保存于 ${time(envelope.evaluated_at)}（北京时间）。` : '尚未保存模型验证。'} 更新将检查当前可用数据；冻结的环境与假设保持原样。</p>}
+      {envelope && <p className="mt-3 text-xs text-secondary">{envelope.evaluated_at ? `验证保存于 ${time(envelope.evaluated_at)}（北京时间）` : '尚未保存模型验证。'}</p>}
       {envelope && <Limits items={envelope.limitations} label="验证范围" />}
     </section>
     <Ecology data={report.ecology} />

@@ -3114,7 +3114,12 @@ class StrategyBacktestService:
                     return _finish(work.with_columns((score_expr * 100).fill_null(0).alias("score")))
 
         order_by = s.meta.get("order_by")
-        if order_by and order_by != "score" and order_by in work.columns:
+        # Display keys such as A0's stock codes are not numerical scores. The
+        # simulator already breaks equal-score ties by ascending symbol.
+        if (
+            order_by and order_by != "score" and order_by in work.columns
+            and (work.schema[order_by].is_numeric() or work.schema[order_by] == pl.Boolean)
+        ):
             direction = 1 if s.meta.get("descending", True) else -1
             score_expr = pl.col(order_by).fill_null(0) * direction
             if has_universe:

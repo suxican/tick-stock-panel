@@ -38,7 +38,7 @@ function context(): MarketGameOverseasContext {
 
 it('keeps old frozen reports and unrecorded observations honest', async () => {
   await render()
-  expect(host.textContent).toContain('历史报告不补入后来行情')
+  expect(host.textContent).toContain('新增观察不回填原计划')
   expect(host.querySelectorAll('article')).toHaveLength(0)
   expect(host.textContent).not.toContain('0.00%')
   await render(null, 'observation')

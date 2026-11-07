@@ -67,6 +67,36 @@ def _resolve_filter_config(filter_cfg: dict | None) -> dict:
         return {"min_members": 4, "max_members": 600, "blacklist": set()}
 
 
+def filter_mainline_members(member_counts: pl.DataFrame, kind: str, filter_cfg: dict) -> pl.DataFrame:
+    """Pure shared membership filter; counts must cover the full mapped universe."""
+    cfg = _resolve_filter_config(filter_cfg)
+    return member_counts.filter(
+        pl.col("_members").ge(cfg["min_members"])
+        & pl.col("_members").le(cfg["max_members"])
+        & ~pl.col(kind).is_in(sorted(cfg["blacklist"]))
+    )
+
+
+def score_mainline_frame(agg: pl.DataFrame) -> pl.DataFrame:
+    """Shared daily ladder ranks, using only supplied point-in-time aggregates.
+
+    Groups with fewer than three known limit-ups have no mainline score.
+    Return all qualifying groups; presentation limits belong to the caller.
+    """
+    agg = agg.filter(pl.col("limit_up_count") >= _MIN_LIMIT_UP)
+    norm_exprs = [
+        ((pl.col(col).rank(method="average") - 1.0)
+         / pl.max_horizontal(pl.len().over("date") - 1, 1)).over("date").alias(f"_{col}_r")
+        for col in _SCORE_WEIGHTS
+    ]
+    agg = agg.with_columns(norm_exprs).with_columns(
+        (100.0 * sum(_SCORE_WEIGHTS[col] * pl.col(f"_{col}_r") for col in _SCORE_WEIGHTS)).alias("score")
+    )
+    return agg.with_columns(
+        pl.col("score").rank(method="ordinal", descending=True).over("date").alias("rank")
+    ).drop([f"_{col}_r" for col in _SCORE_WEIGHTS])
+
+
 def mainline_path(data_dir: Path) -> Path:
     return data_dir / MAINLINE_DIR / "part.parquet"
 
@@ -151,11 +181,7 @@ def compute_mainline_range(repo, data_dir: Path, start: date, end: date,
     cfg = _resolve_filter_config(filter_cfg)
     if cfg["min_members"] > 1 or cfg["max_members"] < 5000 or cfg["blacklist"]:
         member_counts = map_df.group_by(kind).len().rename({"len": "_members"})
-        member_counts = member_counts.filter(
-            pl.col("_members").ge(cfg["min_members"])
-            & pl.col("_members").le(cfg["max_members"])
-            & ~pl.col(kind).is_in(sorted(cfg["blacklist"]))
-        )
+        member_counts = filter_mainline_members(member_counts, kind, cfg)
         allowed = member_counts.select(kind)
         map_df = map_df.join(allowed, on=kind, how="semi")
         if map_df.is_empty():
@@ -219,27 +245,9 @@ def compute_mainline_range(repo, data_dir: Path, start: date, end: date,
     )
 
     # 截面 rank 归一(0-1) → 加权主线分(0-100)。分母 max(n-1,1) 保证单概念日不除零。
-    agg = agg.filter(pl.col("limit_up_count") >= _MIN_LIMIT_UP)
-    norm_exprs = []
-    for col in _SCORE_WEIGHTS:
-        norm_exprs.append(
-            ((pl.col(col).rank(method="average") - 1.0)
-             / pl.max_horizontal(pl.len().over("date") - 1, 1)).over("date").alias(f"_{col}_r")
-        )
-    agg = agg.with_columns(norm_exprs)
-    agg = agg.with_columns(
-        (
-            100.0 * sum(
-                _SCORE_WEIGHTS[col] * pl.col(f"_{col}_r") for col in _SCORE_WEIGHTS
-            )
-        ).alias("score")
-    )
-    agg = agg.with_columns(
-        pl.col("score").rank(method="ordinal", descending=True).over("date").alias("rank")
-    )
+    agg = score_mainline_frame(agg)
     result = (
         agg.filter(pl.col("rank") <= _TOP_PER_DAY)
-        .drop([f"_{col}_r" for col in _SCORE_WEIGHTS])
         .with_columns(pl.lit(kind).alias("kind"))
         .select([
             "date", "kind", "member", "limit_up_count", "ge2_count",

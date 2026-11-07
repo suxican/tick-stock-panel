@@ -253,6 +253,17 @@ def list_rules(request: Request):
     if runtime_warning:
         for rule in intraday_rules:
             rule["runtime_warning"] = runtime_warning
+    strategy_engine = getattr(request.app.state, "strategy_engine", None)
+    if strategy_engine is not None:
+        for rule in rules:
+            if rule.get("type") != "strategy" or not rule.get("enabled", True):
+                continue
+            try:
+                strategy = strategy_engine.get(rule.get("strategy_id"))
+            except ValueError:
+                continue
+            if strategy is not None and strategy.meta.get("realtime_supported") is False:
+                rule["runtime_warning"] = "该策略仅支持已收盘日线筛选，不执行实时监控"
     sector_service = getattr(request.app.state, "sector_monitor_service", None)
     if sector_service is not None:
         for rule in rules:

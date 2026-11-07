@@ -213,6 +213,18 @@ def review(request: Request, account_id: str, date: Annotated[str | None, Query(
     return {"review": _call(_service(request).review, account_id, date)}
 
 
+@router.get("/signal-history")
+def signal_history(request: Request, account_id: str, symbol: str | None = None,
+                   date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+                   limit: Annotated[int, Query(ge=1, le=1000)] = 500):
+    return {"events": _call(_service(request).store.list_signal_history, account_id, symbol, date, limit)}
+
+
+@router.get("/daily-reviews")
+def daily_review(request: Request, account_id: str, date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None):
+    return {"report": _call(_service(request).daily_review_report, account_id, date)}
+
+
 @router.post("/replays")
 def replay(request: Request, body: ReplayBody):
     return {"replay": _call(_service(request).replay, body.model_dump(mode="json"))}

@@ -16,7 +16,6 @@ from app.services.market_game_execution_models import ExecutionPolicy
 from app.services.market_game_feedback import freeze_feedback
 from app.services.market_game_model_service import MarketGameModelService, ModelBusyError
 from app.services.market_game_models import GameReport, RiskConfig
-from app.services.market_game_overseas import build_overseas_context, collect_overseas_quotes
 from app.services.market_game_plan import candidate_conditions, plan_validity
 from app.services.market_game_reports import MarketGameReportStore
 
@@ -47,40 +46,23 @@ class MarketGameService:
                 raise AnalysisBusyError("已有分析正在生成, 请稍后重试")
             self._generating = True
         try:
-            # Fetch before the local snapshot chooses its cutoff. Historical
-            # reports never backfill today's overseas quote into an old plan.
-            overseas_raw = collect_overseas_quotes() if as_of is None else None
             snapshot = build_snapshot(self.repo, as_of)
             output = analyze_snapshot(snapshot, config)
-            overseas = build_overseas_context(
-                overseas_raw, cutoff=datetime.fromisoformat(snapshot["cutoff"]),
-                psychology=output.get("psychology"), historical=as_of is not None,
-            )
-            output["overseas"] = overseas
-            snapshot["overseas"] = overseas
-            fingerprint = json.dumps({"domestic": snapshot["input_version"], "overseas": overseas},
-                                     ensure_ascii=False, sort_keys=True, allow_nan=False).encode()
-            snapshot["input_version"] = hashlib.sha256(fingerprint).hexdigest()[:24]
-            output["input_version"] = snapshot["input_version"]
-            output["hypotheses"].append({
-                "id": "overseas_context", "title": "外围环境与情绪反馈",
-                "status": "watch" if overseas["state"] in {"ready", "limited"} else "inactive",
-                "facts": [f"{row['name']} {row['change_pct']:+.2%}, 行情时点 {row['observed_at']}"
-                          for row in overseas["quotes"] if row["state"] == "ready" and row["change_pct"] is not None],
-                "interpretation": overseas["psychology_link"],
-                "alternative": "海外市场的行业结构、汇率与催化可能不同, 涨跌不能证明A股资金方向。",
-                "confirm": ["复核A股科技、半导体相关板块与个股的量价承接及原入场条件"],
-                "invalidation": ["海外行情过期、时间未核验或A股走势背离时, 不维持外围共振判断"],
-            })
+            # Optional external observations remain available through explicit
+            # capital refreshes; core plan generation needs only local signals.
+            output["overseas"] = None
             output["requested_risk"] = config
             output["validity"] = plan_validity(snapshot)
             archive_warnings = []
-            prior = self.store.ecology_snapshots(
-                as_of=snapshot["as_of"], before=datetime.fromisoformat(snapshot["cutoff"]),
-                warnings=archive_warnings,
-            )
-            output["ecology"] = analyze_ecology(snapshot, prior)
-            output["ecology"]["limitations"].extend(archive_warnings)
+            prior = []
+            output["ecology"] = None
+            if output["candidates"]:
+                prior = self.store.ecology_snapshots(
+                    as_of=snapshot["as_of"], before=datetime.fromisoformat(snapshot["cutoff"]),
+                    warnings=archive_warnings,
+                )
+                output["ecology"] = analyze_ecology(snapshot, prior)
+                output["ecology"]["limitations"].extend(archive_warnings)
             output["feedback_hypothesis"] = freeze_feedback(output)
             output["execution_policy"] = ExecutionPolicy().model_dump(mode="json")
             snapshot["model_archive_versions"] = [

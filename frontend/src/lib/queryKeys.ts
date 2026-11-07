@@ -190,6 +190,8 @@ export const QK = {
   positionTOverview:    (account: string) => ['position-t', 'overview', account] as const,
   positionTPlan:        (id: string) => ['position-t', 'plan', id] as const,
   positionTReview:      (account: string, date: string) => ['position-t', 'review', account, date] as const,
+  // 日报按成交账本汇总；独立于盘中提醒失效，预览最多每 30 秒轮询，归档停止轮询。
+  positionTDailyReview: (account: string, date: string) => ['position-t-daily-review', account, date] as const,
   positionTCapabilities: ['position-t', 'capabilities'] as const,
 
   // 模拟盘 (多账户: 键按账户隔离; paperAll 作账户无关失效前缀)

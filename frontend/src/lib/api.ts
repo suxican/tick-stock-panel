@@ -982,7 +982,10 @@ export interface MarketGameReport extends MarketGameSummary {
     calendar_verified: boolean; entry_session: string | null; observation_sessions: string[]
     expires_at: string | null; status: 'scheduled' | 'unverified' | 'research_only'; reason: string
   } | null
-  market_state: { trend: string; phase: string; emotion: string; crowding: string; change: string }
+  market_state: {
+    trend: string; phase: string; emotion: string; crowding: string; change: string
+    risk_vetoes?: string[]; max_boards?: number | null; promotion_rate?: number | null; phase_basis?: string
+  }
   allocation: {
     min: number; max: number; total_cap: number; single_cap: number; sector_cap: number
     risk_per_trade: number; reason: string
@@ -993,7 +996,7 @@ export interface MarketGameReport extends MarketGameSummary {
     interpretation: string; alternative: string; confirm: string[]; invalidation: string[]
   }[]
   scenarios: { horizon: number; label: string; scenario: string; condition: string; action: string; max_position: number }[]
-  sectors: { name: string; avg_return: number | null; breadth: number | null; status: string; reason: string }[]
+  sectors: { name: string; avg_return: number | null; breadth: number | null; status: string; reason: string; mainline_score?: number | null }[]
   candidates: MarketGameCandidate[]
   evidence: { id: string; label: string; value: number | null; unit: string; source: string; observed_at: string; available_at: string | null }[]
   limitations: string[]
@@ -1500,6 +1503,7 @@ export interface MonitorRule {
 // 持仓做 T：人工／模拟账户、两笔计划与实际成交分开记录。
 export type PositionTDirection = 'buy_sell' | 'sell_buy'
 export interface PositionTConfig {
+  auto_simulation_enabled?: boolean
   min_net_profit: number; min_net_return: number; max_daily_plans: number
   max_symbol_daily_plans: number; daily_quantity_ratio: number; cooldown_minutes: number
   single_risk_budget: number; daily_risk_budget: number; max_extra_notional: number
@@ -1546,11 +1550,16 @@ export interface PositionTSignal {
   account_version: number; position_version: number; market: Record<string, unknown>
   source_mode: string
 }
+export interface PositionTSignalHistoryEvent {
+  signal: PositionTSignal; previous_state: string | null; recorded_at: string
+  context: Record<string, unknown> | null
+}
 export interface PositionTPlanLeg {
   leg: number; side?: 'buy' | 'sell'; status?: string; quantity?: number
   filled?: number; filled_qty?: number; order_id?: string; orders?: PositionTOrderEvent[]
 }
 export interface PositionTPlan {
+  execution_mode?: 'automatic_simulation' | 'manual'
   id: string; account_id: string; symbol: string; direction: PositionTDirection
   quantity: number; state: string; leg1_filled: number; leg2_filled: number
   matched_qty: number; unmatched_qty: number; exposure_qty: number; matched_pnl: number | null
@@ -1558,7 +1567,12 @@ export interface PositionTPlan {
   second_price: [number, number] | null; stop_price?: number | null; cover_guard?: number | null
   created_at: string; updated_at: string; version: number; reasons: string[]
   legs: PositionTPlanLeg[]; strategy_version: string
-  monitor?: { reasons?: string[]; second_leg_condition?: string; computed_at?: string; risk_codes?: string[]; unmatched_qty?: number }
+  monitor?: {
+    state?: 'waiting_first' | 'waiting' | 'ready' | 'risk' | 'paused'
+    actionable_price?: number | null; net_profit?: number | null
+    reasons?: string[]; second_leg_condition?: string; computed_at?: string; expires_at?: string
+    risk_codes?: string[]; unmatched_qty?: number; quote?: Record<string, unknown>
+  }
 }
 export interface PositionTExecution {
   id?: string; plan_id: string; leg: 1 | 2; order_id: string; quantity: number
@@ -1578,6 +1592,7 @@ export interface PositionTOverview {
   positions: PositionTPosition[]; signals: PositionTSignal[]; plans: PositionTPlan[]
   health: { status?: string; running?: boolean; last_run?: string; reasons?: string[]; [key: string]: unknown }
   config: PositionTConfig | null
+  simulation?: { state: string; reasons: string[]; last_run: string | null } | null
 }
 export interface PositionTReview {
   date?: string; matched_pnl?: number | null; unmatched_qty?: number; exposure_value?: number | null
@@ -1591,6 +1606,57 @@ export interface PositionTReview {
 }
 export interface PositionTReplay extends PositionTReview {
   source_mode?: string; sample_count?: number; out_of_sample?: boolean; assumptions?: string[]
+  max_adverse_excursion_close?: number | null
+  max_adverse_excursion_intraminute_bound?: number | null
+  adverse_excursion_basis?: { close: string; intraminute_bound: string }
+}
+export interface PositionTDailyAggregate {
+  realized_net: number | null; realized_net_provisional: number; realized_gross: number
+  matched_fees: number | null; matched_quantity: number
+  started_count: number; completed_count: number; closed_today_count: number; completion_rate: number | null
+  win_count: number; loss_count: number; flat_count: number; unknown_pnl_count: number
+}
+export interface PositionTDailyReview {
+  account_id: string; date: string; schema_version: number; revision: number; source_event_seq: number
+  status: 'final' | 'preliminary'; evidence_status: 'available' | 'insufficient'
+  generated_at: string; source_mode: 'simulation' | 'manual'
+  summary: PositionTDailyAggregate & {
+    trade_count: number; buy_qty: number; sell_qty: number
+    trade_fees: number | null; trade_fees_provisional: number
+  }
+  by_symbol: (PositionTDailyAggregate & { key: string })[]
+  by_direction: (PositionTDailyAggregate & { key: PositionTDirection })[]
+  unfinished: {
+    plan_id: string; symbol: string; direction: PositionTDirection
+    first_qty: number; second_qty: number; unmatched_qty: number; exposure_qty: number
+    pending_order_qty: number; state: 'exposure' | 'unfinished'
+    remaining_first_qty?: number
+  }[]
+  trades: {
+    id: string; plan_id: string; leg: 1 | 2; side: 'buy' | 'sell'; quantity: number; price: number
+    executed_at: string; symbol: string; direction: PositionTDirection; fee: number | null
+    fee_provisional: number; fee_estimated: boolean; source: 'simulation_auto' | 'simulation_manual' | 'manual_record'
+  }[]
+  plans: {
+    plan_id: string; symbol: string; direction: PositionTDirection; strategy_version: string; execution_mode: string
+    realized_net: number | null; realized_net_provisional: number; realized_gross: number
+    matched_fees: number | null; matched_quantity: number; started_today: boolean; completed_today: boolean
+    closed_today: boolean; has_realized: boolean; trade_count: number
+    remaining_first_qty?: number
+  }[]
+  blockers: { reason: string; count: number }[]
+  execution_blockers?: { reason: string; count: number }[]
+  suggestions: { code: string; title: string; detail: string }[]
+  coverage: {
+    sample_count: number; first_sample_at: string | null; last_sample_at: string | null
+    state_counts: Record<string, number>; source_counts: Record<string, number>
+    triggered_episode_count: number; unaccepted_episode_count: number; estimated_fee_count: number
+    execution_sample_count?: number
+  }
+  strategy_versions: string[]
+  config_evidence: { plan_id: string; strategy_version: string; config: PositionTConfig }[]
+  valuation: { close_equity: number | null; hold_equity: number | null; incremental_equity: number | null; max_drawdown: number | null; reason: string }
+  limitations: string[]
 }
 
 // 批次登记只作旧监控规则生成的载体，不自动转为账户库存。
@@ -1918,6 +1984,11 @@ export interface AlertEvent {
   signals?: string[]
   severity?: string
   strategy_id?: string
+  event_id?: string
+  kind?: string
+  account_id?: string
+  plan_id?: string
+  expires_at?: string
   conditions?: MonitorCondition[]
   logic?: 'and' | 'or'
   sector_kind?: SectorKind
@@ -3048,7 +3119,7 @@ export interface MonitorExtFieldItem {
   hiddenIndices?: number[]
 }
 export interface StrategyAlertEvent {
-  source: 'strategy' | 'depth'
+  source: 'strategy' | 'depth' | 'position_t'
   type: string
   strategy_id?: string
   symbol?: string
@@ -5478,6 +5549,13 @@ export const api = {
 
   // ===== 持仓做 T（手工登记与保守模拟，不向券商下单） =====
   positionTOverview: (account = '') => request<PositionTOverview>(`/api/position-t/overview?account_id=${encodeURIComponent(account)}`, { quiet: true }),
+  positionTSignalHistory: (account: string, options: { symbol?: string; date?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams({ account_id: account })
+    if (options.symbol) params.set('symbol', options.symbol)
+    if (options.date) params.set('date', options.date)
+    if (options.limit != null) params.set('limit', String(options.limit))
+    return request<{ events: PositionTSignalHistoryEvent[] }>(`/api/position-t/signal-history?${params}`, { quiet: true })
+  },
   positionTCreateAccount: (body: { name: string; mode: 'manual' | 'simulation'; available_cash: number | null; trade_date: string }) =>
     request<{ account: PositionTAccount }>('/api/position-t/accounts', { method: 'POST', body: JSON.stringify(body), quiet: true }),
   positionTSnapshot: (id: string, body: Pick<PositionTAccount, 'available_cash' | 'broker_frozen_cash' | 'cash_net_of_frozen' | 'trade_date' | 'snapshot_at' | 'reconciled'> & { included_event_seq: number; expected_version: number }) =>
@@ -5500,9 +5578,10 @@ export const api = {
     request<{ plan: PositionTPlan; execution: PositionTExecution }>(`/api/position-t/executions/${encodeURIComponent(id)}/fee`, { method: 'POST', body: JSON.stringify(body), quiet: true }),
   positionTPlan: (id: string) => request<{ plan: PositionTPlan; executions: PositionTExecution[]; events: PositionTOrderEvent[] }>(`/api/position-t/plans/${encodeURIComponent(id)}`, { quiet: true }),
   positionTReview: (account: string, date: string) => request<{ review: PositionTReview }>(`/api/position-t/reviews?account_id=${encodeURIComponent(account)}&date=${encodeURIComponent(date)}`, { quiet: true }),
+  positionTDailyReview: (account: string, date: string) => request<{ report: PositionTDailyReview }>(`/api/position-t/daily-reviews?account_id=${encodeURIComponent(account)}&date=${encodeURIComponent(date)}`, { quiet: true }),
   positionTReplay: (body: { account_id: string; symbol: string; start_date: string; end_date: string; direction?: PositionTDirection }) =>
     request<{ replay: PositionTReplay }>('/api/position-t/replays', { method: 'POST', body: JSON.stringify(body), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, quiet: true }),
-  positionTCapabilities: () => request<{ manual: boolean; simulation: boolean; broker: boolean; auto_order: boolean; reasons?: string[] }>('/api/position-t/capabilities', { quiet: true }),
+  positionTCapabilities: () => request<{ manual: boolean; simulation: boolean; broker: boolean; auto_order: boolean; auto_simulation?: boolean; reasons?: string[] }>('/api/position-t/capabilities', { quiet: true }),
 
   // ===== 持仓研究（冻结报告和条件提醒，不写入执行账本） =====
   holdingAnalysisOverview: (source: HoldingAnalysisSource, account_id = '') =>

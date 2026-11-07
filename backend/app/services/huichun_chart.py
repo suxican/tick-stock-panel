@@ -10,7 +10,8 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.services.huichun_audit import _table_exists
-from app.services.huichun_calendar import calendar_health, read_market_calendar
+from app.services.huichun_calendar import calendar_health
+from app.services.huichun_data import HuichunDataReader
 from app.services.huichun_mode import (
     DATA_POLICY_VERSION,
     HuichunModeService,
@@ -43,25 +44,7 @@ class HuichunChartRequest(BaseModel):
 
 def _chart_calendar(service: HuichunModeService, as_of: date) -> tuple[list[date], str]:
     """Keep the calendar local: a chart must not mutate a concurrent scan's context."""
-    source = "observed_market_daily_dates"
-    if not _table_exists(service.repo, "kline_daily"):
-        return [], source
-    observed = [row[0] for row in service.repo.execute_all(
-        "SELECT DISTINCT date FROM kline_daily WHERE date <= ? ORDER BY date", [as_of],
-    )]
-    if not observed or service._calendar_path is None:
-        return observed, source
-    try:
-        evidence = read_market_calendar(service._calendar_path)
-        first = max(observed[0], evidence.coverage_start)
-        if as_of < first:
-            return [], source
-        calendar = evidence.sessions(start=first, end=as_of)
-    except (OSError, ValueError):
-        return observed, source
-    if {d for d in observed if d >= first} - set(calendar):
-        raise ValueError("日线日期与独立交易日历冲突，请检查数据")
-    return calendar, "official_exchange_calendar"
+    return HuichunDataReader(service.repo, calendar_path=service._calendar_path).calendar(as_of)
 
 
 def build_huichun_chart(service: HuichunModeService, request: HuichunChartRequest) -> dict:

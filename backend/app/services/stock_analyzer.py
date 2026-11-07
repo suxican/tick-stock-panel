@@ -1,14 +1,12 @@
-"""AI 个股分析服务 — 技术面 / 基本面 / 财务面 / 消息面 四维综合分析。
+"""AI 个股分析服务 — 技术价位 + 五维证据核验 + 条件化操作计划。
 
 职责:
   组合一只股票的 K 线(含已算好的技术指标)+ 财务表 + 关键价位 →
-  拼装客观技术分析系统提示词 → 流式调用 LLM → 逐 chunk 吐给前端。
+  拼装综合分析与操作建议提示词 → 流式调用 LLM → 逐 chunk 吐给前端。
 
 与 financial_analyzer.py 的区别(刻意区分,非复用):
-  - 角色:客观技术分析师(非 CFA 财务分析师)
-  - 数据源:K 线 + 技术指标为主,财务表为辅(财务分析以财务表为主)
-  - 输出框架:技术面→基本面→财务面→消息面(四维),落点是客观技术状态与风险提示
-    (财务分析的落点是财务质量评级)。注意:本服务不输出买卖建议、操作指令。
+  - 数据源:已同步 K 线、技术指标与财务表,不把量价推断冒充新闻或资金流
+  - 输出:证据与缺口、技术状态、条件化买卖计划(财务分析仅做财务质量评价)
 
 不知道: HTTP、前端、配置持久化。
 """
@@ -16,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from collections.abc import AsyncIterator
 from datetime import timedelta
 from pathlib import Path
@@ -32,6 +31,19 @@ logger = logging.getLogger(__name__)
 _KLINE_WINDOW = 90
 # 注入财务表的最近期数
 _MAX_PERIODS = 4
+
+_FINANCIAL_COLS = {
+    "metrics": ["eps_basic", "bps", "ocfps", "roe", "roa", "gross_margin", "net_margin",
+                "revenue_yoy", "net_income_yoy", "debt_to_asset_ratio", "operating_cash_to_revenue"],
+    "income": ["revenue", "operating_profit", "net_income", "net_income_attributable",
+               "net_income_deducted", "rd_expense", "financial_expense"],
+    "balance_sheet": ["total_assets", "total_liabilities", "total_current_assets",
+                      "total_current_liabilities", "cash_and_equivalents", "goodwill",
+                      "accounts_receivable", "inventory", "short_term_borrowing",
+                      "long_term_borrowing", "equity_attributable"],
+    "cash_flow": ["net_operating_cash_flow", "net_investing_cash_flow",
+                  "net_financing_cash_flow", "capex", "net_cash_change"],
+}
 
 
 # ================================================================
@@ -59,7 +71,6 @@ def _clean_rows(df: pl.DataFrame, keep_cols: list[str]) -> list[dict]:
     必须转成 ISO 字符串,否则 json.dumps 抛 TypeError 让整个流静默失败。
     """
     import datetime
-    import math
     cols = [c for c in keep_cols if c in df.columns]
     sub = df.select(cols)
     rows = []
@@ -77,15 +88,11 @@ def _clean_rows(df: pl.DataFrame, keep_cols: list[str]) -> list[dict]:
 
 
 def _load_financials(data_dir: Path, symbol: str) -> dict[str, list[dict]]:
-    """读取该标的核心财务指标 + 利润表(只取最有信息量的两张表)。
-
-    财务面只需要关键指标(ROE / 增速 / 毛利率 等),不需要把 4 张表全塞进上下文
-    (那是 financial_analyzer 的职责)。这里取轻量,留给技术面更多 token。
-    """
+    """复用已同步的四张报表,为盈利、现金流和负债核验提供有限期数的数据。"""
     out: dict[str, list[dict]] = {}
-    for table in ("metrics", "income"):
+    for table, fields in _FINANCIAL_COLS.items():
         df = get_financial_df(data_dir, table)
-        if df.is_empty():
+        if df.is_empty() or "symbol" not in df.columns:
             out[table] = []
             continue
         df = df.filter(pl.col("symbol") == symbol)
@@ -93,107 +100,94 @@ def _load_financials(data_dir: Path, symbol: str) -> dict[str, list[dict]]:
             out[table] = []
             continue
         if "period_end" in df.columns:
-            df = df.sort("period_end", descending=True).head(2)  # 只取最近 2 期
-        import math
-        rows = []
-        for rec in df.to_dicts():
-            clean = {}
-            for k, v in rec.items():
-                if k == "symbol":
-                    continue
-                if isinstance(v, float):
-                    clean[k] = None if not math.isfinite(v) else v
-                else:
-                    clean[k] = v
-            rows.append(clean)
-        out[table] = rows
+            df = df.sort("period_end", descending=True, nulls_last=True)
+        out[table] = _clean_rows(
+            df.head(_MAX_PERIODS), ["period_end", "announce_date", *fields],
+        )
     return out
 
 
 # ================================================================
-# 系统提示词 —— 客观技术分析四维框架(与财务分析明确区分)
-# 重要原则:只描述"指标/价位处于什么客观状态",不输出"应该怎么操作"。
-# 本报告定位为客观行情分析,不提供任何买卖建议、仓位建议或交易指令。
+# 系统提示词 —— 有证据边界的操作建议,不把缺失维度包装成量化共振。
 # ================================================================
 
-_SYSTEM_PROMPT = """你是一位拥有 15 年 A 股一线研究经验的技术分析分析师,擅长从 K 线、量价、关键价位与基本面交叉验证中客观解读个股的技术状态。你的任务是:基于提供的个股数据,产出一份**客观、中立、不包含任何买卖或操作建议**的技术分析报告。
+_SYSTEM_PROMPT = """你是一位重视证据和风险预算的 A 股研究与交易分析师。基于提供的单只标的数据,给出买入、持有、加仓、减仓、卖出、止损、止盈或观望的条件化操作建议。目标是可复核的决策与风险控制,不得承诺长期稳定盈利或确定收益。
 
-## 核心红线(务必遵守)
+## 数据与判断边界
 
-- **绝对不输出**"买入/卖出/加仓/减仓/观望/轻仓/重仓/止损/止盈/建议买入区间/操作建议"等任何交易指令或倾向性措辞
-- **绝对不**按"激进型/稳健型/保守型"给用户分别的操作建议
-- 你的角色是**客观陈述**该股当前的技术状态、价位结构、量价特征与潜在风险,让读者自行判断
-- 换成"一个中立财经记者能不能写出来"——能写就保留,不能写就删除
+- 区分【事实】【推断】【待验证】,每项结论引用输入中的数值、日期或来源。空值、未提供和不适用均不是零值或利空。
+- 本次只使用输入的数据,不能声称已检索外部资讯。量价强弱可作为技术承接迹象,不能冒充主力/北向/龙虎榜净流入,也不能据涨停或放量编造政策、订单、公告或利好。
+- 未提供新闻样本、统计时段和情绪方法时,资讯正面占比、热度、衰减速度均为 N/A;无行业样本或历史估值序列时,不生成行业均值、估值分位或“低估”结论。未提供预期基准时不声称业绩超预期。
+- 不得编造上涨/下跌概率或胜率。没有经验证的统计模型、样本和回测时写“未校准”,不用主观百分比代替。
+- 标明行情截止交易日和财务报告期,不能把日线收盘价说成实时价。成交额不等于净流入;不同财报期间的累计值不能直接当单季增速比较。缺日期/单位时注明无法核验。
+- 技术指标和关键价位基于前复权价格;操作表必须明确价格口径。只在提供了同日不复权参考价位时给出委托参考价,不得用前复权价格直接与不复权持仓成本算盈亏。价格不可核实时写“待核实”,给触发条件并暂缓新开仓。
 
-## 输出规范
+## 报告结构
 
-用 **Markdown** 格式输出,严格遵循以下结构。不要输出任何 JSON 或代码块,直接输出 Markdown 正文。
+用 Markdown 输出约 1400-2200 字,优先呈现结论和操作表,不输出 JSON 或代码块。用户有关注重点时先直接回答,再完成下列结构。
 
-### 1. 🎯 一句话定调(1-2 句)
-用一句话概括该股当前的**技术状态**(如"近期高位放量滞涨,量能持续性存疑"/"价格在 60 日均线上方运行,均线呈多头排列")。结尾用【当前状态:企稳 / 反弹 / 震荡 / 调整 / 走弱】客观描述技术形态,**不评价好坏、不下操作结论**。
+### 1. 决策摘要与周期
+给出【当前结论:条件买入 / 持有 / 减仓 / 卖出 / 观望 / 规避】、主要理由、行情日期和风险等级(低/中/高/资料不足)。未触发的条件不能写成已满足,无持仓信息时区分空仓与持仓情景。
+优先使用用户指定周期;未指定时以短线 1-5 个交易日为主,补充波段 1-4 周的区别。季度判断需更长历史和产业证据,不足时不外推。说明启动/上升/震荡/走弱阶段;成长/价值/周期风格及赛道只在证据充分时定位。
 
-### 2. 📈 技术面分析(核心维度)
-这是你的主战场,务必深入,只陈述客观事实:
-- **趋势判断**:均线多头/空头排列、20/60 日均线方向、价格在均线之上/下
-- **形态结构**:近期是否出现突破/破位/双底/双顶/旗形等关键形态
-- **指标信号**:MACD 金叉/死叉/背离、KDJ 超买超卖、RSI 强弱、布林通道位置
-- **量价配合**:放量上涨/缩量回调/量价背离/换手率异动
-每条结论必须引用具体数值(如"MACD 在 6/12 出现金叉,DIF 0.32 上穿 DEA 0.18"),客观陈述,不下买卖定性。
+### 2. 操作计划
+用一张表给出「情景 / 动作 / 触发条件 / 价格或区间及依据 / 仓位参考 / 失效与退出条件」。至少覆盖空仓买入或等待、持仓持有或减仓、止损、止盈;加仓仅在原逻辑有效且新触发确认时考虑,不以亏损为加仓理由。
+- 买入区间、止损价、第一/第二目标及止盈条件均需来自支撑压力、结构或波动数据,标注来源。目标是条件情景,不是收益承诺。数据不够则写 N/A 和所缺证据,不能随意填价格。
+- 给出风险收益比: (第一目标价 - 入场价) / (入场价 - 止损价),使用同一价格口径、同一周期,列明三项数值。区间用最不利买入价和较近目标保守计算;仅当止损价 < 入场价 < 目标价时有效,否则不生成可开仓计划。注明未计费用/滑点;若不足 2:1,默认等待并解释,不能抬高目标凑比例。
+- 未知总资产和风险承受度时不编造实际持仓比例或买入股数。仓位仅作示例上限:资料充分的低/中/高风险单股分别不超过 30%/20%/10%;资料不足不能当低风险,默认等待或只给待验证计划。若用户提供更严格风险预算,优先遵守。
+- 止损先看结构/ATR,再核对风险预算。短线 5%、波段 10%仅作示例损失预算上限;结构止损过远则放弃或降低暴露,不能机械挪近止损线。股价跳空、跌停和流动性不足可能使实际损失超过预算。
+- A 股股票执行须考虑 T+1、可卖数量、涨跌停、费用与滑点;不能承诺当日新买股票可立即卖出或止损必成交。ETF 按具体品种交易规则核验,不能一概套用股票规则;指数只分析,不写可直接下单买入指数。
+- 有模拟盘持仓时逐账户给持有/减仓/退出情景,明确虚拟持仓;没有持仓时不假设用户已持有。
 
-### 3. 💰 关键价位(客观价位结构)
-基于提供的关键价位数据,客观列出价位结构:
-- **上方压力位**(逐档列出,标注来源):第一压力、第二压力
-- **下方支撑位**(逐档列出,标注来源):第一支撑、第二支撑
-- 用数据说话,引用提供的压力/支撑(成交密集区)/枢轴点数值
-- **注意:只客观列出价位及其技术含义(如"此处为前期成交密集区"),不输出"建议买入区间""止损位""止盈位"等操作指令**
+### 3. 技术面与关键价位
+引用均线排列/方向、形态、MACD/KDJ/RSI/布林、成交量/成交额/量比/换手等已有数据,突出支持和反驳操作计划的证据。列出主要支撑、压力及来源,区分日线信号与尚未提供的分钟确认,不能编造分时承接。
 
-### 4. 🏭 基本面与财务面(辅助验证)
-简要点评(2-4 句,不展开长篇):
-- 盈利质量(ROE / 毛利率水平)、成长性(营收/利润增速)的客观水平
-- 与技术面的**客观对照**:好公司 + 技术面走坏 → 客观陈述两者背离;差公司 + 技术面强势 → 客观提示炒作可能性
-- 不下"逢低吸纳""规避"等结论
+### 4. 五维证据与共振校验
+表格列为「维度 / 证据与日期 / 判断 / 得分或 N/A / 缺口」,逐项覆盖:
+1. 业绩打底:营收/净利润/扣非增速、ROE、毛利率/净利率、现金流匹配与连续性。只在对应字段存在时分析。
+2. 资金承接:真实资金流的 3/5/10 日持续性与量价配合;只有 OHLCV 时仅作技术观察,资金流评分 N/A。
+3. 政策支撑:可核验政策原文、日期及与公司主营业务的关联;无材料则待验证。
+4. 产业景气:供需、订单、竞争力和主营匹配度;概念标签或股价上涨不能证明龙头地位、订单增长或产业景气。
+5. 资讯情绪:有来源、时间、去重口径的公告/新闻样本及事件落地程度;无样本则待验证,不推测“未公开利好”。
+评分是证据分级,不是回测量化因子或收益概率:每维 0/1/2 分,分别表示有证据的明显不利/中性或相互矛盾/持续且相互印证的有利。必须说明依据,无法判断记 N/A,缺失不能记 0。只有五维都有充分证据才汇总满分 10 分;否则写“总分 N/A、已验证 X/5”,不得折算为十分制。ETF/指数的公司业绩维度为“不适用”,不算共振总分。
+总分完整时 ≥8 为重点核验候选,6-7 为等待确认,≤5 为低优先级;分数不能直接触发买入或覆盖风险。缺失维度不妨碍给出有数据支撑的技术条件计划,但不得称“五维共振买入”。
+交叉验证业绩与资金、政策与产业、估值与情绪、事件与量价;任一侧缺失就标明无法完成验证。记录相互矛盾的证据及对操作的影响,不机械用“某项不满足”推导永久剔除。
 
-**当用户消息中标注了"该标的暂无财务数据"时**,本节请输出:
-> 📌 财务面分析能力正在接入中。当前未同步该标的的财务报表,基本面维度暂无法评估。
-> 技术面分析不依赖财务数据,以下结论依然有效;待财务数据同步后可补充本维度。
+### 5. 估值、风险与复核清单
+有数据时核对 PE/PB/PS/PEG、历史/行业分位、负债、现金流、商誉/减值、质押/解禁与监管事项;缺失时不得声称“无风险”。不把 PE 分位 70%/80%或资讯正面占比 60%当跨行业通用定律。
+按“事实依据 → 对原逻辑的影响 → 触发后的动作”列出最重要的业绩、资金、价格、估值和事件风险。只有已验证的重大变化才触发调整,缺数据不是风险已发生。列出下一交易日需确认的信号和计划有效期,行情超出区间或新消息改变逻辑时重新评估。
+最后用一句话重申当前动作及改变结论的条件。
 
-**当用户消息中标注了该标的为 ETF 时**,本节请输出:
-> 📌 该标的为场内 ETF,无上市公司财务报表,基本面/财务面不适用公司盈利质量框架。
-> 请仅基于价量与关键价位做技术分析,不要编造 ROE/营收等数字,也不要写成「财务接入中」。
-
-**绝对不要**在无数据时编造 ROE / 增速等数字。
-
-### 5. 📰 消息面(价量异动推断)
-**注意:本期无直接新闻数据输入。** 请基于 K 线的**异动信号**进行客观推断(如:
-- 涨停/连板/炸板 → 可能存在利好或资金关注
-- 放量暴跌 → 可能存在未公开扰动
-- 突破放量 → 可能存在催化剂
-明确标注"[推断]",告诉读者这是基于价量的客观推测,真实消息面数据待接入。若无明显异动,直说"近期价量平稳,无明显异动信号"。
-
-### 6. ⚖️ 综合研判与风险提示
-2-3 段,只做客观描述,不下操作结论:
-- 客观描述该股当前所处的技术阶段(底部企稳 / 上升途中 / 高位震荡 / 下跌趋势)
-- 客观评估当前价位的"空间不对称性"(距上方压力位与下方支撑位的距离),不评价好坏
-- 客观列出后续值得关注的量价信号(如量能能否维持、某均线得失、是否放量突破压力位),**不附任何操作结论**
-
-## 分析准则(务必遵守)
-
-1. **技术面优先**:技术面和量价是主要分析对象,基本面是交叉验证手段,主次分明
-2. **数据说话**:每个判断引用具体数值,严禁空泛套话("走势良好"必须改成"连续 3 日站稳 20 日均线且放量")
-3. **客观中立**:看多就客观陈述多头特征,看空就客观陈述空头特征,不下"该买/该卖"结论;数据不支持时直言无法判断
-4. **价位精确**:压力位/支撑位必须落到具体价格,基于提供的关键价位数据陈述
-5. **不输出操作指令**:不写"买入/卖出/止损/加仓/减仓/仓位建议/操作建议"等任何交易指令;提示潜在风险但不下操作结论
-6. **简明客观**:用读者能扫读的密度输出,总字数 1000-1800 字,重在客观信息密度
-
-## 重要免责
-报告末尾附一行:"> ⚠️ 本内容由 AI 基于公开行情与财务数据生成,仅客观陈述技术状态,不构成任何投资建议或买卖指令。交易有风险,入市需谨慎。"
-
-现在请基于下方数据进行分析。"""
+报告末尾附: > AI 操作建议基于已提供的数据与假设,仅供决策参考,不保证收益;下单前请核对最新行情、公告及个人风险预算。
+"""
 
 
 # ================================================================
 # 用户消息构建
 # ================================================================
+
+def _positive_price(value: float | None) -> bool:
+    return value is not None and math.isfinite(value) and value > 0
+
+
+def _execution_price_part(levels: dict[str, list[dict]], close: float | None,
+                          raw_close: float | None) -> str:
+    """将技术价位换至最新行情日的不复权尺度,不改变图表或历史价位。"""
+    if not _positive_price(close) or not _positive_price(raw_close):
+        return "不复权委托参考价位: 待核实(缺少有效的同日前复权/不复权收盘价);不得直接把技术价位作为委托价。"
+    factor = raw_close / close
+    converted = {
+        key: [{**point, "value": round(point["value"] * factor, 4),
+               "label": f"前复权{point['label']}折算"}
+              for point in points if _positive_price(point.get("value"))]
+        for key, points in levels.items()
+    }
+    return (
+        f"同日不复权收盘价: {raw_close:.4f} 元;技术价位换算系数 raw_close/close={factor:.8f}。\n"
+        f"不复权委托参考价位: {summarize_levels(converted, raw_close)}。\n"
+        "仅按该行情日价格尺度折算,不是实时买卖报价;下单前核对最新价格、除权变化和最小报价单位。"
+    )
+
 
 def _paper_position_part(positions: list[dict], close: float | None, raw_close: float | None) -> str:
     """虚拟持仓上下文 (V3): 模拟盘持有该标的时注入提示词, 让 AI 结合仓位给建议。
@@ -201,7 +195,7 @@ def _paper_position_part(positions: list[dict], close: float | None, raw_close: 
     positions 为多账户列表 [{account_id, qty, avg_cost}, ...] (V2 账户隔离),
     只收 qty>0 的账户, 逐账户一行; 全空则返回空串 (不注入"空仓"之类误导性表述)。
     浮盈用 raw 口径: 持仓 avg_cost 是不复权 raw 成本, 与前复权 close 混算会在
-    除权后产生虚假盈亏, 故优先用 raw_close (缺列时退化用 close 并接受口径误差)。
+    除权后产生虚假盈亏, 故缺少 raw_close 时不计算浮盈。
     """
     lines: list[str] = []
     for item in positions or []:
@@ -210,9 +204,10 @@ def _paper_position_part(positions: list[dict], close: float | None, raw_close: 
         if qty <= 0 or avg_cost <= 0:
             continue
         line = f"账户 {item.get('account_id') or 'default'}: 持仓 {qty} 股, 平均成本 {avg_cost:.3f} 元 (不复权)"
-        ref = raw_close if (raw_close is not None and raw_close > 0) else close
-        if ref is not None and ref > 0:
-            line += f", 现价 {ref:.2f} 元, 浮动盈亏 {(ref / avg_cost - 1) * 100:+.2f}%"
+        if _positive_price(raw_close):
+            line += f", 行情截止日收盘价 {raw_close:.2f} 元, 浮动盈亏 {(raw_close / avg_cost - 1) * 100:+.2f}%"
+        else:
+            line += ", 浮动盈亏待核实(缺少不复权收盘价)"
         lines.append(line)
     if not lines:
         return ""
@@ -234,17 +229,27 @@ def _build_user_prompt(
     asset_type: str = "stock",
     paper_positions: list[dict] | None = None,
     raw_close: float | None = None,
+    name: str = "",
 ) -> str:
     """构建用户消息:标的 + 价位摘要 + 技术指标 JSON + 财务摘要 + 关注点 (+ 虚拟持仓)。
 
-    asset_type 用于区分无财务数据时的文案:指数/ETF 无财务是常态,不走 Free 文案。
+    asset_type 用于区分数据缺失与公司财务框架不适用的情况。
     """
     parts: list[str] = [
         f"标的标准代码: {symbol}",
-        f"关键价位概览: {summarize_levels(levels, close)}",
+        f"标的名称: {name or '未提供(不得猜测)'}",
+        f"分析日期(北京时间): {cn_today()}",
+        f"行情截止交易日: {kline_tail[-1].get('date') if kline_tail else '未知'}",
+        f"前复权技术价位概览: {summarize_levels(levels, close)}",
+        _execution_price_part(levels, close, raw_close),
+        "数据口径: OHLC/均线/技术价位为前复权;amount 为成交额(元);"
+        "change_pct 为小数比例(0.03=3%);turnover_rate 和财务百分比指标为百分点(3=3%)。",
+        "未提供: 主力/北向/龙虎榜资金流、两融、机构持仓、政策原文与产业订单、"
+        "新闻/公告/研报、资讯情绪样本、历史/行业估值分位、行业对比及业绩预期。"
+        "这些维度须标记待验证,不能用量价替代或凭模型记忆补齐。",
         "",
         "以下是该标的最近日 K 数据(JSON,含 OHLCV 与已计算的技术指标。"
-        f"最近 {_KLINE_WINDOW} 个交易日,升序):",
+        f"实际 {len(kline_tail)} 根日 K,最多 {_KLINE_WINDOW} 个交易日,升序,非实时行情):",
         "```json",
         json.dumps(kline_tail, ensure_ascii=False),
         "```",
@@ -254,7 +259,8 @@ def _build_user_prompt(
     if has_fin:
         parts.extend([
             "",
-            "以下是该标的最新财务数据(JSON,核心指标 + 利润表,金额单位为元):",
+            "以下是已同步的财务数据(JSON,核心指标 + 利润表 + 资产负债表 + 现金流量表,"
+            "每表最多 4 期,金额单位为元;缺表/缺字段不等于零,报告期与公告日分别列示):",
             "```json",
             json.dumps(fins, ensure_ascii=False),
             "```",
@@ -262,27 +268,26 @@ def _build_user_prompt(
     elif asset_type == "index":
         parts.extend([
             "",
-            "(该标的为指数: 无财务、股本与涨跌停数据。请按系统提示词第 4 节的说明,"
-            "在基本面/财务面维度给出\"接入中\"的友好提示,不要编造数据;"
-            "消息面维度基于价量异动推断即可。)",
+            "(该标的为指数: 公司财务/业绩评分不适用,不得编造报表或共振总分;"
+            "仅给技术情景,不能直接下单买入指数。)",
         ])
     elif asset_type == "etf":
         parts.extend([
             "",
-            "(该标的为 ETF: 场内基金无上市公司财务报表、股本与涨跌停口径。"
-            "请按系统提示词第 4 节的说明,在基本面/财务面维度明确这是 ETF 常态,"
-            "不要编造公司财务数字,也不要写成「财务接入中」;"
-            "消息面维度基于价量异动推断即可。)",
+            "(该标的为 ETF: 公司财务/业绩评分不适用,不得编造报表或共振总分,"
+            "也不要写成「财务接入中」;根据现有价量给条件计划,交易规则按该 ETF 品种核验。)",
         ])
     else:
         parts.extend([
             "",
-            "(该标的暂无财务数据:当前为 Free 模式或尚未同步财务报表。"
-            "请按系统提示词第 4 节的说明,在基本面/财务面维度给出\"接入中\"的友好提示,不要编造数据。)",
+            "(该标的暂无财务数据: 当前未提供可用报表。业绩和财务风险待验证,"
+            "得分 N/A,不能推断亏损或无风险;可给技术条件计划,不能声称五维共振。)",
         ])
 
     from app.services.ai_provider import build_focus_instruction
-    focus_instruction = build_focus_instruction(focus, report_name="个股分析报告")
+    focus_instruction = build_focus_instruction(
+        focus, report_name="个股分析报告", allow_trading_advice=True,
+    )
     if focus_instruction:
         parts.extend(["", focus_instruction])
     paper_part = _paper_position_part(paper_positions or [], close, raw_close)
@@ -296,7 +301,7 @@ def _build_user_prompt(
 # ================================================================
 
 _KLINE_KEEP_COLS = [
-    "date", "open", "high", "low", "close", "volume", "change_pct",
+    "date", "open", "high", "low", "close", "volume", "amount", "change_pct",
     "ma5", "ma10", "ma20", "ma60",
     "macd_dif", "macd_dea", "macd_hist",
     "kdj_k", "kdj_d", "kdj_j",
@@ -338,9 +343,15 @@ async def analyze_stock_stream(
         }, ensure_ascii=False)
         return
 
-    # 2. 价位计算(基于 K 线)
+    # 2. 无有效收盘价时不能构建操作计划,避免模型补造当前价。
+    close_value = df.tail(1)["close"][0] if "close" in df.columns else None
+    close = float(close_value) if close_value is not None else None
+    if not _positive_price(close):
+        yield json.dumps({
+            "type": "error", "message": f"标的 {symbol} 最新日 K 缺少有效收盘价,请先同步",
+        }, ensure_ascii=False)
+        return
     levels = compute_levels(df)
-    close = float(df.tail(1)["close"][0]) if "close" in df.columns else None
 
     # 3. 财务(辅助)。ETF/指数无公司报表, 跳过扫描, 由提示词走对应常态文案。
     asset_type = repo.resolve_asset_type(symbol)
@@ -371,12 +382,14 @@ async def analyze_stock_stream(
         except Exception as e:  # noqa: BLE001
             logger.warning("读取模拟盘持仓失败 (跳过注入): %s", e)
         # 浮盈口径用 raw: 持仓成本不复权, 与前复权 close 混算会在除权后失真
-        raw_close = float(df.tail(1)["raw_close"][0]) if "raw_close" in df.columns else None
+        raw_value = df.tail(1)["raw_close"][0] if "raw_close" in df.columns else None
+        raw_close = float(raw_value) if raw_value is not None else None
 
         kline_tail = _clean_rows(df, _KLINE_KEEP_COLS)
         user_prompt = _build_user_prompt(kline_tail, fins, levels, close, symbol, focus,
                                          asset_type=asset_type, paper_positions=paper_positions,
-                                         raw_close=raw_close)
+                                         raw_close=raw_close,
+                                         name=repo.get_name_map([symbol]).get(symbol, ""))
         got_content = False
         async for delta in stream_ai_text(
             [

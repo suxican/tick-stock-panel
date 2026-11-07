@@ -16,6 +16,7 @@ from app.strategy.position_t import (
     as_cn,
     continuous_session,
     evaluate_candidate,
+    first_leg_expired,
     order_fee,
     validate_quantity,
 )
@@ -104,6 +105,31 @@ def _order_event(store, plan, leg, status, quantity, filled, end, order_id):
                                     "occurred_at": end.isoformat()}, now=end)
 
 
+def _cash_and_fees(details):
+    fees = sum(x["allocated_fee"] for x in details["executions"])
+    cash = sum((-1 if x["side"] == "buy" else 1) * x["price"] * x["quantity"]
+               for x in details["executions"]) - fees
+    return cash, fees
+
+
+def _intraminute_adverse_bound(before, after, bar):
+    """最差路径上界，不把成交前/后的极值当成真实持仓损失。
+
+    分钟内先后未知，因此分别将成交前、后的敞口放在最不利价格上。新增费用
+    也计入成交前敞口情景，覆盖部分退出已收费、剩余仓位仍承受波动的路径。
+    这是保守风险边界，不是逐笔可证明的 MAE，更不是实际实现亏损。
+    """
+    before_cash, before_fees = _cash_and_fees(before)
+    after_cash, after_fees = _cash_and_fees(after)
+    new_fees = max(0, after_fees - before_fees)
+    impacts = []
+    for details, cash in ((before, before_cash - new_fees), (after, after_cash)):
+        exposure = details["plan"]["exposure_qty"]
+        worst_price = bar["low"] if exposure >= 0 else bar["high"]
+        impacts.append(cash + exposure * worst_price)
+    return max(0, -min(impacts))
+
+
 def replay_position_t(bars: list[dict], environments: dict, sessions: list[str], account: dict,
                       position: dict, config=None, direction=None, *, evaluator=evaluate_candidate,
                       store_factory=None) -> dict:
@@ -182,6 +208,7 @@ def _run(store, bars, environments, calendar, account_id, symbol, cfg, direction
     last_end = None
     last_refresh = None
     per_plan_mae = {}
+    per_plan_intraminute_bound = {}
     reference_cash = store.get_account(account_id)["available_cash"]
     reference_qty = store.get_position(account_id, symbol)["qty"]
 
@@ -227,6 +254,7 @@ def _run(store, bars, environments, calendar, account_id, symbol, cfg, direction
             if active["state"] in {"completed", "cancelled"}:
                 active = None
         if active:
+            before_details = store.plan_detail(active["id"])
             leg = 1 if not active["first_stopped"] else 2
             side = "buy" if (active["direction"] == "buy_sell") == (leg == 1) else "sell"
             key = (active["id"], leg)
@@ -235,7 +263,9 @@ def _run(store, bars, environments, calendar, account_id, symbol, cfg, direction
             start = end-timedelta(minutes=1)
             # 本分钟收盘尚未发生，不能用它撤回已有效或应在分钟开始提交的委托。
             # 只有开始前已知的时间/数据限制才能先于本分钟成交模拟生效。
-            if leg == 1 and (start.strftime("%H:%M") >= cfg["new_plan_cutoff"] or not contiguous):
+            # 首笔期限在分钟开始前已知；跨越期限的部分分钟不满足完整窗口撮合契约。
+            if leg == 1 and (first_leg_expired(active["created_at"], end-timedelta(microseconds=1),
+                    lambda day: day.isoformat() in calendar, cfg["new_plan_cutoff"]) or not contiguous):
                 cancel_open_order(active, 1, start)
                 active = store.stop_first_leg(active["id"], now=start)
             elif remaining and continuous_session(end-timedelta(seconds=1)) and contiguous and start >= ready_at:
@@ -276,10 +306,17 @@ def _run(store, bars, environments, calendar, account_id, symbol, cfg, direction
             if leg == 1 and invalid and not active["first_stopped"]:
                 cancel_open_order(active, 1, end)
                 active = store.stop_first_leg(active["id"], now=end)
+            if leg == 1 and not active["first_stopped"] and first_leg_expired(
+                    active["created_at"], now, lambda day: day.isoformat() in calendar, cfg["new_plan_cutoff"]):
+                cancel_open_order(active, 1, now)
+                active = store.stop_first_leg(active["id"], now=now)
             details = store.plan_detail(active["id"])
-            signed_cash = sum(((-1 if x["side"] == "buy" else 1)*x["price"]*x["quantity"]-x["allocated_fee"]) for x in details["executions"])
+            signed_cash, _ = _cash_and_fees(details)
             impact = signed_cash + details["plan"]["exposure_qty"]*bar["close"]
             per_plan_mae[active["id"]] = min(per_plan_mae.get(active["id"], 0), impact)
+            per_plan_intraminute_bound[active["id"]] = max(
+                per_plan_intraminute_bound.get(active["id"], 0),
+                _intraminute_adverse_bound(before_details, details, bar))
         elif env and not observation_late and now >= initial_at:
             # 模拟账户每次由本地确定性账本核对；真实模式不得自动刷新人工核对时间。
             if last_refresh is None or (now-last_refresh).total_seconds() >= 600:
@@ -331,13 +368,21 @@ def _run(store, bars, environments, calendar, account_id, symbol, cfg, direction
     limitations = ["保守模拟，不是实盘可成交证明", "分钟代理报价，无队列与逐笔顺序",
                   "首次成交等待延迟后的完整分钟；首笔部分成交后取消余量；两腿不在同根成交",
                   "无收盘补齐，所有未匹配敞口计入期末权益", "历史环境缺失的分钟不生成新机会",
-                  "未覆盖公司行动和外部资金流的区间不得使用", "参数未经样本外验证，不输出盈利概率"]
+                  "未覆盖公司行动和外部资金流的区间不得使用", "参数未经样本外验证，不输出盈利概率",
+                  "分钟收盘不利变化不涵盖分钟内极值；分钟内风险上界不代表实际已发生亏损"]
+    mae_close = round(max((-x for x in per_plan_mae.values()), default=0), 2)
     return {"status": "completed" if counts else "insufficient_data", "mode": "simulation",
             "review": review, "position": store.get_position(account_id, symbol),
             "account": store.get_account(account_id), "plans": store.list_plans(account_id),
             "executions": executions, "signals": signals, "signal_counts": dict(counts),
             "equity_curve": curve, "skipped": skipped, "sample_size": review["started_count"],
             "max_drawdown": round(drawdown, 6), "incremental_drawdown": round(delta_drawdown, 2),
-            "max_adverse_excursion": round(max((-x for x in per_plan_mae.values()), default=0), 2),
+            "max_adverse_excursion": mae_close,
+            "max_adverse_excursion_close": mae_close,
+            "max_adverse_excursion_intraminute_bound": round(max(per_plan_intraminute_bound.values(), default=0), 2),
+            "adverse_excursion_basis": {
+                "close": "可见分钟收盘估值的单笔最大不利变化；旧 max_adverse_excursion 字段沿用此口径",
+                "intraminute_bound": "可见分钟内最不利价格与成交前后敞口计算的保守上界（含费用）；极值先后未知，不代表实际已发生亏损",
+            },
             "fee_drag": review["fees"], "out_of_sample": None, "probability": None,
             "strategy_versions": sorted({s["strategy_version"] for s in signals}), "limitations": limitations}

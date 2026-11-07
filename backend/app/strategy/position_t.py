@@ -15,7 +15,7 @@ from statistics import median
 from app.market_time import CN_TZ
 
 DEFAULT_CONFIG = {
-    "enabled": False, "min_net_profit": 20, "min_net_return": .002,
+    "enabled": False, "auto_simulation_enabled": False, "min_net_profit": 20, "min_net_return": .002,
     "max_daily_plans": 6, "max_symbol_daily_plans": 2, "daily_quantity_ratio": .4,
     "cooldown_minutes": 15, "single_risk_budget": 100, "daily_risk_budget": 500,
     "max_extra_notional": 10000, "quote_max_age_seconds": 10,
@@ -141,6 +141,28 @@ def validate_quantity(position: dict, side: str, quantity: int) -> list[str]:
 def continuous_session(now: datetime) -> bool:
     value = as_cn(now).time()
     return time(9, 30) <= value < time(11, 30) or time(13) <= value < time(14, 57)
+
+
+def trading_seconds(start, end, calendar) -> float:
+    """只累计已确认交易日的连续竞价秒数，午休与集合竞价不计入。"""
+    start, end = as_cn(start), as_cn(end)
+    total = 0.0
+    day = start.date()
+    while day <= end.date():
+        if calendar(day) is True:
+            for first, last in ((time(9, 30), time(11, 30)), (time(13), time(14, 57))):
+                left = max(start, datetime.combine(day, first, CN_TZ))
+                right = min(end, datetime.combine(day, last, CN_TZ))
+                total += max(0, (right - left).total_seconds())
+        day += timedelta(days=1)
+    return total
+
+
+def first_leg_expired(created_at, now, calendar, cutoff: str) -> bool:
+    """首笔有效期始终从计划创建起算；部分成交不能延长剩余首笔期限。"""
+    created_at, now = as_cn(created_at), as_cn(now)
+    return (now.date() > created_at.date() or now.time() >= time.fromisoformat(cutoff)
+            or trading_seconds(created_at, now, calendar) >= 5 * 60)
 
 
 def _price_cage(side: str, quote: dict, position: dict) -> float | None:
@@ -280,7 +302,8 @@ def _indicators(bars) -> dict:
     # 日累计VWAP跨午休；确认序列、ATR和趋势窗口只使用本段连续竞价。
     session = [bar for bar in bars if (_bar_end(bar).hour >= 13) == (_bar_end(bars[-1]).hour >= 13)]
     if len(session) < 23:
-        raise ValueError("本段连续竞价完整分钟不足 23 根")
+        period, ready = ("午后", "13:23") if _bar_end(bars[-1]).hour >= 13 else ("上午", "09:53")
+        raise ValueError(f"{period}预热中：完整分钟 {len(session)}/23 根，最早 {ready} 后且数据完整时评估")
     volume, amount, vwaps = 0., 0., []
     for bar in bars:
         volume += bar["volume_shares"]
@@ -335,7 +358,7 @@ def evaluate_candidate(bars: list[dict], quote: dict, environment: dict, positio
     if direction not in {"buy_sell", "sell_buy"}:
         raise ValueError("未知做 T 方向")
     now, cfg = as_cn(now), _config(config or account.get("config"))
-    version = "vwap_recovery_v0.1" if direction == "buy_sell" else "vwap_rejection_v0.1"
+    version = "vwap_recovery_v0.2" if direction == "buy_sell" else "vwap_rejection_v0.2"
     result = {"account_id": account.get("id"), "symbol": position.get("symbol"), "direction": direction,
               "state": "none", "reasons": [], "evidence": {}, "first_price": None,
               "second_price": None, "stop_price": None, "cover_guard": None, "quantity": 0,
@@ -396,6 +419,22 @@ def evaluate_candidate(bars: list[dict], quote: dict, environment: dict, positio
     result["evidence"]["conditions"] = checks
     if not all(checks.values()):
         result.update(state="watching" if excursion else "none", reasons=[f"等待：{key}" for key, passed in checks.items() if not passed])
+        return result
+    # 完整分钟只确认形态；最新成交或任一侧盘口已反向突破时，旧形态不能继续开仓。
+    prices = (quote["price"], quote["bid"], quote["ask"])
+    if direction == "buy_sell":
+        realtime_checks = {
+            "实时价格与盘口未跌破支撑": min(prices) >= ind["support"] - .2*band,
+            "实时价格与首笔区间未触及止损": min(*prices, result["first_price"][0]) > result["stop_price"],
+        }
+    else:
+        realtime_checks = {
+            "实时价格与盘口未突破压力": max(prices) <= ind["resistance"] + .2*band,
+            "实时价格与首笔区间未触及止损或回补保护": max(*prices, result["first_price"][1]) < min(result["stop_price"], result["cover_guard"]),
+        }
+    checks.update(realtime_checks)
+    if not all(realtime_checks.values()):
+        result.update(state="blocked", reasons=[f"条件失效：{key}" for key, passed in realtime_checks.items() if not passed])
         return result
     blockers = []
     if not cfg["enabled"]:

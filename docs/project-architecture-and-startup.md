@@ -240,7 +240,7 @@ FastAPI 启动时会按 `backend/app/main.py` 的生命周期依次完成：
 | 异动监控 | 竞价、盘中信号、交易所偏离值 | `services/abnormal_moves.py`、`api/abnormal.py` | `pages/AbnormalMoves.tsx` |
 | 市场环境 | 5 档状态、6 阶段情绪周期、概念/行业主线 | `services/regime_builder.py`、`services/market_phase.py` | `pages/Regime.tsx` |
 | 连板梯队 | 涨跌停梯队、封单与板块分布 | `api/screener.py`、`services/depth_service.py` | `pages/LimitUpLadder.tsx` |
-| 个股分析 | K 线、关键价位和 AI 四维报告 | `services/stock_analyzer.py`、`api/stock_analysis.py` | `pages/StockAnalysis.tsx` |
+| 个股分析 | K 线、关键价位和 AI 综合分析与操作建议 | `services/stock_analyzer.py`、`api/stock_analysis.py` | `pages/StockAnalysis.tsx` |
 | 财务分析 | 指标、三大报表、历史股本和 AI 解读 | `services/financial_*`、`api/financials.py` | `pages/Financials.tsx` |
 | AI 复盘 | 龙虎榜、盘前风向标、市场复盘、报告保存和推送 | `services/market_recap*.py`、`api/market_recap.py` | `pages/Review.tsx` |
 | 指数 | 指数维表、日 K、分钟 K 和同步 | `services/index_sync.py`、`api/indices.py` | `pages/Indices.tsx` |

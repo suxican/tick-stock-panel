@@ -39,6 +39,10 @@ class MarketState(Contract):
     emotion: str
     crowding: str
     change: str
+    risk_vetoes: list[str] = Field(default_factory=list)
+    max_boards: float | None = Field(default=None, ge=0)
+    promotion_rate: Ratio | None = None
+    phase_basis: str = ""
 
 
 class Allocation(Contract):
@@ -79,6 +83,7 @@ class Sector(Contract):
     breadth: Ratio | None
     status: str
     reason: str
+    mainline_score: float | None = Field(default=None, ge=0, le=100)
 
 
 class PlanCondition(Contract):

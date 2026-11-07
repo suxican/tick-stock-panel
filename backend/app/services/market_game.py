@@ -13,10 +13,21 @@ import math
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
 
+import polars as pl
+
 from app.services.market_game_models import RiskConfig
 from app.services.market_game_psychology import analyze_psychology
+from app.services.market_mainline import filter_mainline_members, score_mainline_frame
+from app.services.market_phase import (
+    EBB_PROMO,
+    EBB_RECENT_HEIGHT,
+    RALLY_HEIGHT,
+    RALLY_HEIGHT_ALT,
+    RALLY_PROMO,
+    RALLY_PROMO_ALT,
+)
 
-RULE_VERSION = "1.1.0"
+RULE_VERSION = "1.2.0"
 DEFAULT_RISK = RiskConfig().model_dump()
 MIN_REWARD_RISK = 1.0
 RESEARCH_COST_BUFFER = 0.003
@@ -41,11 +52,11 @@ def _risk_config(risk: dict | None) -> dict:
 
 def _metrics(raw: dict) -> dict:
     result = {}
-    for key in ("breadth_up", "above_ma20", "seal_rate", "index_above_ma20"):
+    for key in ("breadth_up", "above_ma20", "seal_rate", "index_above_ma20", "promotion_rate"):
         result[key] = _number(raw.get(key), 0, 1)
     for key in ("median_return", "index_ret20", "index_ret5", "index_return", "previous_limit_premium"):
         result[key] = _number(raw.get(key))
-    for key in ("limit_up", "limit_down", "amount_ratio"):
+    for key in ("limit_up", "limit_down", "amount_ratio", "max_boards"):
         result[key] = _number(raw.get(key), 0)
     return result
 
@@ -75,6 +86,18 @@ def _market_state(current: dict, previous: dict) -> tuple[dict, dict]:
             and current["index_above_ma20"] is not None and current["index_above_ma20"] <= 0.25)
     )
     loss_veto = premium is not None and premium < -0.01
+    height, prior_height = current["max_boards"], previous["max_boards"]
+    promotion = current["promotion_rate"]
+    # Reuse established ladder thresholds, but not retrospective smoothed labels.
+    # This is a two-snapshot event reading, distinct from market_phase's series.
+    ladder_strong = height is not None and promotion is not None and (
+        (height >= RALLY_HEIGHT and promotion >= RALLY_PROMO)
+        or (height >= RALLY_HEIGHT_ALT and promotion >= RALLY_PROMO_ALT)
+    )
+    ladder_contracting = (
+        height is not None and prior_height is not None and promotion is not None
+        and prior_height >= EBB_RECENT_HEIGHT and height < prior_height and promotion <= EBB_PROMO
+    )
     # Independent adverse evidence cannot be cancelled by a favourable seal
     # rate or winner premium. Missing loss counts do not certify a repair.
     down_not_worsening = down is not None and prior_down is not None and down <= prior_down
@@ -85,7 +108,7 @@ def _market_state(current: dict, previous: dict) -> tuple[dict, dict]:
         and prior_premium < 0 and premium >= 0 and premium - prior_premium >= 0.01
     )
     panic_repair = bool(panic and repairing and loss_easing and down_not_worsening
-                        and premium is not None and premium >= 0 and not short_index_risk)
+                        and premium is not None and premium >= 0)
 
     def hot(metrics):
         return (metrics["breadth_up"] is not None and metrics["amount_ratio"] is not None
@@ -100,7 +123,7 @@ def _market_state(current: dict, previous: dict) -> tuple[dict, dict]:
     )
     crowded_exit = bool(heat and deteriorating)
     loss_controlled = (down is not None and down <= 10 and premium is not None and premium >= 0
-                       and seal is not None and seal >= 0.65 and not short_index_risk)
+                       and seal is not None and seal >= 0.65)
     trend_pullback = bool(
         trend == "上行" and breadth is not None and 0.35 <= breadth <= 0.65
         and median is not None and -0.02 <= median <= 0.01 and loss_controlled
@@ -108,9 +131,9 @@ def _market_state(current: dict, previous: dict) -> tuple[dict, dict]:
     )
     if breadth is None or median is None:
         phase, emotion = "待确认", "未知"
-    elif crowded_exit or loss_veto or short_index_risk:
+    elif crowded_exit or ladder_contracting:
         phase, emotion = "退潮", "转弱"
-    elif panic_repair:
+    elif repairing:
         phase, emotion = "修复", "修复"
     elif breadth <= 0.3 and median < -0.01:
         phase, emotion = "冰点", "低迷"
@@ -123,7 +146,7 @@ def _market_state(current: dict, previous: dict) -> tuple[dict, dict]:
     elif (comparable and prior_breadth <= 0.45 and prior_median <= 0
           and breadth >= 0.6 and median > 0 and loss_controlled and trend != "下行"):
         phase, emotion = "启动", "改善"
-    elif trend == "上行" and breadth >= 0.5 and median >= -0.005 and loss_controlled:
+    elif (trend == "上行" or ladder_strong) and breadth >= 0.5 and median >= -0.005 and loss_controlled:
         phase, emotion = "主升", "分歧" if trend_pullback else "偏强"
     else:
         phase, emotion = "待确认", "中性"
@@ -137,6 +160,10 @@ def _market_state(current: dict, previous: dict) -> tuple[dict, dict]:
         "trend": trend, "phase": phase, "emotion": emotion,
         "crowding": "偏高" if heat else ("未见高热证据" if current["amount_ratio"] is not None else "未知"),
         "change": change,
+        "max_boards": height, "promotion_rate": promotion,
+        "phase_basis": "当日与前日广度、收益及连板梯队的事件判断；不同于市场环境的平滑确认周期，修复标签不等于恐慌修复入场模式。",
+        "risk_vetoes": (["短期指数显著转弱，暂停新增仓位"] if short_index_risk else [])
+                       + (["昨日涨停股负溢价超过1%，暂停新增仓位"] if loss_veto else []),
     }
     matches = {
         "panic_repair": panic_repair, "trend_pullback": trend_pullback,
@@ -154,6 +181,7 @@ def _facts(current: dict, previous: dict) -> list[str]:
         ("index_return", "指数当日收益", True), ("index_ret5", "指数5日收益", True),
         ("limit_down", "跌停家数", False), ("seal_rate", "封板率", True),
         ("previous_limit_premium", "昨日涨停股当日溢价", True),
+        ("max_boards", "最高连板", False), ("promotion_rate", "昨日涨停晋级率", True),
         ("amount_ratio", "成交额相对前5日均额倍数", False),
     ):
         value, prior = current[key], previous.get(key)
@@ -216,9 +244,13 @@ def _memberships(row: dict) -> set[str]:
     return {value.strip() for value in values if isinstance(value, str) and value.strip()}
 
 
-def _sectors(stocks: list[dict], median: float | None) -> tuple[list[dict], dict[str, set[str]]]:
+def _sectors(stocks: list[dict], median: float | None, filter_cfg: dict | None = None,
+             member_counts: dict[str, int] | None = None) -> tuple[list[dict], dict[str, set[str]]]:
+    # The snapshot freezes user preferences. Pure replay never reads today's settings.
+    filter_cfg = filter_cfg or {}
     groups = defaultdict(list)
     members = defaultdict(set)
+    ladders = defaultdict(list)
     for row in stocks:
         change = _number(row.get("change_pct"), -1, 1)
         if change is None:
@@ -226,11 +258,26 @@ def _sectors(stocks: list[dict], median: float | None) -> tuple[list[dict], dict
         for sector in _memberships(row):
             groups[sector].append((change, _number(row.get("ret5"))))
             members[sector].add(row["symbol"])
+            boards = _number(row.get("boards"), 1)
+            if (boards is not None and row.get("limit_up") is True
+                    and (not filter_cfg.get("exclude_st", True) or row.get("is_st") is False)):
+                ladders[sector].append(boards)
+    if not groups:
+        return [], {}
+    counts = pl.DataFrame([
+        {"member": name, "_members": (member_counts or {}).get(name, len(members[name]))}
+        for name in groups
+    ])
+    allowed = set(filter_mainline_members(counts, "member", filter_cfg)["member"].to_list())
+    aggregates = [{
+        "date": "snapshot", "member": name, "limit_up_count": len(ladders[name]),
+        "max_boards": max(ladders[name]), "ge2_count": sum(n >= 2 for n in ladders[name]),
+        "rungs_filled": len({n for n in ladders[name] if n >= 2}),
+    } for name in sorted(allowed) if ladders[name]]
+    scores = {row["member"]: row["score"] for row in score_mainline_frame(pl.DataFrame(aggregates)).to_dicts()} if aggregates else {}
     result = []
     for name, rows in groups.items():
-        # Very broad stock-connect/style universes do not identify a tradable
-        # short-term theme. This versioned cutoff also bounds overlap work.
-        if not 3 <= len(rows) <= 600:
+        if name not in allowed:
             continue
         mean = sum(row[0] for row in rows) / len(rows)
         breadth = sum(row[0] > 0 for row in rows) / len(rows)
@@ -241,10 +288,13 @@ def _sectors(stocks: list[dict], median: float | None) -> tuple[list[dict], dict
         result.append({
             "name": name, "avg_return": round(mean, 6), "breadth": round(breadth, 6),
             "status": "关注" if strong else "观察",
+            "mainline_score": scores.get(name),
             "reason": f"本地可用样本 {len(rows)} 只，上涨占比 {breadth:.0%}，5日收益覆盖 {coverage:.0%}；"
-                      + ("当日相对强势且5日平均收益为正" if strong else "尚未同时满足相对强势、广度与持续性条件"),
+                      + ("当日相对强势且5日平均收益为正" if strong else "尚未同时满足相对强势、广度与持续性条件")
+                      + (f"；主线梯队分 {scores[name]:.1f}" if name in scores else "；已知涨停梯队不足3家，主线分不可用"),
         })
-    result.sort(key=lambda row: (row["status"] != "关注", -row["avg_return"], row["name"]))
+    result.sort(key=lambda row: (row["status"] != "关注", row["mainline_score"] is None,
+                                 -(row["mainline_score"] or 0), -row["avg_return"], row["name"]))
     return result, dict(members)
 
 
@@ -311,7 +361,7 @@ def _candidate(row: dict, mode: str, sector: dict, risk: dict) -> dict | None:
                              (trigger_high - invalidation) / trigger_high + 0.03) + 0.003) * 1e6) / 1e6
     return {
         "symbol": row["symbol"], "name": row.get("name") or row["symbol"],
-        "sector": sector["name"], "mode": mode, "role": "相对强势观察",
+        "sector": sector["name"], "mode": mode, "role": "短线趋势回踩",
         "reference_price": price, "trigger_low": trigger_low, "trigger_high": trigger_high,
         "invalidation_price": invalidation, "max_position": 0.0,
         "stress_loss_pct": stress, "holding_days": 3,
@@ -443,10 +493,12 @@ def analyze_snapshot(snapshot: dict, risk: dict | None = None) -> dict:
         cap = min(cap, 0.1)
     if quality == "limited":
         cap = min(cap, 0.1)
-    if quality == "unavailable" or matches["crowded_exit"] or state["phase"] in {"退潮", "冰点"}:
+    if (quality == "unavailable" or state["risk_vetoes"] or matches["crowded_exit"]
+            or state["phase"] in {"退潮", "冰点"}):
         cap = 0.0
     stocks = _stocks(snapshot)
-    all_sectors, members = _sectors(stocks, current["median_return"])
+    all_sectors, members = _sectors(stocks, current["median_return"], snapshot.get("mainline_filter"),
+                                    snapshot.get("sector_member_counts"))
     pool = _candidate_pool(stocks, all_sectors, mode, config) if cap > 0 else []
     sectors = _display_sectors(all_sectors, members, pool)
     risk_groups = _risk_groups(sectors, members)
@@ -458,6 +510,7 @@ def analyze_snapshot(snapshot: dict, risk: dict | None = None) -> dict:
     reason = (
         "数据不足，暂停生成新增仓位" if quality == "unavailable" else
         "短期指数显著转弱，风险否决优先于中期趋势，暂停新增仓位" if matches["short_index_risk"] else
+        "昨日涨停股负溢价超过1%，风险否决成立，暂停新增仓位" if matches["loss_veto"] else
         "昨日强势股负反馈或退潮风险成立，封板率不能抵消，暂停新增仓位" if state["phase"] == "退潮" else
         "一致兑现风险成立，暂停新增仓位并复核已有仓位退出条件" if matches["crowded_exit"] else
         "组合压力预算为零，暂停新增仓位" if config["portfolio_risk_budget"] == 0 else
@@ -473,8 +526,9 @@ def analyze_snapshot(snapshot: dict, risk: dict | None = None) -> dict:
         "压力损失包含隔夜缓冲和成本假设，实际跳空、T+1与涨跌停可能使损失超过预算",
         "候选价格仅适用于未发生除权等价格标尺变化的下一交易日，变化后需重新生成计划",
         "周期阶段只由当前及前日可见证据判断，可以跳转或待确认，不假定固定循环天数",
-        "板块按本地可用成员聚合，排除超过600只的大组；高度重叠板块去重或共用风险预算",
+        "板块复用主线的成员数上下限、黑名单及梯队评分；过滤配置随快照冻结，高度重叠板块去重或共用风险预算",
         "板块5日收益要求至少3个样本且覆盖80%；先筛全板块候选，再选最多3个可观察方向",
+        "候选属于短线趋势回踩，不是首板或连板接力；主线分缺失时保留相对强势观察，不把缺失当零分",
         "压力价只取已知5日高点；按触发上限和0.3%研究成本缓冲计算空间/结构损失比，至少1.0才观察，不代表预期收益",
         "趋势风险上限随指数20日正收益在0至4%区间线性增加至40%；全部数值待样本外验证",
         "组合压力损失为各候选仓位乘压力损失率的合计，另受独立预算限制；实际亏损仍可能超出",

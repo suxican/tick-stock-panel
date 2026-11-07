@@ -24,6 +24,7 @@ let _id = 0
 let _queue: Item[] = []
 const AUTO_DISMISS = 5000      // 5 秒自动消失
 const _listeners: Set<(items: Item[]) => void> = new Set()
+const positionTEvents = new Set<string>()
 
 /** 从 localStorage 读取配置 */
 function getEnabled(): boolean {
@@ -58,6 +59,16 @@ export function pushAlertToast(alert: AlertEvent) {
  * - 整批只播放一声通知音, 避免短时连续响多声刷屏
  */
 export function pushAlertToasts(alerts: AlertEvent[]) {
+  alerts = alerts.filter(alert => {
+    if (alert.source !== 'position_t') return true
+    if (['signal', 'second_leg_ready'].includes(alert.kind ?? '') && (!alert.expires_at || !Number.isFinite(Date.parse(alert.expires_at)) || Date.parse(alert.expires_at) <= Date.now())) return false
+    if (alert.event_id && positionTEvents.has(alert.event_id)) return false
+    if (alert.event_id) {
+      positionTEvents.add(alert.event_id)
+      if (positionTEvents.size > 500) positionTEvents.delete(positionTEvents.values().next().value!)
+    }
+    return true
+  })
   if (alerts.length === 0) return
   if (!getEnabled()) return                  // 开关关闭: 不弹
   const maxVisible = getMaxVisible()
@@ -69,7 +80,8 @@ export function pushAlertToasts(alerts: AlertEvent[]) {
   }
   _emit()
   for (const item of newItems) {
-    setTimeout(() => dismiss(item.id), AUTO_DISMISS)
+    const expiry = item.alert.source === 'position_t' && item.alert.expires_at ? Date.parse(item.alert.expires_at) - Date.now() : AUTO_DISMISS
+    setTimeout(() => dismiss(item.id), Number.isFinite(expiry) ? Math.max(0, Math.min(AUTO_DISMISS, expiry)) : AUTO_DISMISS)
   }
   dispatchSideEffects(alerts)                  // 副作用分发: 提示音 + 语音 (整批各一次)
 }
@@ -100,6 +112,7 @@ const SOURCE_BADGE: Record<string, { label: string; cls: string }> = {
   paper:     { label: '模拟盘', cls: 'bg-sky-400/15 text-sky-500 dark:text-sky-300' },
   first_board: { label: '首板模式', cls: 'bg-accent/15 text-accent' },
   huichun: { label: '回春模式', cls: 'bg-accent/15 text-accent' },
+  position_t: { label: '持仓做 T', cls: 'bg-accent/15 text-accent' },
 }
 
 // ===== 容器 — 挂在 Layout =====
@@ -119,10 +132,16 @@ export function AlertToastContainer() {
   }, [])
   useEffect(sub, [sub])
 
-  // 首板通知进入专属记录页, 其他通知进入监控中心。
-  const handleClick = (id: number, source: string) => {
+  // 专属通知定位到对应工作区，其余通知进入监控中心。
+  const handleClick = (id: number, alert: AlertEvent) => {
     dismiss(id)
-    navigate(source === 'first_board' ? '/first-board?tab=events' : '/monitor')
+    if (alert.source === 'position_t') {
+      const params = new URLSearchParams()
+      if (alert.account_id) params.set('account_id', alert.account_id)
+      if (alert.plan_id) params.set('plan_id', alert.plan_id)
+      if (alert.symbol) params.set('symbol', alert.symbol)
+      navigate(`/lots?${params}`)
+    } else navigate(alert.source === 'first_board' ? '/first-board?tab=events' : '/monitor')
   }
 
   if (!items.length) return null
@@ -152,14 +171,14 @@ export function AlertToastContainer() {
               animate={{ opacity: 1, x: 0, scale: 1 }}
               exit={{ opacity: 0, x: 60, scale: 0.9 }}
               transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-              onClick={() => handleClick(item.id, ev.source)}
+              onClick={() => handleClick(item.id, ev)}
               role="button"
               tabIndex={0}
               aria-label={`查看监控通知${ev.name ? ` ${ev.name}` : ''}${ev.symbol ? ` ${ev.symbol}` : ''}`}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault()
-                  handleClick(item.id, ev.source)
+                  handleClick(item.id, ev)
                 }
               }}
               className="pointer-events-auto relative overflow-hidden rounded-xl border border-border/60 bg-surface/95 backdrop-blur-md shadow-2xl pl-3 pr-2 py-2.5 cursor-pointer hover:border-accent/40 hover:shadow-accent/10 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"

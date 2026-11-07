@@ -21,14 +21,20 @@ def service(tmp_path, monkeypatch):
         "stocks": [], "history": [], "evidence": [], "limitations": [],
     }
     monkeypatch.setattr("app.services.market_game_snapshot.build_snapshot", lambda *args: snapshot.copy())
-    monkeypatch.setattr("app.services.market_game_service.collect_overseas_quotes", lambda: None)
+    def forbidden_quotes():
+        pytest.fail("core report generation must not collect optional overseas quotes")
+    monkeypatch.setattr("app.services.market_game_overseas.collect_overseas_quotes", forbidden_quotes)
     value = MarketGameService(SimpleNamespace(store=SimpleNamespace(data_dir=tmp_path)), data_dir=tmp_path)
+    def forbidden_archives(**kwargs):
+        pytest.fail("empty candidate reports must not scan ecology archives")
+    monkeypatch.setattr(value.store, "ecology_snapshots", forbidden_archives)
     return value, value.generate(None)
 
 
 def test_new_report_freezes_model_policy_but_does_not_change_allocation(tmp_path, monkeypatch):
     value, report = service(tmp_path, monkeypatch)
-    assert report["ecology"]["shadow_only"] is True
+    assert report["ecology"] is None
+    assert report["overseas"] is None
     assert report["feedback_hypothesis"]["entry_authorized"] is False
     assert report["execution_policy"]["costs"]["account_equity"] == 1_000_000
     assert report["allocation"]["max"] == 0 and report["candidates"] == []

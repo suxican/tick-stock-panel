@@ -59,6 +59,99 @@ def test_two_legs_cannot_fill_in_one_bar_and_no_close_fill():
     assert out["position"]["sellable_qty"] == 1000
 
 
+def test_first_leg_expires_before_late_price_crossing():
+    bars, envs, pos, account, cfg = historical_fixture()
+    for _ in range(7):
+        add_bar(bars, envs, low=10.02, high=10.1, close=10.05)
+    add_bar(bars, envs, low=9.95, high=10.05, close=10)
+    out = replay_position_t(bars, envs, ["2026-10-16"], account, pos, cfg,
+                            "buy_sell", evaluator=one_signal)
+    assert out["executions"] == []
+    assert out["plans"][0]["state"] == "cancelled"
+    assert out["plans"][0]["reserved_cash"] == 0
+    assert out["plans"][0]["reserved_qty"] == 0
+
+
+def test_first_leg_does_not_fill_minute_that_straddles_its_deadline():
+    bars, envs, pos, account, cfg = historical_fixture()
+    observed = bars[-1]["datetime"] + timedelta(seconds=50)
+    bars[-1]["received_ts"] = observed.isoformat()
+    envs[bars[-1]["datetime"].isoformat()]["observed_at"] = observed.isoformat()
+    for _ in range(5):
+        add_bar(bars, envs, low=10.02, high=10.1, close=10.05)
+    # 10:25–10:26 跨过 10:25:50 截止，分钟内触价先后未知，不模拟该部分窗口。
+    add_bar(bars, envs, low=9.95, high=10.05, close=10)
+    out = replay_position_t(bars, envs, ["2026-10-16"], account, pos, cfg,
+                            "buy_sell", evaluator=one_signal)
+    assert out["plans"][0]["created_at"].startswith("2026-10-16T10:20:50")
+    assert out["executions"] == []
+    assert out["plans"][0]["state"] == "cancelled"
+
+
+def test_first_leg_fill_before_expiry_preserves_partial_second_leg_exposure():
+    bars, envs, pos, account, cfg = historical_fixture()
+    for _ in range(4):
+        add_bar(bars, envs, low=10.02, high=10.1, close=10.05)
+    # 10:25 完整分钟结束早于 10:25:05 到期；100 股成交事实不能被到期抹去。
+    add_bar(bars, envs, low=9.99, high=10.05, close=10, volume=5000)
+    for _ in range(3):
+        add_bar(bars, envs, low=9.99, high=10.05, close=10)
+    out = replay_position_t(bars, envs, ["2026-10-16"], account, pos, cfg,
+                            "buy_sell", evaluator=one_signal)
+    assert [(x["leg"], x["quantity"]) for x in out["executions"]] == [(1, 100)]
+    assert out["plans"][0]["first_stopped"] is True
+    assert out["plans"][0]["unmatched_qty"] == 100
+    assert out["position"]["qty"] == 1100
+
+
+def test_intraminute_bound_exposes_loss_hidden_by_minute_close():
+    bars, envs, pos, account, cfg = historical_fixture()
+    add_bar(bars, envs, low=10.02, high=10.1, close=10.05)
+    add_bar(bars, envs, low=9.1, high=10.1, close=10.05)
+    out = replay_position_t(bars, envs, ["2026-10-16"], account, pos, cfg,
+                            "buy_sell", evaluator=one_signal)
+    assert out["max_adverse_excursion"] == out["max_adverse_excursion_close"] == 0
+    assert out["max_adverse_excursion_intraminute_bound"] == pytest.approx(187.02)
+    assert "上界" in out["adverse_excursion_basis"]["intraminute_bound"]
+
+
+def test_exit_minute_extreme_is_a_bound_not_claimed_realized_loss():
+    bars, envs, pos, account, cfg = historical_fixture()
+    for _ in range(2):
+        add_bar(bars, envs, low=9.99, high=10.05, close=10.02)
+    add_bar(bars, envs, low=10.2, high=10.5, close=10.35)
+    # 最低价可能发生在卖出之后。保留最不利上界，但不得称实际亏损。
+    add_bar(bars, envs, low=9, high=10.5, close=10.35)
+    out = replay_position_t(bars, envs, ["2026-10-16"], account, pos, cfg,
+                            "buy_sell", evaluator=one_signal)
+    assert out["review"]["completion_rate"] == 1
+    assert out["review"]["matched_pnl"] > 0
+    assert out["max_adverse_excursion_close"] < out["max_adverse_excursion_intraminute_bound"]
+    expected_bound = (10.01 - 9) * 200 + out["review"]["fees"]
+    assert out["max_adverse_excursion_intraminute_bound"] == pytest.approx(expected_bound)
+    assert "不代表实际" in out["adverse_excursion_basis"]["intraminute_bound"]
+
+
+def test_sell_buy_risk_bound_uses_high_price_for_missing_inventory():
+    bars, envs, pos, account, cfg = historical_fixture()
+    for _ in range(2):
+        add_bar(bars, envs, low=9.99, high=10.9, close=10)
+
+    def sell_signal(history, quote, env, position, account, now, direction, config):
+        signal = one_signal(history, quote, env, position, account, now, "buy_sell", config)
+        if signal["state"] == "triggered":
+            signal.update(direction="sell_buy", first_price=[10, 10.02],
+                          second_price=[9.7, 9.72], stop_price=10.2, cover_guard=10.2)
+        return signal
+
+    out = replay_position_t(bars, envs, ["2026-10-16"], account, pos, cfg,
+                            "sell_buy", evaluator=sell_signal)
+    assert len(out["executions"]) == 1
+    assert out["plans"][0]["exposure_qty"] == -200
+    assert out["max_adverse_excursion_close"] == pytest.approx(out["review"]["fees"])
+    assert out["max_adverse_excursion_intraminute_bound"] == pytest.approx(180 + out["review"]["fees"])
+
+
 @pytest.mark.parametrize("already_submitted", [False, True])
 @pytest.mark.parametrize("volume,filled", [(10000, 200), (5000, 100)])
 def test_current_bar_stop_cannot_cancel_before_possible_first_fill(already_submitted, volume, filled):
@@ -119,6 +212,8 @@ def test_missing_historical_environment_and_calendar_do_not_fabricate_inputs():
     assert out["executions"] == []
     assert out["skipped"]
     assert out["status"] == "insufficient_data"
+    assert out["max_adverse_excursion_close"] == 0
+    assert out["max_adverse_excursion_intraminute_bound"] == 0
     with pytest.raises(ValueError, match="交易日历"):
         replay_position_t(bars, {}, [], account, pos, cfg)
 

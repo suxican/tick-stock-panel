@@ -8,6 +8,7 @@ import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
 import { useChartTheme } from '@/lib/theme'
 import { OverseasPanel } from './OverseasPanel'
+import { InfoTip } from './InfoTip'
 
 const button = 'inline-flex min-h-9 items-center justify-center gap-2 rounded-btn border border-border px-3 py-2 text-xs transition-colors hover:bg-elevated focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50'
 const panel = 'min-w-0 rounded-card border border-border bg-surface/80 p-4'
@@ -41,8 +42,8 @@ function money(value: number | null) {
 function Lines({ items }: { items: string[] }) {
   return items.length ? <ul className="space-y-1 leading-relaxed">{items.map((item, index) => <li key={index}>{item}</li>)}</ul> : <p className="text-secondary">未提供</p>
 }
-function Section({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
-  return <section aria-label={title} className={panel}><h2 className="text-sm font-semibold">{title}</h2>{hint && <p className="mt-1 max-w-prose text-xs leading-relaxed text-secondary">{hint}</p>}<div className="mt-3">{children}</div></section>
+function Section({ title, hint, children }: { title: string; hint?: ReactNode; children: ReactNode }) {
+  return <section aria-label={title} className={panel}><h2 className="flex items-center gap-1 text-sm font-semibold">{title}{hint && <InfoTip title={`${title}说明`}>{hint}</InfoTip>}</h2><div className="mt-3">{children}</div></section>
 }
 function Metric({ value, label }: { value: MarketGameCapitalMetric; label: string }) {
   return <span aria-label={`${label} ${value.score == null ? '无法评分' : `${score(value.score)} 分`}，历史样本 ${value.sample_size}`} className="whitespace-nowrap font-mono">{score(value.score)}<span className="ml-1 text-[10px] text-secondary">/{value.sample_size}日</span></span>
@@ -78,20 +79,19 @@ function BehaviorChart({ report, observation }: { report: MarketGameReport; obse
     series: metrics.map(metric => ({ name: metric.label, type: 'line' as const, showSymbol: false, connectNulls: false, smooth: false, data: points.map(point => point[metric.id]) })),
   }), [points, theme])
   const hasPoints = points.some(point => metrics.some(metric => point[metric.id] != null))
-  return <Section title="情绪背景与资金行为" hint="上方心理刻度冻结于报告日；下方为本次取得的分钟样本轨迹，不代表当时已经触发信号。">
+  return <Section title="情绪背景与资金行为" hint={<><p>上方心理刻度冻结于报告日；下方为本次取得的分钟样本轨迹，不代表当时已经触发信号。</p><p>0–100 为各维度历史分位，兑现压力高不代表机会大。分数来自量价代理，不识别机构或量化身份；同源量价信息不作为独立证据重复确认。</p></>}>
     <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-border pb-3 text-xs"><span className="font-medium">情绪背景 {observation.background_date}</span>{report.psychology?.dimensions.map(dimension => <span key={dimension.id} className="text-secondary">{dimension.label} <span className="font-mono text-foreground">{score(dimension.score)}</span></span>)}</div>
     <p className={cn('mt-2 text-xs leading-relaxed', observation.background_usable ? 'text-secondary' : warning)}>{observation.background_reason}</p>
     {!report.psychology && <p className="mt-2 text-xs text-secondary">原报告没有心理评分，不补算历史情绪。</p>}
     {hasPoints ? <HistoryChart option={option} height={240} label="资金行为分位轨迹" /> : <p className="flex min-h-32 items-center justify-center text-xs text-secondary">历史同时间窗口样本不足，暂不绘制资金分位曲线。</p>}
-    <p className="text-xs leading-relaxed text-secondary">0–100 为各维度历史分位，兑现压力高不代表机会大。分数来自量价代理，不识别机构或量化身份；同源量价信息不作为独立证据重复确认。</p>
     {points.length > 0 && <details className="mt-2 text-xs"><summary className="min-h-8 cursor-pointer py-2 text-secondary">查看轨迹数值与样本覆盖</summary><div className="max-h-48 overflow-auto"><table className="w-full min-w-[400px] text-left"><caption className="sr-only">本次取得的分钟分位轨迹</caption><thead><tr>{['时间', '有效样本股', ...metrics.map(metric => metric.label)].map(label => <th key={label} scope="col" className="py-2 font-medium">{label}</th>)}</tr></thead><tbody>{points.map(point => <tr key={point.time} className="border-t border-border"><td className="py-2 font-mono">{point.time}</td><td>{point.sample_size}</td>{metrics.map(metric => <td key={metric.id} className="font-mono">{score(point[metric.id])}</td>)}</tr>)}</tbody></table></div></details>}
   </Section>
 }
 
 function Disclosures({ data }: { data: MarketGameCapitalObservation['disclosures'] }) {
-  return <Section title="已披露机构交易" hint="龙虎榜仅覆盖上榜交易，不代表机构全部持仓或全市场资金流；单日榜与三日榜分别展示，不重叠累加。">
+  return <Section title="已披露机构交易" hint={<><p>龙虎榜仅覆盖上榜交易，不代表机构全部持仓或全市场资金流；单日榜与三日榜分别展示，不重叠累加。</p><p>取得时间不等于首次披露时间，不用于回填原计划。</p></>}>
     <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs"><span className={cn('font-medium', data.state === 'ok' ? 'text-foreground' : warning)}>{data.status}</span><span className="text-secondary">来源 {data.source_label}</span><span className="text-secondary">实际榜单 {data.trade_date ?? '未提供'} · 请求日期 {data.requested_date}</span></div>
-    <p className="mt-2 text-xs leading-relaxed text-secondary">本次取得 {time(data.fetched_at)} · 历史可得时间 {data.available_at ? time(data.available_at) : '未知'}。取得时间不等于首次披露时间，不用于回填原计划。</p>
+    <p className="mt-2 text-xs leading-relaxed text-secondary">本次取得 {time(data.fetched_at)} · 历史可得时间 {data.available_at ? time(data.available_at) : '未知'}</p>
     {data.rows.length > 0 ? <div className="mt-3 overflow-x-auto"><table className="w-full min-w-[660px] text-left text-xs"><caption className="sr-only">龙虎榜机构席位交易披露</caption><thead className="border-b border-border text-secondary"><tr>{['个股', '实际日期', '统计区间', '机构净额', '净额占比', '买入 / 卖出席位'].map(label => <th key={label} scope="col" className="py-2 pr-3 font-medium">{label}</th>)}</tr></thead><tbody>{data.rows.map(row => <tr key={`${row.symbol}-${row.trade_date}-${row.range_days}`} className="border-b border-border/60"><td className="py-3 pr-3">{row.name}<span className="ml-2 font-mono text-secondary">{row.symbol}</span></td><td className="pr-3 font-mono">{row.trade_date}</td><td className="pr-3">{row.range_days === 3 ? '三日榜' : '单日榜'}</td><td className={cn('pr-3 font-mono', signedClass(row.org_net_value))}>{money(row.org_net_value)}</td><td className={cn('pr-3 font-mono', signedClass(row.org_net_rate))}>{percent(row.org_net_rate)}</td><td className="font-mono">{row.org_buy_num ?? '—'} / {row.org_sell_num ?? '—'}</td></tr>)}</tbody></table></div> : <p className="py-4 text-sm text-secondary">暂无可核验的机构披露记录。</p>}
     {data.state === 'source_unavailable' && <a href="/settings?tab=data-sources" className="inline-flex min-h-9 items-center text-xs text-accent underline underline-offset-4">检查数据源配置</a>}
     {data.omitted_count > 0 && <p className="mt-2 text-xs text-secondary">另有 {data.omitted_count} 条记录未展示。</p>}
@@ -123,7 +123,7 @@ export function CapitalPanel({ report }: { report: MarketGameReport }) {
   const canObserve = !!envelope?.refresh_allowed && envelope.auto_refresh_allowed
   return <>
     <section aria-label="资金观察操作" className={panel}>
-      <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-sm font-semibold">资金行为与情绪博弈</h2><p className="mt-1 text-xs text-secondary">独立记录观察快照，保留原计划的证据与仓位。</p></div><div className="flex flex-wrap items-center gap-4"><label className="flex min-h-9 items-center gap-2 text-xs"><input type="checkbox" aria-label="每 60 秒记录观察" checked={automatic && canObserve} disabled={!canObserve || refresh.isPending} onChange={event => setAutomatic(event.target.checked)} className="h-4 w-4 accent-accent disabled:opacity-50" />每 60 秒观察</label><button type="button" className={button} disabled={!canRefresh} onClick={() => refresh.mutate(report.id)}><RefreshCw className={cn('h-3.5 w-3.5', refresh.isPending && 'animate-spin motion-reduce:animate-none')} />{refresh.isPending ? '正在取得观察…' : '刷新并记录观察'}</button></div></div>
+      <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="flex items-center gap-1 text-sm font-semibold">资金行为与情绪博弈<InfoTip title="资金观察说明"><p>独立记录观察快照，保留原计划的证据与仓位。</p></InfoTip></h2><div className="flex flex-wrap items-center gap-4"><label className="flex min-h-9 items-center gap-2 text-xs"><input type="checkbox" aria-label="每 60 秒记录观察" checked={automatic && canObserve} disabled={!canObserve || refresh.isPending} onChange={event => setAutomatic(event.target.checked)} className="h-4 w-4 accent-accent disabled:opacity-50" />每 60 秒观察</label><button type="button" className={button} disabled={!canRefresh} onClick={() => refresh.mutate(report.id)}><RefreshCw className={cn('h-3.5 w-3.5', refresh.isPending && 'animate-spin motion-reduce:animate-none')} />{refresh.isPending ? '正在取得观察…' : '刷新并记录观察'}</button></div></div>
       {envelope && <p className="mt-2 text-xs leading-relaxed text-secondary">{envelope.refresh_reason}{automatic && envelope.auto_refresh_allowed ? ' 当前页每 60 秒记录一次；隐藏页面暂停，离开页签停止。' : ' 自动观察默认关闭。'}</p>}
       {query.isLoading && <div role="status" className="mt-3"><p className="text-xs text-secondary">正在读取已保存的资金观察…</p><div aria-hidden className="mt-2 h-12 animate-pulse rounded-btn bg-elevated motion-reduce:animate-none" /></div>}
       {query.isError && <div role="alert" className="mt-3 flex flex-wrap items-center gap-3 text-xs"><span>观察读取失败：{errorText(query.error)}</span><button type="button" className={button} onClick={() => void query.refetch()}>重试读取观察</button></div>}

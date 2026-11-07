@@ -82,8 +82,8 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 
 # ----------------------------------------------------------------
-# 用户 focus 输入规范化。交易建议类表达不会被静默丢弃,而是由统一提示词
-# 转换成客观价位、风险和情景分析,避免历史报告显示了 focus、模型却没有收到。
+# 用户 focus 输入规范化。保留原问题,由报告显式选择是否提供条件化操作建议。
+# 默认维持客观分析,避免个股报告的模式变化影响财务、复盘和轮动报告。
 # ----------------------------------------------------------------
 _FOCUS_BLOCKLIST = re.compile(
     r"买入|卖出|加仓|减仓|轻仓|重仓|半仓|全仓|仓位|止损|止盈|"
@@ -104,11 +104,13 @@ def sanitize_focus(focus: str) -> str:
     return text
 
 
-def build_focus_instruction(focus: str, *, report_name: str = "分析报告") -> str:
+def build_focus_instruction(
+    focus: str, *, report_name: str = "分析报告", allow_trading_advice: bool = False,
+) -> str:
     """构建所有报告共用的关注重点指令。
 
-    有关注点时要求模型在固定报告结构之前先直接回应。若原问题涉及交易
-    建议,保留问题语义但要求转换成中立的数据分析,不再无提示地整段丢弃。
+    有关注点时要求模型在固定报告结构之前先直接回应。操作建议须由调用方
+    显式开启;其余报告仍将交易问题转换成中立的数据分析。
     """
     text = sanitize_focus(focus)
     if not text:
@@ -121,7 +123,12 @@ def build_focus_instruction(focus: str, *, report_name: str = "分析报告") ->
         "用 2-4 条带具体数据的结论直接回应;随后继续完成既定报告结构,"
         "并在相关章节加深分析。不要只复述问题。",
     ]
-    if _FOCUS_BLOCKLIST.search(text):
+    if allow_trading_advice:
+        lines.append(
+            "涉及买卖、仓位、目标价时,请给出条件化操作建议,列明数据依据、触发条件和失效条件;"
+            "数据不足时明确说明限制与待验证条件,不得保证收益或编造概率。"
+        )
+    elif _FOCUS_BLOCKLIST.search(text):
         lines.append(
             "该关注点含有买卖、仓位、目标价或预测类表达。不得给出相应操作结论;"
             "请将其转换为客观的技术/财务状态、关键价位、风险因素和条件情景后回应。"

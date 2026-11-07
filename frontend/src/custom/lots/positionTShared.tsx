@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import type { PositionTDirection } from '@/lib/api'
 import { cn } from '@/lib/cn'
 
@@ -16,6 +16,17 @@ export function formatTime(value?: string | null) {
 export const money = (n?: number | null) => n == null || !Number.isFinite(n) ? '待核对' : `¥${n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 export const priceRange = (p: [number, number] | null | undefined) => p?.every(Number.isFinite) ? `${p[0].toFixed(2)} — ${p[1].toFixed(2)}` : '数据不足'
 export const newKey = () => crypto.randomUUID()
+export function usePositionTClock() {
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer) }, [])
+  return Math.max(now, Date.now())
+}
+export function snapshotValidity(snapshotAt: string, maxAge: number | undefined, now: number) {
+  const stamp = Date.parse(snapshotAt)
+  if (!Number.isFinite(stamp) || !Number.isFinite(maxAge) || stamp > now) return '核对有效期待确认'
+  const seconds = Math.ceil((stamp + maxAge! * 1000 - now) / 1000)
+  return seconds <= 0 ? '核对已到期' : `核对剩余 ${Math.ceil(seconds / 60)} 分钟`
+}
 export function numberValue(value: string, label: string, options: { optional?: boolean; integer?: boolean; positive?: boolean } = {}): number | null {
   if (!value.trim() && options.optional) return null
   const n = Number(value)

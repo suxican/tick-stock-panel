@@ -184,16 +184,20 @@ it('polls only after explicit opt-in, skips hidden pages, and stops when the ser
   expect(calls.refresh).toHaveBeenCalledTimes(1)
 })
 
-it('mounts the new tab on demand and stops its timer when leaving the tab', async () => {
+it('mounts supplemental capital research on demand and stops its timer when collapsed', async () => {
   vi.useFakeTimers()
   vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
   await render('plan-one', true)
   await click('生成盘后计划')
   expect(calls.read).not.toHaveBeenCalled()
-  await click('资金行为与情绪博弈')
+  const advanced = [...host.querySelectorAll('details')].find(item => item.firstElementChild?.textContent === '补充研究')!
+  await act(async () => advanced.querySelector('summary')!.click())
+  await settle()
+  await click('资金观察')
   expect(calls.read).toHaveBeenCalledWith('plan-one')
   await act(async () => host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click())
-  await click('博弈总览')
+  await act(async () => advanced.querySelector('summary')!.click())
+  await settle()
   await act(async () => { await vi.advanceTimersByTimeAsync(120_000) })
   expect(calls.refresh).not.toHaveBeenCalled()
 })

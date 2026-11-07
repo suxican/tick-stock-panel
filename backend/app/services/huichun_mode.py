@@ -26,12 +26,7 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.market_time import CN_TZ
-from app.price_limits import (
-    GEM_REGISTRATION_DATE,
-    MAIN_BOARD_LIMIT,
-    is_risk_warning_name,
-    price_limit_pct,
-)
+from app.price_limits import is_risk_warning_name
 from app.services import huichun_coverage, huichun_daily_runs, huichun_research
 from app.services.data_integrity import CLOSE_CUTOFF
 from app.services.fs_utils import atomic_write_text
@@ -39,7 +34,6 @@ from app.services.huichun_audit import (
     FACTOR_SCHEMA,
     RAW_COLUMNS,
     PreparedBatch,
-    _main_board,
     _table_exists,
     prepare_batch,
 )
@@ -48,6 +42,15 @@ from app.services.huichun_calendar import (
     calendar_health,
     load_market_calendar,
     read_market_calendar,
+)
+from app.services.huichun_data import (
+    HuichunDataReader,
+)
+from app.services.huichun_data import (
+    _within_daily_cutoff as _within_daily_cutoff,
+)
+from app.services.huichun_data import (
+    screening_stock as _screening_stock,
 )
 from app.strategy.huichun_a0 import A0Params, audit_a0
 from app.strategy.huichun_watch import (
@@ -80,31 +83,6 @@ def _json(value: object) -> str:
 
 def _digest(value: object) -> str:
     return hashlib.sha256(_json(value).encode()).hexdigest()
-
-
-def _within_daily_cutoff(relative_path: str, cutoff: date) -> bool:
-    # Only the repository's canonical dated layout proves an entire file is
-    # outside a query. Legacy/mixed daily files and all factor tables stay guarded.
-    parts = relative_path.split("/")
-    if len(parts) != 3 or parts[0] != "kline_daily" or not parts[1].startswith("date="):
-        return True
-    label = parts[1][5:]
-    try:
-        day = date.fromisoformat(label)
-    except ValueError:
-        return True
-    return day.isoformat() != label or day <= cutoff
-
-
-def _screening_stock(symbol: str) -> bool:
-    # Match the existing stock board families, including STAR depositary receipts.
-    # The daily stock table is separate from ETF/index tables; suffix checks also
-    # prevent malformed or misplaced rows from entering the candidate universe.
-    return _main_board(symbol) or (
-        symbol.endswith(".SZ") and symbol.startswith(("300", "301"))
-    ) or (
-        symbol.endswith(".SH") and symbol.startswith(("688", "689"))
-    )
 
 
 def _factor_status(events: pl.DataFrame) -> str:
@@ -516,22 +494,7 @@ class HuichunModeService:
             raise ValueError("任务已因服务关闭中止")
 
     def _input_signature(self, cutoff: date | None = None) -> list:
-        root = self.repo.store.data_dir
-        signature = []
-        for table in ("kline_daily", "adj_factor", "instruments"):
-            for path in sorted((root / table).rglob("*.parquet")):
-                key = path.relative_to(root).as_posix()
-                if cutoff is not None and not _within_daily_cutoff(key, cutoff):
-                    continue
-                try:
-                    stat = path.stat()
-                except FileNotFoundError:
-                    continue  # A concurrent removal is observed as absence.
-                signature.append((key, stat.st_size, stat.st_mtime_ns, stat.st_ino))
-        if self._calendar_path and self._calendar_path.exists():
-            stat = self._calendar_path.stat()
-            signature.append(("calendar", stat.st_size, stat.st_mtime_ns))
-        return signature
+        return HuichunDataReader(self.repo, calendar_path=self._calendar_path).input_signature(cutoff)
 
     def _run(self, job_id, kind, request, config) -> None:
         try:
@@ -704,94 +667,14 @@ class HuichunModeService:
         return observed
 
     def _factors(self, symbols, end) -> pl.DataFrame:
-        if not symbols or not _table_exists(self.repo, "adj_factor"):
-            return pl.DataFrame(schema=FACTOR_SCHEMA)
-        marks = ",".join("?" for _ in symbols)
-        rows = self.repo.execute_all(
-            "SELECT symbol,trade_date,ex_factor FROM adj_factor "
-            f"WHERE (trade_date <= ? OR trade_date IS NULL) AND symbol IN ({marks}) "
-            "ORDER BY symbol,trade_date",
-            [end, *symbols],
-        )
-        return pl.DataFrame(rows, schema=FACTOR_SCHEMA, orient="row")
+        return HuichunDataReader(self.repo, calendar_path=None).factors(symbols, end)
 
     def _raw(self, symbols, end, *, start=None) -> pl.DataFrame:
-        columns = [*RAW_COLUMNS]
-        available = {r[0]: r[1] for r in self.repo.execute_all("DESCRIBE kline_daily")}
-        if "quote_ts" in available:
-            columns.append("quote_ts")
-        if available.get("daily_batch_finalized") == "BOOLEAN":
-            columns.append("daily_batch_finalized")
-        clauses, args = ["date <= ?"], [end]
-        if start is not None:
-            clauses.append("date >= ?")
-            args.append(start)
-        if symbols is not None:
-            marks = ",".join("?" for _ in symbols)
-            clauses.append(f"symbol IN ({marks})")
-            args.extend(symbols)
-        frame = self.repo.execute_frame(
-            f"SELECT {','.join(columns)} FROM kline_daily WHERE {' AND '.join(clauses)} ORDER BY symbol,date",
-            args,
-        )
-        schema = {
-            c: pl.String if c == "symbol" else pl.Date if c == "date" else pl.Float64
-            for c in columns
-        }
-        if "daily_batch_finalized" in schema:
-            schema["daily_batch_finalized"] = pl.Boolean
-        return frame.cast(schema)
+        return HuichunDataReader(self.repo, calendar_path=None).raw(symbols, end, start=start)
 
     @staticmethod
     def _factor_failure_dates(raw, factors, calendar) -> dict[str, date | None]:
-        """Reject implausible adjusted jumps; this is a data-quality heuristic.
-
-        Board limits plus a two-point/tick margin retain the existing main-board
-        gate. These do not establish historical trading eligibility or model IPO
-        sessions without price limits.
-        """
-        bad: dict[str, date | None] = {}
-
-        def mark(symbol, day):
-            if symbol not in bad or day is None or (bad[symbol] is not None and day < bad[symbol]):
-                bad[symbol] = day
-
-        malformed = factors.filter(
-            pl.col("trade_date").is_null()
-            | pl.col("ex_factor").is_null()
-            | ~pl.col("ex_factor").is_finite()
-            | (pl.col("ex_factor") <= 0)
-            | pl.struct("symbol", "trade_date").is_duplicated()
-        )
-        for symbol, day in malformed.select("symbol", "trade_date").iter_rows():
-            mark(symbol, day)
-        if factors.is_empty() or raw.is_empty():
-            return bad
-        previous = {calendar[i]: calendar[i - 1] for i in range(1, len(calendar))}
-        prices = {(s, d): c for s, d, c in raw.select("symbol", "date", "close").iter_rows()}
-        first_dates = {
-            s: group["date"].min()
-            for (s,), group in raw.partition_by("symbol", as_dict=True).items()
-        }
-        for symbol, day, factor in factors.iter_rows():
-            if day is None or (symbol in bad and (bad[symbol] is None or day >= bad[symbol])):
-                continue
-            if factor == 1:
-                continue
-            old, current = prices.get((symbol, previous.get(day))), prices.get((symbol, day))
-            if day <= first_dates.get(symbol, day):
-                continue  # Events before the available price history only change its common scale.
-            if not old or not current or not math.isfinite(old) or not math.isfinite(current):
-                mark(symbol, day)
-                continue
-            limit = price_limit_pct(symbol, day)
-            # The shared helper supplies current board limits. GEM's historical
-            # 10% regime also matters when auditing old adjustment events.
-            if symbol.startswith(("300", "301")) and day < GEM_REGISTRATION_DATE:
-                limit = MAIN_BOARD_LIMIT
-            if abs(current * factor / old - 1) > limit + 0.02 + 0.01 / old:
-                mark(symbol, day)
-        return bad
+        return HuichunDataReader.factor_failure_dates(raw, factors, calendar)
 
     @classmethod
     def _invalid_factors(cls, raw, factors, calendar) -> set[str]:
@@ -801,38 +684,12 @@ class HuichunModeService:
         self, raw, factors, *, calendar, end, listings, expected_symbols,
         calendar_verified: bool | None = None,
     ) -> tuple[PreparedBatch, dict[str, date | None]]:
-        """Quarantine from the first dated factor failure, preserving prior signals.
-
-        An undated event cannot be assigned to a safe prefix. Dated failures
-        remain quarantined until the source is corrected; restarting indicators
-        after a bad corporate action would silently invent a valid price basis.
-        """
-        # Uncovered history cannot seed indicators in an independently verified window.
-        raw = raw.filter(pl.col("date").is_between(calendar[0], end))
-        factors = factors.filter(pl.col("trade_date").is_null() | (pl.col("trade_date") <= end))
-        issues = self._factor_failure_dates(raw, factors, calendar)
-        undated = [symbol for symbol, day in issues.items() if day is None]
-        raw = raw.filter(~pl.col("symbol").is_in(undated))
-        factors = factors.filter(~pl.col("symbol").is_in(undated))
-        dated = [(symbol, day) for symbol, day in issues.items() if day is not None]
-        if dated:
-            cutoffs = pl.DataFrame(
-                dated, schema={"symbol": pl.String, "_invalid_from": pl.Date}, orient="row",
-            )
-            raw = raw.join(cutoffs, on="symbol", how="left").filter(
-                pl.col("_invalid_from").is_null() | (pl.col("date") < pl.col("_invalid_from"))
-            ).drop("_invalid_from")
-            factors = factors.join(cutoffs, on="symbol", how="left").filter(
-                pl.col("_invalid_from").is_null()
-                | (pl.col("trade_date") < pl.col("_invalid_from"))
-            ).drop("_invalid_from")
-        prepared = prepare_batch(
-            raw, factors, market_dates=calendar, end=end, listing_dates=listings,
-            expected_symbols=[s for s in expected_symbols if s not in undated],
+        return HuichunDataReader.prepare_batch(
+            raw, factors, calendar=calendar, end=end, listings=listings,
+            expected_symbols=expected_symbols,
             calendar_verified=(self._calendar_source == "official_exchange_calendar")
             if calendar_verified is None else calendar_verified,
         )
-        return prepared, issues
 
     @staticmethod
     def _baseline(raw, factors, symbol, signal_date) -> str:

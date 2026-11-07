@@ -45,6 +45,7 @@ class PositionTMarket:
         self.repo, self.quotes, self.depth, self.capset = repo, quote_service, depth_service, capset
         self.sectors = SectorMonitorService(repo)
         self._minute_key = None
+        self._minute_retried = False
         self._minutes = {}
         self._minute_received = None
         self._stats = {}
@@ -68,7 +69,7 @@ class PositionTMarket:
         from app.services.kline_sync import intraday_monitor_support
 
         support = intraday_monitor_support(self.capset)
-        return {"manual": True, "simulation": True, "broker": False, "auto_order": False,
+        return {"manual": True, "simulation": True, "auto_simulation": True, "broker": False, "auto_order": False,
                 "minute": support, "replay_source": "recorded_observations",
                 "reasons": ["仅人工或模拟登记；不连接券商", "缺少市场时间、盘口、证券状态或完整分钟时暂停判断",
                             "分钟时间语义须按数据源确认；历史回放只使用本功能已留存的当时证据"]}
@@ -146,7 +147,10 @@ class PositionTMarket:
                 "minute_received_at": self._minute_received, "data_errors": errors, **self._history(symbol, now.date())}
 
     def collect(self, positions, accounts, now):
-        """每轮一批；分钟每分钟一次，标的按未完成计划优先由调用方排序。"""
+        """每轮一批；分钟正常每分钟一次，缺最新完整分钟时宽限后最多补拉一次。"""
+        now = as_cn(now)
+        if self.trading_day(now.date()) is not True or not continuous_session(now):
+            return {}
         import polars as pl
 
         from app.services import preferences
@@ -176,8 +180,23 @@ class PositionTMarket:
         books = self.depth.get_order_books(selected) if trading and enabled and selected else {}
         minute_slot = (now - timedelta(seconds=3)).replace(second=0, microsecond=0).isoformat()
         key = (minute_slot, tuple(selected), preferences.get_minute_data_provider())
-        if trading and enabled and selected and key != self._minute_key:
-            # 失败也记本轮键，不以每 5 秒重试放大源频率；旧缓存不能冒充新数据。
+        new_slot = key != self._minute_key
+        retry = False
+        expected_end = now.replace(second=0, microsecond=0)
+        if not new_slot and not self._minute_retried and minute_slot == expected_end.isoformat():
+            for pos in positions:
+                cfg = accounts[pos["account_id"]]["config"]
+                if (pos["symbol"] not in selected or now.second < cfg["minute_grace_seconds"]
+                        or cfg.get("minute_timestamp_semantics") not in {"start", "end"}
+                        or expected_end.time() in {time(9, 30), time(13)}):
+                    continue
+                bars = normalize_bars(self._minutes.get(pos["symbol"], []), now, cfg["minute_timestamp_semantics"])
+                if not bars or as_cn(bars[-1]["end"]) < expected_end:
+                    retry = True
+                    break
+        if trading and enabled and selected and (new_slot or retry):
+            # 失败也消耗本次机会，最多一次有界补拉；旧缓存仍由质量检查判断过期。
+            self._minute_retried = retry
             self._minute_key, self._minutes = key, {}
             frame = fetch_intraday_monitor_batch(selected, self.capset, now=now.replace(tzinfo=None))
             for row in frame.to_dicts():

@@ -15,17 +15,18 @@ import polars as pl
 
 from app.indicators.pipeline import compute_indicators, compute_limit_signals
 from app.market_time import CN_TZ, cn_now
-from app.price_limits import MAIN_BOARD_ST_LIMIT_CHANGE_DATE, parse_listing_date
+from app.price_limits import parse_listing_date, polars_price_limit_pct
 from app.services.index_const import CORE_INDEX_SYMBOLS
 from app.services.market_game_calendar import load_game_calendar
 
 _WINDOW = 280
+_COVERAGE_WINDOW = 20
 _PRICE_COLUMNS = ("open", "high", "low", "close", "raw_close", "raw_high", "raw_low")
 _BASE_COLUMNS = ("symbol", "date", *_PRICE_COLUMNS, "volume", "amount")
 _METRICS = {
     "breadth_up": ("上涨占比", "ratio"), "above_ma20": ("站上20日线占比", "ratio"),
-    "median_return": ("个股涨幅中位数", "ratio"), "limit_up": ("涨停家数", "count"),
-    "limit_down": ("跌停家数", "count"), "broken_limit": ("日线触板未封家数", "count"),
+    "median_return": ("个股涨幅中位数", "ratio"), "limit_up": ("可核验样本涨停家数", "count"),
+    "limit_down": ("可核验样本跌停家数", "count"), "broken_limit": ("可核验样本触板未封家数", "count"),
     "seal_rate": ("日线封板率", "ratio"), "max_boards": ("连续涨停高度", "count"),
     "promotion_rate": ("昨日涨停晋级率", "ratio"),
     "previous_limit_premium": ("昨日涨停等权涨幅", "ratio"),
@@ -36,6 +37,8 @@ _METRICS = {
     "index_above_ma20": ("核心指数站上20日线占比", "ratio"),
     "stock_count": ("有效股票样本数", "count"), "coverage": ("有效行情审计覆盖率", "ratio"),
     "limit_up_ratio": ("样本涨停占比", "ratio"), "limit_down_ratio": ("样本跌停占比", "ratio"),
+    "limit_sample_count": ("涨跌停可核验样本数", "count"),
+    "limit_coverage": ("涨跌停可核验样本占比", "ratio"),
 }
 
 
@@ -229,12 +232,17 @@ def _prepare(frame: pl.DataFrame, days: list[date], instruments: pl.DataFrame, c
          & (pl.col("raw_close") < pl.col("limit_up_price"))).alias("signal_broken_limit_up"),
     )
     frame = frame.join(instruments, on="symbol", how="left")
+    # A newer name snapshot is only ambiguous when ST changes the limit for
+    # this board/date. Reuse the exchange rule instead of masking every board.
+    independent_of_st = (
+        polars_price_limit_pct(pl.col("symbol"), pl.col("date"), pl.lit(True))
+        == polars_price_limit_pct(pl.col("symbol"), pl.col("date"), pl.lit(False))
+    )
     known_limit = (
         (pl.col("history_days") > 1) & pl.col("name").is_not_null()
         & pl.col("listing_date").is_not_null()
         & ((pl.col("date") - pl.col("listing_date")).dt.total_days() >= 30)
-        & ((pl.col("date") >= MAIN_BOARD_ST_LIMIT_CHANGE_DATE)
-           | (pl.col("metadata_date") <= pl.col("date")))
+        & (independent_of_st | (pl.col("metadata_date") <= pl.col("date")))
     ).fill_null(False)
     frame = frame.with_columns([
         pl.when(known_limit).then(pl.col(c)).otherwise(None).alias(c)
@@ -298,7 +306,33 @@ def _newer_index_close(repo, target: date, through: date, cutoff: datetime) -> b
     return not frame.filter(valid.fill_null(False)).is_empty()
 
 
+def _coverage_denominators(frame: pl.DataFrame, days: list[date]) -> dict[date, int]:
+    """Recent local bar universes, including invalid bars but never future rows.
+
+    This audits available local data, not the historical listed universe. A
+    missing latest bar stays visible for 20 sessions; metadata-only delistings
+    and IPOs with no bars are outside this denominator.
+    """
+    if not {"symbol", "date"} <= set(frame.columns):
+        return dict.fromkeys(days, 0)
+    observed = dict(frame.select("date", "symbol").drop_nulls().group_by("date").agg(
+        pl.col("symbol").unique(),
+    ).iter_rows())
+    last_seen: dict[str, int] = {}
+    counts = {}
+    for index, day in enumerate(days):
+        last_seen.update(dict.fromkeys(observed.get(day, []), index))
+        if index >= _COVERAGE_WINDOW:
+            expired = index - _COVERAGE_WINDOW
+            for symbol in observed.get(days[expired], []):
+                if last_seen.get(symbol) == expired:
+                    del last_seen[symbol]
+        counts[day] = len(last_seen)
+    return counts
+
+
 def _aggregate(frame: pl.DataFrame, indices: dict, days: list[date], denominators: dict[date, int]) -> list[dict]:
+    comparable_pool = pl.col("_previous_up") & pl.col("signal_limit_up").is_not_null()
     grouped = frame.group_by("date").agg(
         pl.col("change_pct").filter(pl.col("change_pct").is_not_null()).gt(0).mean().alias("breadth_up"),
         (pl.col("close") > pl.col("ma20")).mean().alias("above_ma20"),
@@ -306,9 +340,9 @@ def _aggregate(frame: pl.DataFrame, indices: dict, days: list[date], denominator
         pl.col("signal_limit_up").count().alias("_limit_known"), pl.len().alias("_count"),
         pl.col("signal_limit_up").sum().alias("limit_up"), pl.col("signal_limit_down").sum().alias("limit_down"),
         pl.col("signal_broken_limit_up").sum().alias("broken_limit"), pl.col("boards").max().alias("max_boards"),
-        pl.col("_previous_up").sum().alias("_pool"),
-        (pl.col("_previous_up") & pl.col("signal_limit_up")).sum().alias("_promoted"),
-        pl.col("change_pct").filter(pl.col("_previous_up")).mean().alias("previous_limit_premium"),
+        comparable_pool.sum().alias("_pool"),
+        (comparable_pool & pl.col("signal_limit_up")).sum().alias("_promoted"),
+        pl.col("change_pct").filter(comparable_pool).mean().alias("previous_limit_premium"),
     ) if not frame.is_empty() else pl.DataFrame({"date": pl.Series([], dtype=pl.Date)})
     calendar = pl.DataFrame({"date": days})
     if grouped.width == 1:
@@ -323,12 +357,14 @@ def _aggregate(frame: pl.DataFrame, indices: dict, days: list[date], denominator
         count = row["_count"] or 0
         denominator = denominators.get(row["date"], 0)
         item.update({"stock_count": count, "coverage": count / denominator if denominator else None})
-        if not count or row["_limit_known"] < count * 0.95:
+        known = row["_limit_known"] or 0
+        item.update({"limit_sample_count": known, "limit_coverage": known / count if count else None})
+        if not known:
             for key in ("limit_up", "limit_down", "broken_limit", "max_boards", "previous_limit_premium"):
                 item[key] = None
         else:
-            item["limit_up_ratio"] = row["limit_up"] / count
-            item["limit_down_ratio"] = row["limit_down"] / count
+            item["limit_up_ratio"] = row["limit_up"] / known
+            item["limit_down_ratio"] = row["limit_down"] / known
             total = row["limit_up"] + row["broken_limit"]
             item["seal_rate"] = row["limit_up"] / total if total else None
             item["promotion_rate"] = row["_promoted"] / row["_pool"] if row["_pool"] >= 10 else None
@@ -382,13 +418,13 @@ def build_snapshot(repo, as_of: date | None = None) -> dict:
     limitations = [
         "规则尚未经样本外验证; 输出为条件化研究计划。",
         "本地历史日线缺少首次公开时间, available_at未知; 因子完整性与历史交易资格未获独立验证。",
-        "覆盖率分母采用当前股票维表按上市日期过滤, 是数据审计口径; 历史存续股票全集与停牌历史未获PIT验证。",
+        "覆盖率分母为截至各交易日近20个交易日有本地日线的股票; 保留近期缺失行情, 排除长期无行情的维表记录。尚无日线的新股及长期停牌不在分母内, 不代表历史存续股票全集。",
         "股票复权数据读取前后核对发布代次; 原始行情、指数与因子尚无跨表原子发布证明。",
         "涨跌停基于日线原始价和统一限价规则; 不含盘口封单、真实成交排队和完整盘中炸板过程。",
         *calendar["limitations"],
     ]
     if as_of:
-        limitations.append("历史回看不使用当前板块成分, 不生成当时可执行个股; 历史ST状态未核验时对应限价统计缺失。")
+        limitations.append("历史回看不使用当前板块成分, 不生成当时可执行个股; 历史ST状态影响限价且未核验的个股被剔除, 其他可核验样本仍参与统计。")
         sectors = {}
     else:
         limitations.append("板块及股票名称采用本次观察时的当前快照, 不代表行情日期当时已知; 板块历史强度未验证。")
@@ -397,13 +433,21 @@ def build_snapshot(repo, as_of: date | None = None) -> dict:
         except Exception:  # noqa: BLE001 - optional sectors must not block research
             sectors = {}
             limitations.append("当前板块映射不可用, 不生成缺少板块证据的候选。")
+    from app.services.preferences import get_mainline_filter_config
+
+    mainline_filter = get_mainline_filter_config()
+    mainline_filter["blacklist"] = sorted(set(mainline_filter["blacklist"]))
+    sector_members: dict[str, set[str]] = {}
+    for symbol, names in sectors.items():
+        for name in names:
+            sector_members.setdefault(name, set()).add(symbol.split(".")[0])
     indices = _indices(repo, days, cutoff)
-    observed_counts = dict(frame.group_by("date").agg(pl.col("symbol").n_unique()).iter_rows()) if {"date", "symbol"} <= set(frame.columns) else {}
-    denominators = {
-        day: max(instruments.filter(pl.col("listing_date").is_null() | (pl.col("listing_date") <= day)).height, observed_counts.get(day, 0))
-        for day in days
-    }
+    coverage_frames = [source.select("symbol", "date") for source in (raw, frame)
+                       if {"symbol", "date"} <= set(source.columns)]
+    denominators = _coverage_denominators(pl.concat(coverage_frames) if coverage_frames else pl.DataFrame(), days)
     history = _aggregate(prepared, indices, days, denominators)
+    if any(row.get("limit_coverage") is not None and row["limit_coverage"] < 1 for row in history):
+        limitations.append("部分日期的涨跌停、封板率、连板与溢价仅代表可核验样本; 样本数和覆盖率已列示, 不外推为全市场总数。")
     current = prepared.filter(pl.col("date") == target) if not prepared.is_empty() else pl.DataFrame()
     denominator = denominators.get(target, 0)
     coverage = current.height / denominator if denominator else None
@@ -503,6 +547,7 @@ def build_snapshot(repo, as_of: date | None = None) -> dict:
             "atr_pct": row["atr_14"] / row["close"] if row.get("atr_14") is not None else None,
             "close_location": (row["raw_close"] - row["raw_low"]) / span if span > 0 else None,
             "drawdown5": row.get("drawdown5"), "limit_up": row.get("signal_limit_up"),
+            "boards": row.get("boards") if row.get("signal_limit_up") is not None else None,
             "limit_down": row.get("signal_limit_down"), "one_price": span <= 0,
             "listing_days": listing_days, "history_days": row["history_days"], "is_st": is_st,
             "sector": names[0] if names else None, "sectors": names,
@@ -515,6 +560,8 @@ def build_snapshot(repo, as_of: date | None = None) -> dict:
         "quality_reasons": quality_reasons, "calendar": calendar,
         "data_generation": {"before": generation_before[1], "after": generation_after[1], "verified": generation_verified},
         "metadata_scope": "historical_unverified" if as_of else "current_observation",
+        "mainline_filter": mainline_filter,
+        "sector_member_counts": {name: len(members) for name, members in sorted(sector_members.items())},
         "coverage": coverage, "history_days": len(days),
         "metrics": {key: metrics.get(key) for key in _METRICS},
         "previous": {key: previous.get(key) for key in _METRICS}, "history": history,
