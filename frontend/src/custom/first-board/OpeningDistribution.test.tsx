@@ -23,8 +23,14 @@ it('shows the non-one-word cohort and its observed open returns, including flat 
   expect(host.querySelector('h3')?.textContent).toContain('12 只')
   expect(host.textContent).toContain('有效开盘 10 / 12 只')
   expect(host.textContent).toContain('历史待确认 1 只')
-  expect(host.querySelector('figure[aria-label^="打板成功率"]')?.textContent).toContain('60.00%')
-  expect(host.querySelector('figure[aria-label^="打板盈利率"]')?.textContent).toContain('-1.23%')
+  const ratio = host.querySelector('figure[aria-label^="开盘上涨占比"]')!
+  expect(ratio.textContent).toContain('60.00%')
+  // 比例恒为非负，不按红涨绿跌着色；平均涨幅仍按方向着色。
+  expect(ratio.querySelector('text')?.getAttribute('class')).toContain('text-foreground')
+  const mean = host.querySelector('figure[aria-label^="开盘平均涨幅"]')!
+  expect(mean.textContent).toContain('-1.23%')
+  expect(mean.querySelector('text')?.getAttribute('class')).toContain('text-bear')
+  expect(host.textContent).not.toContain('打板成功率')
   const counts = Object.fromEntries([...host.querySelectorAll('dt')].map(row => [row.textContent, row.nextElementSibling?.textContent]))
   expect(counts).toMatchObject({ '>10%': '1', '平开': '1', '<-10%': '1', '0～2%': '5' })
 })

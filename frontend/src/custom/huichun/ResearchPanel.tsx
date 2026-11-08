@@ -128,22 +128,23 @@ export function ResearchPanel({ currentRevision, busy, onRefresh, refreshError }
     </div>
     <ErrorNotice error={research.error} retry={() => void research.refetch()} /><ErrorNotice error={refreshError} />
     {research.isPending ? <LoadingRows /> : research.data && <>
-      <div className="my-4 flex flex-wrap gap-3 text-xs">
-        <label>样本来源<select className={inputClass} value={origin} onChange={e => {
+      <div className="my-4 grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+        <label className="space-y-1.5">样本来源<select className={inputClass} value={origin} onChange={e => {
           setOrigin(e.target.value as Row['origin']); setMetric(e.target.value === 'forward' ? 'net' : 'shape'); setPage(0)
         }}>
           <option value="forward">收盘当日首次记录</option><option value="backfill">历史回扫</option></select></label>
-        <label>股票板块<select className={inputClass} value={board} onChange={e => { setBoard(e.target.value as Row['board']); setPage(0) }}>
+        <label className="space-y-1.5">股票板块<select className={inputClass} value={board} onChange={e => { setBoard(e.target.value as Row['board']); setPage(0) }}>
           {Object.entries(boards).map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select></label>
-        <label>规则版本<select className={inputClass} value={revision ?? ''} onChange={e => { setRevision(Number(e.target.value)); setPage(0) }}>
+        <label className="space-y-1.5">规则版本<select className={inputClass} value={revision ?? ''} onChange={e => { setRevision(Number(e.target.value)); setPage(0) }}>
           {revisions.map(n => <option value={n} key={n}>版本 {n}</option>)}</select></label>
-        <label>观察窗口<select aria-label="研究观察窗口" className={inputClass} value={horizon} onChange={e => { setHorizon(Number(e.target.value) as Horizon); setPage(0) }}>
+        <label className="space-y-1.5">观察窗口<select aria-label="研究观察窗口" className={inputClass} value={horizon} onChange={e => { setHorizon(Number(e.target.value) as Horizon); setPage(0) }}>
           {[5, 10, 20].map(n => <option value={n} key={n}>{n} 个交易日</option>)}</select></label>
       </div>
+      <p className="text-xs leading-relaxed text-secondary">形态收益：信号收盘至 T+{horizon}；成交模拟：T+1 开盘至 T+2 开盘。</p>
       {rows.length === 0 ? <p className="py-4 text-sm text-secondary">{research.data.records.length
         ? '此来源、板块和规则版本暂无样本，可切换条件查看。'
         : '暂无研究样本。运行回春筛选后，确认形态和仅超出零轴门槛的对照会自动收录。'}</p> : <>
-        <p className="text-xs leading-relaxed text-secondary">对照组仅超出零轴距离门槛{rules && `（大于 ${pct(rules.zero_threshold)}，至多 ${pct(rules.zero_threshold + .01)}）`}，其余入选条件相同。每列括号为有结果的样本数。</p>
+        <p className="text-xs leading-relaxed text-secondary">每列展示均值，括号为有结果的样本数。</p>
         <div className="mt-2 overflow-x-auto"><table className="w-full min-w-[600px] text-left text-xs tabular-nums" aria-label="研究分组统计">
           <thead><tr>{['分组', '全部样本', `信号收盘至 T+${horizon}`, '同日市场超额', '开盘报价毛收益', '模拟成交净收益'].map(label => <th className="py-2 pr-4 font-normal text-secondary" key={label}>{label}</th>)}</tr></thead>
           <tbody>{groups.map(group => <tr key={group.key} className="border-t border-border">
@@ -156,13 +157,9 @@ export function ResearchPanel({ currentRevision, busy, onRefresh, refreshError }
             {Object.entries(metricLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
         <p aria-label={`同日${metricLabels[metric]}对照`}>同日{metricLabels[metric]}差
           <strong className="mx-2 tabular-nums">{pointDifference(paired.diff)}</strong>
-          <span className="text-secondary">{paired.count} 个共同信号日 · 各日先算确认组均值减对照组均值，再按日等权。</span>
+          <span className="text-secondary">{paired.count} 个共同信号日</span>
         </p></div>
-        <details className="mt-2 text-xs"><summary className="cursor-pointer">相近波动率对照 · {paired.matchedCount} 对可比样本</summary>
-          <p className="mt-1 text-secondary">配对{metricLabels[metric]}差 {pointDifference(paired.matchedDiff)}，覆盖 {paired.matchedDays} 个日期。每只确认股在同日同板块选择近 20 日波动率最接近、较高值至多为较低值 1.2 倍的对照。允许复用对照，先匹配再剔除收益缺失的配对，按日等权。</p>
-        </details>
-        <p className="my-3 text-xs leading-relaxed text-secondary">开盘报价取 T+1 开盘至 T+2 开盘。同日最多出现 {paired.peakCandidates} 只确认股，净收益按每只独立分配 1 万元模拟。展开净收益可核对资金占用和费用。</p>
-        <div className="overflow-x-auto"><table className="w-full min-w-[850px] text-left text-xs tabular-nums" aria-label="研究样本明细">
+        <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[850px] text-left text-xs tabular-nums" aria-label="研究样本明细">
           <thead><tr>{['信号日', '股票', '分组', '零轴距离', `T+${horizon} 形态收益`, '同日市场超额', '开盘报价毛收益', '模拟成交净收益'].map(label => <th key={label} className="py-2 pr-3 font-normal text-secondary">{label}</th>)}</tr></thead>
           <tbody>{rows.slice(visiblePage * 50, (visiblePage + 1) * 50).map(row => <tr key={row.id} className="border-t border-border">
             <td className="py-2 pr-3">{row.signal_date}</td><td>{row.name} <span className="text-secondary">{row.symbol}</span></td><td>{cohortLabels[row.cohort]}</td>
@@ -178,8 +175,20 @@ export function ResearchPanel({ currentRevision, busy, onRefresh, refreshError }
           </tr>)}</tbody>
         </table></div><Pagination page={visiblePage} pages={pages} onPage={setPage} />
       </>}
-      {research.data.limitations.length > 0 && <details className="mt-4 text-xs text-secondary"><summary className="cursor-pointer">研究口径与执行假设</summary>
-        <ul className="mt-2 list-disc space-y-1 pl-4">{research.data.limitations.map(line => <li key={line}>{line}</li>)}</ul></details>}
+      {(rows.length > 0 || research.data.limitations.length > 0) && <details className="mt-4 border-t border-border pt-3 text-xs text-secondary">
+        <summary className="cursor-pointer rounded py-1 focus-visible:outline focus-visible:outline-accent">研究口径与执行假设</summary>
+        <div className="mt-2 max-w-prose space-y-3 leading-relaxed">
+          {rows.length > 0 && <>
+            <p>对照组仅超出零轴距离门槛{rules && `（大于 ${pct(rules.zero_threshold)}，至多 ${pct(rules.zero_threshold + .01)}）`}，其余入选条件相同。</p>
+            <p>同日{metricLabels[metric]}差：各日先算确认组均值减对照组均值，再按日等权。</p>
+            <div><p className="font-medium text-foreground">相近波动率对照 · {paired.matchedCount} 对可比样本</p>
+              <p className="mt-1">配对{metricLabels[metric]}差 {pointDifference(paired.matchedDiff)}，覆盖 {paired.matchedDays} 个日期。每只确认股在同日同板块选择近 20 日波动率最接近、较高值至多为较低值 1.2 倍的对照。允许复用对照，先匹配再剔除收益缺失的配对，按日等权。</p>
+            </div>
+            <p>开盘报价取 T+1 开盘至 T+2 开盘。同日最多出现 {paired.peakCandidates} 只确认股，净收益按每只独立分配 1 万元模拟。展开净收益可核对资金占用和费用。</p>
+          </>}
+          {research.data.limitations.length > 0 && <ul className="list-disc space-y-1 pl-4">{research.data.limitations.map(line => <li key={line}>{line}</li>)}</ul>}
+        </div>
+      </details>}
     </>}
   </section>
 }

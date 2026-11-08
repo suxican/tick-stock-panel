@@ -66,6 +66,25 @@ export function matchesPriority(row: FirstBoardCandidate, filter: PriorityFilter
   return p.status === filter
 }
 
+/** 列表内只显示分数、证据覆盖和状态；分项与来源在行展开区的 PriorityCell 查看。 */
+export function PrioritySummary({ row, current }: { row: Pick<FirstBoardCandidate, 'priority_score' | 'last_priority'>; current: boolean }) {
+  const p = row.priority_score
+  if (!p || !priorityVersions.includes(p.version)) return <span data-priority-summary className="text-secondary">暂无评分</span>
+  const score = currentPriority(row, current)
+  const previous = row.last_priority
+  if (score === null) {
+    return <div data-priority-summary className="leading-snug text-secondary">
+      <p>{current ? statusLabels[p.status] : '非当前评分'}</p>
+      {previous && <p className="whitespace-nowrap tabular-nums" title={previous.source === 'event' ? '最近信号评分' : '最近盘中评分'}>{stamp(previous.as_of).slice(0, 11)} · {previous.score} 分</p>}
+    </div>
+  }
+  return <div data-priority-summary className="w-24 space-y-1 leading-snug">
+    <p className="flex items-baseline justify-between gap-2 tabular-nums"><strong className="text-sm">{score} 分</strong><span className="text-secondary" title="证据覆盖">{p.known_max}/100</span></p>
+    <div aria-hidden="true" className="h-1 rounded-full bg-elevated"><div className="h-1 rounded-full bg-accent" style={{ width: `${Math.max(0, Math.min(100, score))}%` }} /></div>
+    <p className="text-secondary">{statusLabels[p.status]}</p>
+  </div>
+}
+
 export function PriorityCell({ row, current, archived = false }: {
   row: Pick<FirstBoardCandidate, 'priority_score' | 'last_priority'>; current: boolean; archived?: boolean
 }) {

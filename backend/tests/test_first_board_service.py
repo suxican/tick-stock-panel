@@ -239,9 +239,64 @@ def test_snapshot_expires_without_another_quote(service, monkeypatch):
 def test_unavailable_realtime_blocks_events(service, status):
     service._quote_service = SimpleNamespace(status=lambda: status)
     service.process_snapshot(quotes(), NOW.date(), now=NOW)
-    assert service.snapshot()["status"] == "waiting"
-    assert not service.snapshot()["rows"][0]["can_buy"]
+    snapshot = service.snapshot()
+    assert snapshot["status"] == "waiting"
+    row = snapshot["rows"][0]
+    assert not row["can_buy"]
     assert service.events(NOW.date()) == []
+    # 发布时与读取时都会检查实时行情, 同一原因只记录一次。
+    reason = snapshot["message"]
+    assert row["blocked_reasons"].count(reason) == 1
+    assert reason in snapshot["global_blocked_reasons"]
+    assert set(snapshot["global_blocked_reasons"]) <= set(row["blocked_reasons"])
+
+
+def test_global_blocked_reasons_exclude_stock_specific_reasons(service):
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    snapshot = service.snapshot()
+    assert snapshot["rows"][0]["can_buy"]
+    assert snapshot["global_blocked_reasons"] == []
+
+    service.save_config({**service.get_config(), "require_sector_confirmation": True})
+    # 夹具的 _prepare 会重置环境为允许; 此处固定为弱势环境。
+    service._prepare = lambda *_: None
+    service._environment = {"allowed": False, "reason": "市场环境弱势, 暂停提示"}
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    snapshot = service.snapshot()
+    row = snapshot["rows"][0]
+    assert snapshot["global_blocked_reasons"] == ["市场环境弱势, 暂停提示"]
+    stock_reasons = [item for item in row["blocked_reasons"] if item not in snapshot["global_blocked_reasons"]]
+    assert stock_reasons and all("行业" in item or "同行" in item for item in stock_reasons)
+
+
+def test_missing_quote_times_are_global_only_when_no_candidate_has_a_fresh_quote(service):
+    old = int((NOW - timedelta(seconds=60)).timestamp() * 1000)
+    service.process_snapshot(quotes(quote_ts=old), NOW.date(), now=NOW)
+    snapshot = service.snapshot()
+    assert "行情时间缺失、重复或已过期" in snapshot["global_blocked_reasons"]
+    assert snapshot["rows"][0]["blocked_reasons"].count("行情时间缺失、重复或已过期") == 1
+
+    other = quotes(symbol="600001.SH", quote_ts=old)
+    service.process_snapshot(pl.concat([quotes(), other]), NOW.date(), now=NOW)
+    assert "行情时间缺失、重复或已过期" not in service.snapshot()["global_blocked_reasons"]
+
+
+def test_global_blocked_reasons_cover_closed_and_stale_snapshots(service, monkeypatch):
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    monkeypatch.setattr(fb, "_now", lambda: NOW + timedelta(seconds=31))
+    stale = service.snapshot()
+    assert stale["status"] == "stale"
+    assert stale["global_blocked_reasons"] == ["行情已过期或当前不在连续竞价时段"]
+    assert stale["rows"][0]["blocked_reasons"].count("行情已过期或当前不在连续竞价时段") == 1
+
+    closed_at = NOW.replace(hour=16)
+    monkeypatch.setattr(fb, "_now", lambda: closed_at)
+    service.process_snapshot(quotes(now=closed_at), NOW.date(), now=closed_at)
+    closed = service.snapshot()
+    assert closed["status"] == "closed"
+    assert "当前不在有效盘中时段" in closed["global_blocked_reasons"]
+    for row in closed["rows"]:
+        assert all(row["blocked_reasons"].count(item) == 1 for item in closed["global_blocked_reasons"])
 
 
 def test_disabled_service_does_not_queue_history_work(service):

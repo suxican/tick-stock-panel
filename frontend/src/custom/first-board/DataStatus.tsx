@@ -10,6 +10,17 @@ const phases = { live: '盘中观测', closed: '非连续竞价', stale: '快照
 const statuses = { ready: '完整', partial: '部分覆盖', missing: '缺证据', inactive: '未实时评估', empty: '无候选' }
 const samplingLabels: Record<string, string> = { recorded: '已采样', already_recorded: '已采样', not_due: '等待采样时点', waiting: '等待采样', paused: '暂停采样', error: '采样失败' }
 
+/** 状态条上的一句话摘要；9 项同为未实时评估或无候选时合并为一个状态，不逐项罗列。 */
+export function dataStatusSummary(data?: FirstBoardDataStatus): { label: string; tone: 'ok' | 'warn' | 'neutral' } | null {
+  if (!data || data.version !== 1) return null
+  const items = (Object.keys(metrics) as FirstBoardDataMetric[]).map(key => data.metrics[key])
+  if (items.every(item => !item || item.status === 'inactive')) return { label: statuses.inactive, tone: 'neutral' }
+  if (items.every(item => item?.status === 'empty')) return { label: statuses.empty, tone: 'neutral' }
+  const ready = items.filter(item => item?.status === 'ready').length
+  const gaps = items.filter(item => item?.status === 'partial' || item?.status === 'missing').length
+  return { label: `${ready}/${items.length} 项完整${gaps ? ` · ${gaps} 项有缺口` : ''}`, tone: gaps ? 'warn' : 'ok' }
+}
+
 export function DataStatus({ data, retained }: { data?: FirstBoardDataStatus; retained: boolean }) {
   if (!data || data.version !== 1) return <p className="text-xs text-secondary">当前快照未提供盘中数据状态摘要。</p>
   const entries = Object.keys(metrics) as FirstBoardDataMetric[]

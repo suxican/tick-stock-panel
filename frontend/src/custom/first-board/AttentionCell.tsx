@@ -1,15 +1,16 @@
 import { useState } from 'react'
 import type { FirstBoardAttention } from '@/lib/api'
 import { cn } from '@/lib/cn'
-import { pct, stamp } from './shared'
+import { pct, positiveBadgeClass, stamp } from './shared'
 
 export type AttentionFilter = 'all' | 'strong' | 'follow' | 'both'
 
-const badgeClass = 'inline-flex items-center rounded border px-1.5 py-0.5 font-medium'
+const badgeClass = 'inline-flex items-center whitespace-nowrap rounded border px-1.5 py-0.5 font-medium'
+// 联动命中属于正向信号，统一用蓝色；双条件用实心加强，单项用描边。
 const colors = {
-  strong: 'border-cyan-500/25 bg-cyan-500/10 text-cyan-800 dark:text-cyan-300',
-  follow: 'border-amber-500/25 bg-amber-500/10 text-amber-800 dark:text-amber-300',
-  both: 'border-violet-500/25 bg-violet-500/10 text-violet-800 dark:text-violet-300',
+  strong: 'border-accent/40 text-blue-700 dark:text-blue-300',
+  follow: 'border-accent/40 text-blue-700 dark:text-blue-300',
+  both: positiveBadgeClass,
 }
 const leaderStatus = (atLimit: boolean | null) => atLimit == null ? '触板状态待确认' : atLimit ? '触板' : '已开板'
 
@@ -28,6 +29,24 @@ export function matchesAttention(context: FirstBoardAttention | undefined, filte
 
 export function attentionPriority(context: FirstBoardAttention | undefined) {
   return hasCurrentAttention(context) && context.priority != null && [0, 1, 2].includes(context.priority) ? context.priority : null
+}
+
+/** 列表内只显示命中的联动标签或一句状态；板块、领涨股和分钟证据在行展开区查看。 */
+export function AttentionSummary({ context, snapshotCurrent }: { context?: FirstBoardAttention; snapshotCurrent: boolean }) {
+  const stale = !!context && (!snapshotCurrent || context.status === 'stale')
+  if (!hasCurrentAttention(context, snapshotCurrent)) {
+    return <span data-attention-summary className="text-secondary">{stale ? '联动数据已过期' : '联动数据待确认'}</span>
+  }
+  const badges: [keyof typeof colors, string][] = context.group === 'S1F1' ? [['both', '同板块双条件']] : [
+    ...(context.strong_sector ? [['strong', '强势板块'] as [keyof typeof colors, string]] : []),
+    ...(context.leader_follow ? [['follow', '领涨带动'] as [keyof typeof colors, string]] : []),
+  ]
+  if (context.intraday_rising) badges.push(['strong', '分时走强'])
+  const unknown = context.strong_sector == null || context.leader_follow == null
+  return <div data-attention-summary className="flex flex-wrap gap-1">
+    {badges.map(([tone, label]) => <span key={label} data-attention-positive="true" className={cn(badgeClass, colors[tone])}>{label}</span>)}
+    {!context.strong_sector && !context.leader_follow && <span className="text-secondary">{unknown ? '待确认' : '未满足'}</span>}
+  </div>
 }
 
 export function AttentionCell({ context, snapshotCurrent }: { context?: FirstBoardAttention; snapshotCurrent: boolean }) {
@@ -52,7 +71,7 @@ export function AttentionCell({ context, snapshotCurrent }: { context?: FirstBoa
       </div>
       {shownGroups.map(group => <div key={group.id}>
         <p>{group.kind === 'industry' ? '行业' : '概念'} · {group.name}</p>
-        {group.leader && <p className={cn('text-secondary', group.follow && 'text-amber-800 dark:text-amber-300')}>{group.leader.name || group.leader.symbol} · {leaderStatus(group.leader.at_limit)}</p>}
+        {group.leader && <p className={cn('text-secondary', group.follow && 'text-foreground')}>{group.leader.name || group.leader.symbol} · {leaderStatus(group.leader.at_limit)}</p>}
       </div>)}
       {matched.length > shownGroups.length && <p className="text-secondary">另有 {matched.length - shownGroups.length} 个关联板块，见联动依据</p>}
       {context.strong_sector && context.leader_follow && context.group !== 'S1F1' && <p className="text-secondary">不同板块条件，未合并</p>}

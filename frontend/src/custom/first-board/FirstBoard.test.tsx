@@ -73,6 +73,7 @@ let root: Root
 let client: QueryClient
 beforeEach(() => {
   localStorage.removeItem('first-board-stock-marks')
+  localStorage.removeItem('first-board-feedback-expanded')
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   Object.assign(capabilityState, { available: true, failed: false, ready: true })
   Object.values(calls).forEach(call => call.mockReset())
@@ -94,7 +95,7 @@ beforeEach(() => {
   root = createRoot(host)
   client = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0, gcTime: Infinity } } })
 })
-afterEach(async () => { await act(async () => root.unmount()); client.clear(); host.remove(); vi.restoreAllMocks(); localStorage.removeItem('first-board-stock-marks') })
+afterEach(async () => { await act(async () => root.unmount()); client.clear(); host.remove(); vi.restoreAllMocks(); localStorage.removeItem('first-board-stock-marks'); localStorage.removeItem('first-board-feedback-expanded') })
 async function settle() { for (let i = 0; i < 6; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) }) }
 async function render(tab = 'live') {
   await act(async () => root.render(<MemoryRouter initialEntries={[`/first-board?tab=${tab}`]}><QueryClientProvider client={client}><FirstBoard /></QueryClientProvider></MemoryRouter>))
@@ -110,8 +111,23 @@ async function numberInput(label: string, value: string) {
 function candidate(name: string, values: Partial<FirstBoardCandidate> = {}): FirstBoardCandidate {
   return { ...snapshot().rows[0], name, symbol: `60000${name.charCodeAt(0) - 65}.SH`, ...values }
 }
+function candidateRows() { return [...host.querySelectorAll('table[aria-label="首板实时候选"] tbody tr[data-candidate-row]')] }
+function evidenceRows() { return [...host.querySelectorAll('table[aria-label="首板实时候选"] tbody tr[data-evidence-row]')] }
 function candidateNames() {
-  return [...host.querySelectorAll('table[aria-label="首板实时候选"] tbody tr')].map(row => row.querySelector('td button')!.firstChild!.textContent)
+  return candidateRows().map(row => row.querySelector('td button')!.firstChild!.textContent)
+}
+/** 评分分项、日线证据和联动依据位于行展开区。 */
+async function expandEvidence() {
+  for (const control of [...host.querySelectorAll<HTMLButtonElement>('button[aria-label^="展开依据"]')]) await act(async () => control.click())
+  await settle()
+}
+function stateButton(label: string) {
+  return [...host.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="候选状态"] button')].find(item => item.textContent?.startsWith(label))!
+}
+async function filterState(label: string) {
+  expect(stateButton(label)).toBeDefined()
+  await act(async () => stateButton(label).click())
+  await settle()
 }
 
 it('keeps data coverage on deduplicated symbols when pattern filters change and labels retained evidence', async () => {
@@ -167,7 +183,8 @@ it('adds previous-session evidence without promoting supported or incomplete can
   calls.firstBoardSnapshot.mockResolvedValue(data)
   await render()
   expect(candidateNames()).toEqual(['B', 'C', 'A'])
-  const rows = host.querySelectorAll('table[aria-label="首板实时候选"] tbody tr')
+  await expandEvidence()
+  const rows = evidenceRows()
   expect(rows[0].textContent).toContain('均线不符／MACD未知')
   await expandTechnical(rows[0])
   expect(rows[0].textContent).toContain('DIF —')
@@ -177,7 +194,8 @@ it('adds previous-session evidence without promoting supported or incomplete can
   await expandTechnical(rows[2])
   expect(rows[2].textContent).toContain('参考日 2026-09-29')
   expect(rows[2].textContent).toContain('柱值 0.0200')
-  expect([...rows[2].querySelectorAll('button')].find(el => el.textContent === '模拟买入')?.disabled).toBe(true)
+  // 未达到提示条件的行不显示买入按钮。
+  expect([...candidateRows()[2].querySelectorAll('button')].find(el => el.textContent === '模拟买入')).toBeUndefined()
   calls.firstBoardSnapshot.mockResolvedValue({ ...data, status: 'stale' })
   await click('刷新')
   expect(host.textContent).toContain('上个交易日日线（历史）')
@@ -211,6 +229,8 @@ it('ranks actionable scores first and shows only historical evidence after close
   calls.firstBoardSnapshot.mockResolvedValue(data)
   await render()
   expect(candidateNames()).toEqual(['C', 'B', 'A'])
+  expect(candidateRows()[1].querySelector('[data-priority-summary]')?.textContent).toContain('58 分')
+  await expandEvidence()
   const cell = host.querySelectorAll('[data-priority-cell]')[1]
   expect(cell.textContent).toContain('58 分')
   expect(cell.textContent).toContain('证据覆盖 85 / 100')
@@ -258,9 +278,9 @@ it('ranks priority-v2 scores like earlier versions and leaves unknown versions u
   ] })
   await render()
   expect(candidateNames()).toEqual(['B', 'A'])
-  const rows = host.querySelectorAll('table[aria-label="首板实时候选"] tbody tr')
-  expect(rows[1].textContent).toContain('暂无评分')
-  const cell = rows[0].querySelector('[data-priority-cell]')!
+  expect(candidateRows()[1].textContent).toContain('暂无评分')
+  await expandEvidence()
+  const cell = evidenceRows()[0].querySelector('[data-priority-cell]')!
   expect(cell.textContent).toContain('76 分')
   await act(async () => { const detail = cell.querySelector('details')!; detail.open = true; detail.dispatchEvent(new Event('toggle')) })
   expect(cell.textContent).toContain('个股量价　30 / 40')
@@ -416,6 +436,8 @@ it('filters every confirmed sector membership by source and excludes historical 
 it('shows attention evidence with explicit decimal units without granting a simulated buy', async () => {
   calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [candidate('A', { can_buy: false, attention_context: attention() })] })
   await render()
+  expect(host.querySelector('[data-attention-summary]')?.textContent).toContain('同板块双条件')
+  await expandEvidence()
   const cell = host.querySelector('[data-attention-cell]')!
   expect(cell.textContent).toContain('同板块双条件')
   expect(cell.textContent).toContain('概念 · 测试概念')
@@ -434,7 +456,7 @@ it('shows attention evidence with explicit decimal units without granting a simu
   expect(cell.textContent).toContain('members-v1')
   expect(host.textContent).not.toContain('板块联动与分时标签仅作关注依据')
   expect(host.textContent).not.toContain('首板优先分越高，盘中复核顺序越靠前')
-  expect(button('模拟买入').disabled).toBe(true)
+  expect(button('模拟买入')).toBeUndefined()
   expect(calls.firstBoardPaperOrder).not.toHaveBeenCalled()
 })
 
@@ -446,6 +468,7 @@ it('shows an opened leader and partial minute evidence without inventing follow-
     intraday: { as_of: null, return_5m: null, return_15m: null, max_drawdown: null, above_vwap: null, reason: '缺少完整分钟窗口' },
   }) })] })
   await render()
+  await expandEvidence()
   const cell = host.querySelector('[data-attention-cell]')!
   expect(cell.textContent).toContain('测试领涨股 · 已开板')
   expect(cell.textContent).toContain('分时数据不足')
@@ -469,7 +492,7 @@ it('does not highlight or filter cached positive attention outside continuous tr
   calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), status: 'closed', rows: [candidate('A', { attention_context: attention() })] })
   await render()
   expect(host.querySelector('[data-attention-positive="true"]')).toBeNull()
-  expect(host.querySelector('[data-attention-cell]')?.textContent).toContain('联动数据已过期')
+  expect(host.querySelector('[data-attention-summary]')?.textContent).toContain('联动数据已过期')
   expect(button('模拟买入').disabled).toBe(true)
   await filterAttention('strong')
   expect(candidateNames()).toEqual([])
@@ -485,6 +508,7 @@ it('does not show a source-universe mean when the optional evidence is absent', 
   const group = { ...attention().groups[0], market_mean_change_pct: undefined }
   calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [candidate('A', { attention_context: attention({ groups: [group] }) })] })
   await render()
+  await expandEvidence()
   const cell = host.querySelector('[data-attention-cell]')!
   await act(async () => { const detail = cell.querySelector('details')!; detail.open = true; detail.dispatchEvent(new Event('toggle')) })
   expect(cell.textContent).not.toContain('同来源分类均值')
@@ -498,6 +522,7 @@ it('distinguishes unknown leader quotes from an observed opened limit', async ()
     groups: [{ ...group, follow: null, leader: { ...group.leader!, at_limit: null } }],
   }) })] })
   await render()
+  await expandEvidence()
   const cell = host.querySelector('[data-attention-cell]')!
   expect(cell.textContent).toContain('测试领涨股 · 触板状态待确认')
   expect(cell.textContent).not.toContain('已开板')
@@ -510,10 +535,13 @@ it('keeps the market context in the monitor header and omits the old notes', asy
     status: 'recorded', sample_count: 20, last_sample_at: '2026-09-30T09:45:00+08:00',
   } })
   await render()
-  const header = host.querySelector('button[aria-label="收起盯盘详情"]')!.closest('header')!
-  expect(header.textContent).toContain('市场环境：强势')
-  expect(header.textContent).toContain('环境允许提示')
-  expect(header.textContent).toContain('候选形态 1 · 股票 1')
+  const gate = host.querySelector('[aria-label="盯盘状态"]')!
+  expect(gate.textContent).toContain('市场环境：强势')
+  expect(gate.textContent).toContain('环境允许提示')
+  expect(gate.textContent).toContain('规则版本 1')
+  // 盯盘中且没有全局阻断时不显示说明文字。
+  expect(gate.querySelector('[role="status"]')).toBeNull()
+  expect(candidateRows()[0].textContent).toContain('达到提示条件')
   expect(host.textContent).not.toContain('今日采样时点')
   expect(host.textContent).not.toContain('报价覆盖')
   expect(host.textContent).not.toContain('当前报价可用')
@@ -523,7 +551,7 @@ it('keeps the market context in the monitor header and omits the old notes', asy
 
 it('keeps legacy responses usable and labels missing attention data as unconfirmed', async () => {
   await render()
-  expect(host.querySelector('[data-attention-cell]')?.textContent).toContain('待确认')
+  expect(host.querySelector('[data-attention-summary]')?.textContent).toContain('待确认')
   expect(button('模拟买入').disabled).toBe(false)
   await filterAttention('strong')
   expect(candidateNames()).toEqual([])
@@ -536,7 +564,7 @@ it('treats an unsupported attention schema as unknown without breaking candidate
   const unsupported = { schema_version: 2, status: 'ready' } as unknown as FirstBoardAttention
   calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [candidate('A', { attention_context: unsupported })] })
   await render()
-  expect(host.querySelector('[data-attention-cell]')?.textContent).toContain('联动数据待确认')
+  expect(host.querySelector('[data-attention-summary]')?.textContent).toContain('联动数据待确认')
   expect(button('模拟买入').disabled).toBe(false)
   await filterAttention('strong')
   expect(candidateNames()).toEqual([])
@@ -564,15 +592,23 @@ it('filters authoritative same-group attention and never combines separate conce
   await filterAttention('both')
   expect(candidateNames()).toEqual(['A'])
   await filterAttention('all')
-  const crossedRow = [...host.querySelectorAll('tbody tr')].find(row => row.textContent?.startsWith('D'))!
+  const crossedRow = candidateRows().find(row => row.textContent?.startsWith('D'))!
   expect(crossedRow.textContent).not.toContain('同板块双条件')
-  expect(crossedRow.textContent).toContain('强势但未带动')
-  expect(crossedRow.textContent).toContain('带动但不强势')
+  expect(crossedRow.textContent).toContain('强势板块')
+  expect(crossedRow.textContent).toContain('领涨带动')
+  await act(async () => crossedRow.querySelector<HTMLButtonElement>('button[aria-label^="展开依据"]')!.click())
+  const evidence = crossedRow.nextElementSibling!
+  expect(evidence.textContent).not.toContain('同板块双条件')
+  expect(evidence.textContent).toContain('强势但未带动')
+  expect(evidence.textContent).toContain('带动但不强势')
+  expect(evidence.textContent).toContain('不同板块条件，未合并')
 })
 
 it.each(['stale', 'unavailable'] as const)('removes positive attention highlights and priority when data are %s', async status => {
   calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [candidate('A', { attention_context: attention({ status, reasons: ['分钟数据暂不可用'] }) })] })
   await render()
+  expect(host.querySelector('[data-attention-positive="true"]')).toBeNull()
+  await expandEvidence()
   const cell = host.querySelector('[data-attention-cell]')!
   expect(cell.textContent).toContain(status === 'stale' ? '联动数据已过期' : '联动数据待确认')
   expect(cell.querySelector('[data-attention-positive="true"]')).toBeNull()
@@ -631,6 +667,7 @@ it('keeps yesterday feedback independent of candidate filters and opens its own 
   calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), yesterday_feedback: feedback })
   await render()
   expect(host.textContent).toContain('昨日首板反馈')
+  await click('展开分布')
   await filterPattern('trend')
   expect(candidateNames()).toEqual([])
   expect(host.textContent).toContain('昨日非一字涨停 9 只')
@@ -778,15 +815,16 @@ it('filters each candidate state using the displayed state labels', async () => 
   const states = ['watch', 'approaching', 'sealed', 'broken', 'invalid'] as const
   calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: states.map(state => candidate(state, { state })) })
   await render()
-  const select = host.querySelector<HTMLSelectElement>('select[aria-label="候选状态"]')!
-  expect(select).not.toBeNull()
-  expect([...select.options].map(option => option.text)).toEqual(['全部状态', '观察中', '临近涨停', '涨停价观察', '已开板', '已失效'])
+  const group = host.querySelector('[role="group"][aria-label="候选状态"]')!
+  expect([...group.querySelectorAll('button')].map(item => item.textContent)).toEqual(['全部5', '观察中1', '临近涨停1', '涨停价观察1', '已开板1', '已失效1'])
+  const labels = { watch: '观察中', approaching: '临近涨停', sealed: '涨停价观察', broken: '已开板', invalid: '已失效' }
   for (const state of states) {
-    await act(async () => { select.value = state; select.dispatchEvent(new Event('change', { bubbles: true })) })
+    await filterState(labels[state])
     expect(candidateNames()).toEqual([state])
+    expect(stateButton(labels[state]).getAttribute('aria-pressed')).toBe('true')
     expect([...host.querySelectorAll('h2')].find(item => item.textContent?.startsWith('今日候选'))?.textContent).toBe('今日候选 1 条')
   }
-  await act(async () => { select.value = 'all'; select.dispatchEvent(new Event('change', { bubbles: true })) })
+  await filterState('全部')
   expect(candidateNames()).toEqual([...states])
 })
 it('combines candidate state with other filters and retains sorting and state across refresh and tabs', async () => {
@@ -797,11 +835,12 @@ it('combines candidate state with other filters and retains sorting and state ac
   ] }
   calls.firstBoardSnapshot.mockResolvedValue(data)
   await render()
-  const select = host.querySelector<HTMLSelectElement>('select[aria-label="候选状态"]')!
-  expect(select).not.toBeNull()
   await sortBy('现价')
-  await act(async () => { select.value = 'broken'; select.dispatchEvent(new Event('change', { bubbles: true })) })
+  await filterState('已开板')
   expect(candidateNames()).toEqual(['C', 'A', 'D'])
+  // 状态计数按其余筛选统计，切换状态时保持不变。
+  expect(stateButton('已开板').textContent).toBe('已开板3')
+  expect(stateButton('临近涨停').textContent).toBe('临近涨停1')
   await filterPattern('trend')
   expect(candidateNames()).toEqual([])
   expect(host.textContent).toContain('当前筛选条件下暂无候选')
@@ -821,7 +860,7 @@ it('combines candidate state with other filters and retains sorting and state ac
   await click('信号记录')
   expect(host.querySelector<HTMLSelectElement>('select[aria-label="信号状态"]')?.value).toBe('all')
   await click('今日盯盘')
-  expect(host.querySelector<HTMLSelectElement>('select[aria-label="候选状态"]')?.value).toBe('broken')
+  expect(stateButton('已开板').getAttribute('aria-pressed')).toBe('true')
   expect(candidateNames()).toEqual(['A', 'C'])
 })
 it('preserves sorting across filters, an empty result and a refreshed snapshot', async () => {
@@ -867,41 +906,75 @@ it('navigates stock details in sorted visible order with duplicate symbols remov
   await sortBy('现价')
   expect(navigation().map(row => row.name)).toEqual(['A', 'B'])
 })
-it('collapses monitor details without losing feedback controls or stopping snapshot updates', async () => {
+it('keeps the market temperature collapsed by default, remembers expansion and preserves scope', async () => {
   const data = { ...snapshot(), yesterday_feedback: yesterdayFeedback() }
   calls.firstBoardSnapshot.mockResolvedValue(data)
   await render()
-  const collapse = host.querySelector<HTMLButtonElement>('button[aria-label="收起盯盘详情"]')!
-  expect(collapse).not.toBeNull()
-  expect(collapse.getAttribute('aria-expanded')).toBe('true')
-  const details = document.getElementById(collapse.getAttribute('aria-controls')!)!
-  expect(details.hidden).toBe(false)
-  await click('查看明细')
+  const feedback = host.querySelector('[data-yesterday-feedback]')!
+  expect(button('展开分布').getAttribute('aria-expanded')).toBe('false')
+  // 收起时只显示关键指标，不渲染开盘分布、完整指标与明细。
+  expect([...feedback.querySelectorAll('dt')].find(item => item.textContent === '平均溢价')?.nextElementSibling?.textContent).toBe('+7.00%')
+  expect(feedback.textContent).not.toContain('中位数')
+  expect(feedback.textContent).not.toContain('今日开盘涨幅分布')
+  expect(button('查看明细')).toBeUndefined()
   await click('双创')
-  await act(async () => collapse.click())
-  expect(details.hidden).toBe(true)
-  const expand = host.querySelector<HTMLButtonElement>('button[aria-label="展开盯盘详情"]')!
-  expect(expand.getAttribute('aria-expanded')).toBe('false')
-  expect(candidateNames()).toEqual(['测试股票'])
+  await click('展开分布')
+  expect(localStorage.getItem('first-board-feedback-expanded')).toBe('true')
+  expect(feedback.textContent).toContain('今日开盘涨幅分布')
+  expect(feedback.textContent).toContain('中位数')
+  expect(button('双创').getAttribute('aria-pressed')).toBe('true')
+  await click('查看明细')
+  expect(host.querySelector('table[aria-label="昨日首板个股表现"]')).not.toBeNull()
   const refreshed = { ...data, status: 'stale' as const, observed_at: '2026-09-30T10:05:00+08:00', revision: 2, environment: { ...data.environment, label: '偏弱', allowed: false } }
   calls.firstBoardSnapshot.mockResolvedValue(refreshed)
   await click('刷新')
-  expect(details.hidden).toBe(true)
-  const header = expand.closest('header')!
-  expect(header.textContent).toContain('数据已过期')
-  expect(header.textContent).toContain('10:05:00')
-  expect(header.textContent).toContain('规则版本 2')
-  expect(header.textContent).toContain('市场环境：偏弱')
-  expect(header.textContent).toContain('环境暂不允许提示')
-  await act(async () => expand.click())
-  expect(details.hidden).toBe(false)
-  expect(details.textContent).not.toContain('市场环境')
-  expect(button('双创').getAttribute('aria-pressed')).toBe('true')
-  expect(button('收起明细')).toBeDefined()
-  await click('收起')
+  expect(host.querySelector('table[aria-label="昨日首板个股表现"]')).not.toBeNull()
+  const gate = host.querySelector('[aria-label="盯盘状态"]')!
+  expect(gate.textContent).toContain('10:05:00')
+  expect(gate.textContent).toContain('规则版本 2')
+  expect(gate.textContent).toContain('市场环境：偏弱')
+  expect(gate.textContent).toContain('环境暂不允许提示')
+  expect(host.textContent).toContain('数据已过期')
   await click('信号记录')
   await click('今日盯盘')
-  expect(host.querySelector('button[aria-label="展开盯盘详情"]')?.getAttribute('aria-expanded')).toBe('false')
+  expect(button('收起分布').getAttribute('aria-expanded')).toBe('true')
+  await click('收起分布')
+  expect(localStorage.getItem('first-board-feedback-expanded')).toBe('false')
+  await click('信号记录')
+  await click('今日盯盘')
+  expect(button('展开分布').getAttribute('aria-expanded')).toBe('false')
+  expect(candidateNames()).toEqual(['测试股票'])
+})
+it('shows global blocking reasons once in the status gate and keeps only stock reasons in rows', async () => {
+  const realtime = '全局实时行情未启用, 请在实时行情设置中开启后继续盯盘'
+  const session = '当前不在有效盘中时段'
+  const coverage = '剔除本股后行业同行行情覆盖率不足 80%（同行有效行情 0/84，覆盖率 0.0%）'
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), status: 'closed', message: '当前为非交易时段, 显示最近行情观察结果, 不触发买卖提示。',
+    global_blocked_reasons: [realtime, session], rows: [
+      candidate('A', { can_buy: false, change_pct: .09, blocked_reasons: [realtime, session, coverage] }),
+      candidate('B', { can_buy: false, change_pct: .07, blocked_reasons: [realtime, session] }),
+    ] })
+  await render()
+  const gate = host.querySelector('[aria-label="盯盘状态"]')!
+  expect(gate.textContent).toContain('当前为非交易时段')
+  expect(gate.textContent).toContain(realtime)
+  expect(gate.textContent).toContain(session)
+  const [first, second] = candidateRows()
+  expect(first.textContent).toContain(coverage)
+  expect(first.textContent).not.toContain(realtime)
+  expect(second.textContent).toContain('受全局条件暂停')
+  expect(second.textContent).toContain('—')
+  await expandEvidence()
+  expect(evidenceRows()[0].textContent).toContain(coverage)
+  expect(host.textContent!.split(realtime)).toHaveLength(2)
+  expect(host.textContent!.split(session)).toHaveLength(2)
+})
+it('keeps every reason in the row when an older backend omits global reasons', async () => {
+  const reason = '全局实时行情未启用, 请在实时行情设置中开启后继续盯盘'
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), status: 'closed', rows: [candidate('A', { can_buy: false, blocked_reasons: [reason, '同行覆盖不足'] })] })
+  await render()
+  expect(candidateRows()[0].textContent).toContain(reason)
+  expect(candidateRows()[0].textContent).toContain('另有 1 项')
 })
 it('hides the introductory rule notice in the live monitor', async () => {
   calls.firstBoardConfig.mockResolvedValue({ ...config(), rules: { ...config().rules, universe: 'hs_a_non_st' } })
@@ -926,7 +999,9 @@ it('keeps legacy universe explicit and saves expanded scope with a 20 percent th
 it('shows decimal percentages correctly, permits quote-based alerts without minute capability and reuses stock preview', async () => {
   await render()
   expect(host.textContent).toContain('8.00%')
-  expect(host.textContent).toContain('4.00%')
+  expect(host.textContent).not.toContain('换手率 4.00%')
+  await expandEvidence()
+  expect(host.textContent).toContain('换手率 4.00%')
   expect(button('模拟买入').disabled).toBe(false)
   const stockButton = [...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent?.startsWith('测试股票'))!
   await act(async () => stockButton.click())
@@ -1061,6 +1136,19 @@ it('requests an ISO event date even when the browser falls back to another local
   await numberInput('交易日期', '')
   expect(input.value).toBe('2026-09-30')
   expect(calls.firstBoardEvents).not.toHaveBeenCalled()
+})
+it('opens signal records on the snapshot trading day until a date is chosen', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), status: 'closed', as_of: '2026-09-25' })
+  await render('events')
+  expect(calls.firstBoardEvents).toHaveBeenCalledTimes(1)
+  expect(calls.firstBoardEvents).toHaveBeenCalledWith('2026-09-25', {})
+  expect(host.querySelector<HTMLInputElement>('input[type="date"]')!.value).toBe('2026-09-25')
+  await numberInput('交易日期', '2026-09-24')
+  expect(calls.firstBoardEvents).toHaveBeenLastCalledWith('2026-09-24', {})
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), status: 'closed', as_of: '2026-09-26' })
+  await act(async () => { await client.invalidateQueries({ queryKey: QK.firstBoardSnapshot }) })
+  await settle()
+  expect(host.querySelector<HTMLInputElement>('input[type="date"]')!.value).toBe('2026-09-24')
 })
 it('renders historical events by selected date without turning them into live buys', async () => {
   calls.firstBoardEvents.mockResolvedValue({ events: [{ id: 'old1', ts: 1790720400000, date: '2026-09-30', symbol: '600000.SH', name: '历史股票',

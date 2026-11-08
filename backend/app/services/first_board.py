@@ -249,7 +249,7 @@ class FirstBoardService:
             "status": "waiting" if self._config.enabled else "disabled",
             "message": "等待有效行情; 可先配置规则或运行历史观察研究。",
             "as_of": None, "observed_at": None, "revision": self._config.revision,
-            "rows": [], "environment": {},
+            "rows": [], "environment": {}, "global_blocked_reasons": [],
             "yesterday_feedback": copy.deepcopy(previous_feedback) if previous_feedback else empty_feedback(),
             "attention_sampling": {"status": "paused", "last_sample_at": None, "sample_count": 0},
             "coverage": {"candidate_count": 0, "symbol_count": 0, "quote_count": 0, "fresh_count": 0},
@@ -829,6 +829,15 @@ class FirstBoardService:
                 # 联动上下文、环境与行业结果由同股各形态及各行共享, 发布后不得原地修改;
                 # 事件归档、研究采样和快照读取各自深拷贝。
                 environment = copy.deepcopy(self._environment)
+                # 对所有候选一致的阻断原因单独下发, 页面只展示一次; 各行仍保留完整原因供事件归档。
+                global_blocked = [reason for reason in (
+                    realtime_blocked,
+                    None if live else "自动盯盘已暂停" if not config.enabled else "当前不在有效盘中时段",
+                    # 没有任何新鲜报价时, 各行的行情缺失原因同样对全部候选一致。
+                    None if times else "行情时间缺失、重复或已过期",
+                    None if self._environment.get("allowed") else self._environment.get("reason") or "市场环境未通过",
+                    feedback_gate["reason"] if feedback_gate is not None and not feedback_gate["allowed"] else None,
+                ) if reason]
                 for row in rows:
                     symbol = row["symbol"]
                     row.update(quote_time=times.get(symbol), sector=self._sectors.get(symbol), event_id=None,
@@ -949,6 +958,7 @@ class FirstBoardService:
                 previous_sampling = self._snapshot.get("attention_sampling", {})
                 self._snapshot = {
                     "status": status, "message": message, "as_of": str(as_of), "observed_at": now.isoformat(),
+                    "global_blocked_reasons": global_blocked,
                     "_data_status_inputs": status_inputs,
                     "revision": config.revision,
                     "rows": sorted(visible_rows, key=lambda row: (not row["can_buy"], row["symbol"], row["pattern"])),
@@ -1025,12 +1035,19 @@ class FirstBoardService:
         elif result.get("as_of") is not None and (not same_day or not fresh_count):
             result.update(status="stale", message="缺少当日新鲜行情, 买入提示已暂停。")
         fresh_candidates = set()
+        stop_reason = realtime_blocked or "行情已过期或当前不在连续竞价时段"
+        global_blocked = result.setdefault("global_blocked_reasons", [])
+        # stale 状态表示所有候选都没有新鲜行情, 与时段、实时开关一样属于全局原因。
+        if (not usable or result["status"] in {"error", "stale"}) and stop_reason not in global_blocked:
+            global_blocked.append(stop_reason)
         for row in result["rows"]:
             age = _quote_age(row.get("quote_time"), now)
             if not usable or not 0 <= age <= config.max_quote_age_seconds or result["status"] == "error":
                 row["can_buy"], row["event_id"] = False, None
                 row["suggested_amount"] = None
-                row["blocked_reasons"].append(realtime_blocked or "行情已过期或当前不在连续竞价时段")
+                # 发布时已记入的实时行情原因不重复追加。
+                if stop_reason not in row["blocked_reasons"]:
+                    row["blocked_reasons"].append(stop_reason)
                 if row.get("attention_context"):
                     self._expire_attention(row["attention_context"], "行情已过期或当前不在有效观察时段")
                 if row.get("priority_score"):

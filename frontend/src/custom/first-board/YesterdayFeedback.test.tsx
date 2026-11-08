@@ -27,10 +27,11 @@ let host: HTMLDivElement
 let root: Root
 const openStock = vi.fn()
 beforeEach(() => {
+  localStorage.removeItem('first-board-feedback-expanded')
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   host = document.createElement('div'); document.body.append(host); root = createRoot(host); openStock.mockReset()
 })
-afterEach(async () => { await act(async () => root.unmount()); host.remove() })
+afterEach(async () => { await act(async () => root.unmount()); host.remove(); localStorage.removeItem('first-board-feedback-expanded') })
 async function render(data?: FirstBoardFeedback, failed = false) {
   await act(async () => root.render(<YesterdayFeedback data={data} refreshFailed={failed} onOpenStock={openStock}><p>原盯盘状态</p></YesterdayFeedback>))
 }
@@ -43,8 +44,32 @@ function metric(label: string) {
   return [...host.querySelectorAll('dt')].find(item => item.textContent === label)?.nextElementSibling
 }
 
+it('collapses to key indicators by default and remembers the expanded distribution', async () => {
+  await render({ ...feedback(), opening_distribution: { sample_count: 12, open_count: 10, history_excluded_count: 0, up_count: 6, up_ratio: .6, mean_open_premium: .01, bins: [] } })
+  const toggle = [...host.querySelectorAll('button')].find(item => item.textContent === '展开分布')!
+  expect(toggle.getAttribute('aria-expanded')).toBe('false')
+  expect(host.textContent).not.toContain('原盯盘状态')
+  expect(metric('中位数')).toBeUndefined()
+  expect(metric('平均溢价')?.textContent).toBe('+1.56%')
+  expect(metric('平均溢价')?.classList.contains('text-bull')).toBe(true)
+  expect(metric('当前二板')?.textContent).toBe('8 / 40')
+  expect(metric('非一字涨停开盘上涨占比')?.textContent).toBe('60.00%')
+  expect(host.textContent).toContain('样本 2026-10-26')
+  await click('主板')
+  await click('展开分布')
+  expect(localStorage.getItem('first-board-feedback-expanded')).toBe('true')
+  expect(host.textContent).toContain('原盯盘状态')
+  expect(metric('中位数')?.textContent).toBe('-1.17%')
+  await act(async () => root.unmount())
+  root = createRoot(host)
+  await render(feedback())
+  expect([...host.querySelectorAll('button')].find(item => item.textContent === '收起分布')?.getAttribute('aria-expanded')).toBe('true')
+  expect(metric('中位数')).toBeDefined()
+})
+
 it('renders signed decimal returns, fixed denominators and independent market context', async () => {
   await render(feedback())
+  await click('展开分布')
   expect(host.textContent).toContain('原盯盘状态')
   expect(host.textContent).toContain('样本 2026-10-26')
   expect(host.textContent).toContain('行情 40 / 40')
@@ -58,6 +83,7 @@ it('renders signed decimal returns, fixed denominators and independent market co
 
 it('switches overall and member scope but explicitly keeps sector comparison in the full universe', async () => {
   await render(feedback())
+  await click('展开分布')
   await click('查看明细')
   await click('主板')
   expect(metric('中位数')?.textContent).toBe('-1.17%')
@@ -77,6 +103,7 @@ it('switches overall and member scope but explicitly keeps sector comparison in 
 it('preserves selected scope and open details when quotes refresh', async () => {
   const data = feedback()
   await render(data)
+  await click('展开分布')
   await click('查看明细')
   await click('主板')
   await render({ ...data, groups: { ...data.groups, main: { ...data.groups.main, median_change_pct: -.02 } } })
@@ -106,6 +133,7 @@ it('retains values with a refresh failure message and neutralizes stale price em
 
 it('labels snapshots and hides expanded explanations while preserving member details', async () => {
   await render({ ...feedback(), quote_mode: 'snapshot', history_excluded_count: 2 })
+  await click('展开分布')
   expect(host.textContent).toContain('最近行情')
   expect(host.textContent).not.toContain('收盘已确认')
   await click('查看明细')
@@ -119,6 +147,7 @@ it('labels snapshots and hides expanded explanations while preserving member det
 it('shows the quote explanation only when its timestamp icon is hovered or focused', async () => {
   const message = '最近行情快照；未另行确认最终收盘结果。'
   await render({ ...feedback(), status: 'partial', quote_mode: 'snapshot', message })
+  await click('展开分布')
   expect(host.textContent).not.toContain(message)
   const icon = host.querySelector<HTMLButtonElement>('button[aria-label="行情说明"]')!
   expect(icon).not.toBeNull()
@@ -157,6 +186,7 @@ it('explains old API, waiting, unavailable and empty samples without fake perfor
 it('distinguishes unknown sector limit states from confirmed zero promotions', async () => {
   const data = feedback()
   await render({ ...data, sectors: [{ ...data.sectors[0], limit_up_count: 0, limit_known_count: 0 }] })
+  await click('展开分布')
   await click('查看明细')
   const cell = host.querySelector('table[aria-label="昨日首板行业与概念对照"] tbody tr')!.children[3]
   expect(cell.textContent).toBe('—待确认 3')

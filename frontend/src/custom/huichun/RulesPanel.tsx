@@ -38,7 +38,10 @@ export function RulesPanel({ config, onSaved, reload }: { config: HuichunConfig;
   const changed = JSON.stringify(draft.values) !== JSON.stringify(draftFrom(config).values)
   useEffect(() => { if (changed) setSavedRevision(null) }, [changed])
   return <section className={`${panelClass} max-w-4xl space-y-5`}>
-    <div><h2 className="text-sm font-semibold">回春 A0 日线规则 <span className="ml-2 font-normal text-secondary">版本 {config.revision}</span></h2><p className="mt-2 max-w-prose text-xs leading-relaxed text-secondary">先经历符合涨幅要求的金叉与死叉，再寻找零轴附近的首次金叉，并确认价格与均线趋势。MACD 固定为 10 / 20 / 9。</p><p className="mt-2 max-w-prose text-xs leading-relaxed text-secondary">待金叉观察池共用以下参数，要求尚未出现首次金叉，且 DIF − DEA 连续两日为负、当日差值大于前日。保存后重新筛选，同时更新两个列表。</p></div>
+    <div className="flex flex-wrap items-baseline justify-between gap-2">
+      <h2 className="text-sm font-semibold">回春 A0 日线规则 <span className="ml-2 font-normal text-secondary">版本 {config.revision}</span></h2>
+      <span className="text-xs text-secondary">候选与观察池共用 · MACD 10 / 20 / 9</span>
+    </div>
     {config.revision !== draft.revision && <Notice>规则已在其他页面更新到版本 {config.revision}。请重新载入后再编辑，以免覆盖新的规则。</Notice>}
     {savedRevision !== null && <Notice>已保存为版本 {savedRevision}。重新筛选后使用新规则，已加入跟踪的股票保留原规则。</Notice>}
     <form className="space-y-5" onSubmit={event => { event.preventDefault(); if (!parsed.error) save.mutate({ rules: parsed.rules, expected_revision: draft.revision }) }}>
@@ -47,5 +50,13 @@ export function RulesPanel({ config, onSaved, reload }: { config: HuichunConfig;
       <ErrorNotice error={save.error} />
       <div className="flex flex-wrap items-center gap-3"><button type="submit" className={primaryClass} disabled={save.isPending || !!parsed.error || !changed || config.revision !== draft.revision}>{save.isPending ? '保存中' : '保存规则'}</button><button type="button" className={buttonClass} disabled={save.isPending} onClick={async () => { const latest = await reload(); if (latest) { setDraft(draftFrom(latest)); setSavedRevision(null); save.reset() } }}>重新载入已保存规则</button><span className="text-xs text-secondary">{changed ? '有未保存的调整' : '当前规则已保存'}</span></div>
     </form>
+    <details className="border-t border-border pt-3 text-xs text-secondary">
+      <summary className="cursor-pointer rounded py-1 focus-visible:outline focus-visible:outline-accent">规则原理与生效方式</summary>
+      <div className="mt-2 max-w-prose space-y-2 leading-relaxed">
+        <p>先经历符合涨幅要求的金叉与死叉，再寻找零轴附近的首次金叉，并确认价格与均线趋势。</p>
+        <p>待金叉观察池共用以上参数，要求尚未出现首次金叉，且 DIF − DEA 连续两日为负、当日差值大于前日。</p>
+        <p>保存后重新筛选，同时更新两个列表。已加入跟踪的股票保留原规则。</p>
+      </div>
+    </details>
   </section>
 }

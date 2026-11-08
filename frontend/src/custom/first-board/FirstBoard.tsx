@@ -1,7 +1,7 @@
-import { useEffect, useId, useMemo, useState, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useState, type KeyboardEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
-import { ChevronDown, ChevronUp, RefreshCw } from 'lucide-react'
+import { RefreshCw } from 'lucide-react'
 import { api, type FirstBoardConfig, type FirstBoardEvent, type FirstBoardEventFilters, type FirstBoardRules, type FirstBoardSnapshot } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { storage } from '@/lib/storage'
@@ -14,16 +14,18 @@ import { RulesPanel } from './RulesPanel'
 import { ResearchPanel } from './ResearchPanel'
 import { YesterdayFeedback } from './YesterdayFeedback'
 import { OpeningDistribution } from './OpeningDistribution'
-import { DataStatus } from './DataStatus'
+import { LiveStatus } from './LiveStatus'
 import { CandidateTable, useCandidateView } from './CandidateTable'
 import { EventsPanel } from './EventsPanel'
-import { beijingDay, buttonClass, ErrorNotice, LoadingRows, money, Notice, panelClass, pct, stamp } from './shared'
+import { beijingDay, buttonClass, ErrorNotice, LoadingRows, money, Notice, panelClass, pct } from './shared'
 
 const tabs = [{ id: 'live', label: '今日盯盘' }, { id: 'events', label: '信号记录' }, { id: 'research', label: '效果验证' }, { id: 'rules', label: '规则版本' }]
 const statuses = { disabled: '监控未开启', waiting: '等待数据', ready: '盯盘中', stale: '数据已过期', closed: '非连续竞价时段', error: '暂不可用' }
+const statusDots: Record<FirstBoardSnapshot['status'], string> = { ready: 'bg-accent', waiting: 'bg-amber-500', stale: 'bg-amber-500', error: 'bg-danger', closed: 'bg-muted', disabled: 'bg-muted' }
 // 盯盘与当日信号需要及时的可成交状态；其他标签页只刷新页头状态。
 const LIVE_POLL_MS = 5000
 const IDLE_POLL_MS = 30000
+const noReasons: string[] = []
 
 function PaperAccount({ paper, onOpen }: { paper: FirstBoardSnapshot['paper']; onOpen: (symbol: string, name: string) => void }) {
   return <section className={panelClass}>
@@ -46,18 +48,22 @@ export function FirstBoard() {
   const tab = tabs.some(item => item.id === params.get('tab')) ? params.get('tab')! : 'live'
   const client = useQueryClient()
   const config = useQuery({ queryKey: QK.firstBoardConfig, queryFn: api.firstBoardConfig })
-  const [eventDay, setEventDay] = useState(beijingDay)
+  const [chosenEventDay, setEventDay] = useState<string | null>(null)
   const [eventFilters, setEventFilters] = useState<FirstBoardEventFilters>({})
-  const pollSignals = eventDay === beijingDay() && !!config.data?.enabled
+  // 未手动选日期时跟随快照交易日：非交易日打开不再落到空的自然日。
+  // 快照轮询间隔又取决于所选日期，因此这里直接读同一查询的缓存，避免循环依赖。
+  const snapshotDay = client.getQueryData<FirstBoardSnapshot>(QK.firstBoardSnapshot)?.as_of ?? null
+  const today = beijingDay()
+  const eventDay = chosenEventDay ?? (snapshotDay && snapshotDay < today ? snapshotDay : today)
+  const pollSignals = eventDay === today && !!config.data?.enabled
   const snapshotPoll = tab === 'live' || (tab === 'events' && pollSignals) ? LIVE_POLL_MS : IDLE_POLL_MS
   const snapshot = useQuery({ queryKey: QK.firstBoardSnapshot, queryFn: api.firstBoardSnapshot, enabled: !!config.data, refetchInterval: snapshotPoll, retry: 1 })
   const matrix = useCapabilityMatrix()
   const versions = useQuery({ queryKey: QK.firstBoardVersions, queryFn: api.firstBoardVersions, enabled: tab === 'rules' || tab === 'research' })
   const accounts = useQuery({ queryKey: QK.paperAccounts, queryFn: api.paperAccounts, enabled: tab === 'rules' })
-  const events = useQuery({ queryKey: QK.firstBoardEvents(eventDay, eventFilters), queryFn: () => api.firstBoardEvents(eventDay, eventFilters), enabled: tab === 'events', refetchInterval: pollSignals ? LIVE_POLL_MS : false })
+  const daySettled = chosenEventDay !== null || !!config.error || (!!config.data && !snapshot.isPending)
+  const events = useQuery({ queryKey: QK.firstBoardEvents(eventDay, eventFilters), queryFn: () => api.firstBoardEvents(eventDay, eventFilters), enabled: tab === 'events' && daySettled, refetchInterval: pollSignals ? LIVE_POLL_MS : false })
   const [draft, setDraft] = useState<FirstBoardConfig | null>(null)
-  const [monitorExpanded, setMonitorExpanded] = useState(true)
-  const monitorDetailsId = useId()
   const stockMarks = useStockMarks(storage.firstBoardStockMarks)
   const attentionCurrent = !snapshot.isError && snapshot.data?.status === 'ready'
   const view = useCandidateView(snapshot.data?.rows, attentionCurrent, stockMarks.marks)
@@ -113,7 +119,7 @@ export function FirstBoard() {
 
   return <div className="min-w-0">
     <PageHeader title="首板模式" className="flex-wrap pl-14 lg:pl-5" right={<div className="flex flex-wrap items-center gap-2">
-      <span className="text-xs text-secondary">{data ? statuses[data.status] : '正在连接'}</span>
+      <span className="inline-flex items-center gap-1.5 text-xs text-secondary"><span aria-hidden="true" className={cn('h-2 w-2 rounded-full', data ? statusDots[data.status] : 'bg-muted')} />{data ? statuses[data.status] : '正在连接'}</span>
       <button className={buttonClass} disabled={!config.data || (tab === 'events' ? events.isFetching : snapshot.isFetching || refresh.isPending)} onClick={refreshPage}><RefreshCw className={cn('h-3.5 w-3.5', snapshot.isFetching && 'motion-safe:animate-spin')} />刷新</button>
     </div>} />
     <div role="tablist" aria-label="首板工作台" className="flex overflow-x-auto border-b border-border px-4">{tabs.map((item, index) => <button key={item.id} id={`first-board-tab-${item.id}`} type="button" role="tab"
@@ -128,30 +134,12 @@ export function FirstBoard() {
           <ErrorNotice error={snapshot.error ?? refresh.error} retry={() => refresh.mutate()} />
           {matrix.isError && <Notice error>行情能力状态读取失败。<a href="/settings?tab=data-sources" className="ml-2 underline">检查数据源配置</a></Notice>}
           {!!missing.length && <Notice>当前数据源缺少可用的{missing.map(item => item.label).join('、')}。<a href="/settings?tab=data-sources" className="ml-2 underline">配置数据源</a></Notice>}
-          {data && <section className={`${panelClass} space-y-3`}>
-            <header className="flex flex-wrap items-center justify-between gap-x-5 gap-y-2">
-              <h2 className="text-sm font-semibold">{statuses[data.status]}</h2>
-              <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-secondary">
-                <span>市场环境：{data.environment.label || '待确认'}{data.environment.date ? `（${data.environment.date}）` : ''}</span>
-                <span>{data.environment.allowed ? '环境允许提示' : '环境暂不允许提示'}</span>
-                <span>候选形态 {data.coverage.candidate_count} · 股票 {data.coverage.symbol_count}</span>
-              </div>
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="text-xs text-secondary">交易日期 {data.as_of ?? '—'} · 快照 {stamp(data.observed_at)} · 规则版本 {data.revision}</span>
-                <button type="button" className={buttonClass} aria-label={monitorExpanded ? '收起盯盘详情' : '展开盯盘详情'} aria-expanded={monitorExpanded} aria-controls={monitorDetailsId} onClick={() => setMonitorExpanded(value => !value)}>
-                  {monitorExpanded ? '收起' : '展开'}{monitorExpanded ? <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" /> : <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />}
-                </button>
-              </div>
-            </header>
-            <DataStatus data={data.data_status} retained={snapshot.isError || refresh.isError} />
-            <div id={monitorDetailsId} hidden={!monitorExpanded}>
-              <YesterdayFeedback data={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} onOpenStock={openList}>
-                <OpeningDistribution feedback={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} />
-              </YesterdayFeedback>
-            </div>
-          </section>}
+          {data && <LiveStatus data={data} retained={snapshot.isError || refresh.isError} />}
+          {data && <YesterdayFeedback data={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} onOpenStock={openList}>
+            <OpeningDistribution feedback={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} />
+          </YesterdayFeedback>}
           <CandidateTable view={view} loading={snapshot.isLoading} current={attentionCurrent} day={data?.as_of ?? ''} marks={stockMarks}
-            canOrder={liveUsable && !order.isPending} onOpen={openStock} onBuy={(eventId, amount) => order.mutate({ event_id: eventId, side: 'buy', amount })} />
+            globalReasons={data?.global_blocked_reasons ?? noReasons} canOrder={liveUsable && !order.isPending} onOpen={openStock} onBuy={(eventId, amount) => order.mutate({ event_id: eventId, side: 'buy', amount })} />
           <ErrorNotice error={order.error} />
           {data?.paper && <PaperAccount paper={data.paper} onOpen={openStock} />}
           {!!data?.limitations.length && <details className="text-xs text-secondary"><summary className="cursor-pointer">当前实现的边界</summary><ul className="ml-4 mt-2 list-disc space-y-2 leading-relaxed">{data.limitations.map(item => <li key={item}>{item}</li>)}</ul></details>}

@@ -5,19 +5,21 @@ import { fmtPct } from '@/lib/format'
 
 const gaugeArc = 'M 25.2 82.1 A 53 53 0 1 1 124.8 82.1'
 
-function OpeningGauge({ label, caption, value, limit, muted }: {
+function OpeningGauge({ label, caption, value, limit, muted, directional }: {
   label: string
   caption: string
   value: number | null
   limit: number
   muted: boolean
+  /** 只有涨跌幅按红涨绿跌着色；比例恒为非负，按正负着色会一直显示为红色。 */
+  directional: boolean
 }) {
   const maskId = useId()
   const negative = value != null && value < 0
   const progress = Math.min(100, Math.abs(value ?? 0) / limit * 100)
   const maximum = `${Math.round(limit * 100)}%`
   const display = fmtPct(value).replace(/^\+/, '')
-  const tone = muted || !value ? 'text-secondary' : negative ? 'text-bear' : 'text-bull'
+  const tone = muted || !value ? 'text-secondary' : !directional ? 'text-foreground' : negative ? 'text-bear' : 'text-bull'
 
   return <figure aria-label={`${label} ${display}（${caption}）`} className="mx-auto w-full max-w-36 text-center">
     <svg aria-hidden="true" viewBox="0 0 150 107" className="block w-full tabular-nums">
@@ -78,14 +80,14 @@ export function OpeningDistribution({ feedback, refreshFailed = false }: {
 
   return <section aria-labelledby={titleId} className="min-w-0">
     <h3 id={titleId} className="text-sm font-semibold leading-relaxed">
-      昨日非一字涨停{data && <> <span className={cn('tabular-nums', !muted && 'text-bull')}>{data.sample_count} 只</span></>} · 今日开盘涨幅分布
+      昨日非一字涨停{data && <> <span className="tabular-nums">{data.sample_count} 只</span></>} · 今日开盘涨幅分布
     </h3>
     {data && data.open_count > 0 ? <div className="mt-3 grid grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] items-stretch gap-x-2 sm:gap-x-5">
       <OpeningBars bins={data.bins} muted={muted} />
       <div className="flex min-w-0 flex-col justify-around gap-2">
-        <OpeningGauge label="打板成功率" caption="开盘上涨数量比例" value={data.up_ratio} limit={1} muted={muted} />
-        <OpeningGauge label="打板盈利率" caption="开盘平均涨跌幅" value={data.mean_open_premium}
-          limit={Math.max(1, Math.ceil(Math.abs(data.mean_open_premium ?? 0) * 10)) / 10} muted={muted} />
+        <OpeningGauge label="开盘上涨占比" caption="高开数 / 有效开盘数" value={data.up_ratio} limit={1} muted={muted} directional={false} />
+        <OpeningGauge label="开盘平均涨幅" caption="有效样本等权平均" value={data.mean_open_premium}
+          limit={Math.max(1, Math.ceil(Math.abs(data.mean_open_premium ?? 0) * 10)) / 10} muted={muted} directional />
       </div>
     </div> : <p className="py-5 text-sm text-secondary">
       {data ? (data.sample_count ? '等待有效开盘价。' : '昨日暂无可确认的非一字涨停样本。')

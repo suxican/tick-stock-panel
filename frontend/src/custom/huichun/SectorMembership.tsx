@@ -1,4 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { ChevronDown, X } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type ExtDataConfig, type ExtDataRowsResult } from '@/lib/api'
 import { resolveDimension } from '@/lib/analysis-adapter'
@@ -99,12 +101,60 @@ export function useSectorMembership(enabled: boolean) {
 }
 
 export function SectorMembership({ value, loading }: { value?: Membership; loading: boolean }) {
-  const [expanded, setExpanded] = useState(false)
+  const id = useId()
+  const anchor = useRef<HTMLButtonElement>(null)
+  const popup = useRef<HTMLDivElement>(null)
+  const closeButton = useRef<HTMLButtonElement>(null)
+  const [position, setPosition] = useState<{ top: number; left: number; width: number } | null>(null)
+  useEffect(() => { setPosition(null) }, [value])
+  useEffect(() => {
+    if (!position) return
+    closeButton.current?.focus()
+    const dismiss = (event: Event) => {
+      if (event.target instanceof Node && (popup.current?.contains(event.target) || anchor.current?.contains(event.target))) return
+      setPosition(null)
+    }
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' || (event.key === 'Tab' && popup.current?.contains(document.activeElement))) {
+        event.preventDefault()
+        setPosition(null)
+        anchor.current?.focus()
+      }
+    }
+    const resize = () => setPosition(null)
+    document.addEventListener('pointerdown', dismiss)
+    document.addEventListener('keydown', keydown)
+    window.addEventListener('scroll', dismiss, true)
+    window.addEventListener('resize', resize)
+    return () => {
+      document.removeEventListener('pointerdown', dismiss)
+      document.removeEventListener('keydown', keydown)
+      window.removeEventListener('scroll', dismiss, true)
+      window.removeEventListener('resize', resize)
+    }
+  }, [position])
   if (!value || (!value.concepts.length && !value.industries.length)) return <span className="text-secondary">{loading ? '读取中…' : '—'}</span>
-  const shown = expanded ? value.concepts : value.concepts.slice(0, 2)
-  return <div className="w-56 space-y-1.5 whitespace-normal break-words leading-relaxed">
-    {value.industries.length > 0 && <div>{value.industries.join('、')}</div>}
-    {shown.length > 0 && <div className="text-secondary">{shown.join('、')}</div>}
-    {value.concepts.length > 2 && <button type="button" aria-expanded={expanded} className="min-h-7 rounded text-accent hover:underline focus-visible:outline focus-visible:outline-accent" onClick={() => setExpanded(previous => !previous)}>{expanded ? '收起题材' : `展开 ${value.concepts.length - 2} 项题材`}</button>}
-  </div>
+  const summary = [value.industries[0], value.concepts[0]].filter(Boolean).join(' · ')
+  return <>
+    <button ref={anchor} type="button" aria-label="查看全部题材与行业" aria-expanded={!!position} aria-controls={position ? id : undefined} aria-haspopup="dialog"
+      title={summary} className="flex min-h-8 w-36 items-center gap-1 rounded text-left text-secondary hover:bg-elevated hover:text-foreground focus-visible:outline focus-visible:outline-accent"
+      onClick={() => {
+        if (position) { setPosition(null); return }
+        const rect = anchor.current!.getBoundingClientRect()
+        const width = Math.min(288, window.innerWidth - 24)
+        setPosition({ width, left: Math.max(12, Math.min(rect.left, window.innerWidth - width - 12)),
+          top: Math.max(12, Math.min(rect.bottom + 6, window.innerHeight - 292)) })
+      }}><span className="min-w-0 flex-1 truncate">{summary}</span><ChevronDown className="h-3 w-3 shrink-0" aria-hidden="true" /></button>
+    {position && createPortal(<div id={id} ref={popup} role="dialog" aria-label="题材与行业" style={position}
+      className="fixed z-[70] max-h-[min(280px,calc(100dvh-24px))] overflow-y-auto rounded-card border border-border bg-surface p-3 text-xs text-foreground">
+      <div className="mb-2 flex items-center justify-between gap-3"><span className="font-medium">当前题材与行业</span>
+        <button ref={closeButton} type="button" aria-label="收起题材与行业" className="inline-flex h-8 w-8 items-center justify-center rounded-btn text-secondary hover:bg-elevated hover:text-foreground focus-visible:outline focus-visible:outline-accent"
+          onClick={() => { setPosition(null); anchor.current?.focus() }}><X className="h-3.5 w-3.5" aria-hidden="true" /></button>
+      </div>
+      <dl className="space-y-3 whitespace-normal break-words leading-relaxed">
+        {value.industries.length > 0 && <div><dt className="mb-1 text-secondary">行业</dt><dd>{value.industries.join('、')}</dd></div>}
+        {value.concepts.length > 0 && <div><dt className="mb-1 text-secondary">题材 · {value.concepts.length} 项</dt><dd>{value.concepts.join('、')}</dd></div>}
+      </dl>
+    </div>, document.body)}
+  </>
 }

@@ -6533,6 +6533,8 @@ export interface FirstBoardSnapshot {
   data_status?: FirstBoardDataStatus
   status: 'disabled' | 'waiting' | 'ready' | 'stale' | 'closed' | 'error'
   message: string
+  /** 对全部候选一致的阻断原因；各行 blocked_reasons 仍包含这些原因。旧后端缺省。 */
+  global_blocked_reasons?: string[]
   as_of: string | null
   observed_at: string | null
   revision: number

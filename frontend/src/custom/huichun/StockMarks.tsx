@@ -15,13 +15,13 @@ export function StockMarkButtons({ symbol, name, mark, onToggle }: {
 }) {
   const focused = !!mark?.focused
   const pinned = !!mark?.pinned
-  const buttonClass = 'inline-flex min-h-8 items-center justify-center gap-1 whitespace-nowrap rounded border px-1.5 text-[11px] transition-colors focus-visible:outline focus-visible:outline-accent'
-  return <div className="mt-1.5 flex items-center gap-1">
+  const buttonClass = 'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-btn transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent'
+  return <div className="flex items-center gap-0.5">
     <button type="button" aria-pressed={focused} aria-label={`${focused ? '取消重点关注' : '重点关注'} ${name} ${symbol}`} title={focused ? '取消重点关注' : '标为重点关注'}
-      className={cn(buttonClass, 'min-w-[84px]', focused ? 'border-amber-400/40 bg-amber-400/10 text-amber-400' : 'border-border text-secondary hover:text-foreground')}
-      onClick={() => onToggle(symbol, 'focused')}><Star className="h-3.5 w-3.5" fill={focused ? 'currentColor' : 'none'} aria-hidden="true" />{focused ? '已关注' : '重点关注'}</button>
+      className={cn(buttonClass, focused ? 'bg-accent/10 text-blue-700 dark:text-blue-400' : 'text-secondary hover:bg-elevated hover:text-foreground')}
+      onClick={() => onToggle(symbol, 'focused')}><Star className="h-3.5 w-3.5" fill={focused ? 'currentColor' : 'none'} aria-hidden="true" /></button>
     <button type="button" aria-pressed={pinned} aria-label={`${pinned ? '取消置顶' : '置顶'} ${name} ${symbol}`} title={pinned ? '取消置顶' : '置顶优先显示'}
-      className={cn(buttonClass, 'min-w-[68px]', pinned ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-secondary hover:text-foreground')}
-      onClick={() => onToggle(symbol, 'pinned')}><Pin className="h-3.5 w-3.5" fill={pinned ? 'currentColor' : 'none'} aria-hidden="true" />{pinned ? '已置顶' : '置顶'}</button>
+      className={cn(buttonClass, pinned ? 'bg-accent/10 text-blue-700 dark:text-blue-400' : 'text-secondary hover:bg-elevated hover:text-foreground')}
+      onClick={() => onToggle(symbol, 'pinned')}><Pin className="h-3.5 w-3.5" fill={pinned ? 'currentColor' : 'none'} aria-hidden="true" /></button>
   </div>
 }

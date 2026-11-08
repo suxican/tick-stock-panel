@@ -21,9 +21,17 @@ function runLabel(row: HuichunDailyRun) {
   return row.confirmed_count === 0 ? '已扫描，零信号' : `已扫描，${row.confirmed_count} 条信号`
 }
 
+export function DailyRunNotice({ data }: { data: HuichunDailyRuns }) {
+  const latest = data.records[0]
+  if (!latest || (latest.status !== 'waiting' && latest.status !== 'missed')) return null
+  return <p role="status" aria-label="盘后扫描状态" className="text-xs leading-relaxed text-warning">
+    {latest.date} · {runLabel(latest)}{latest.reason && ` · ${latest.reason}`}
+  </p>
+}
+
 export function DailyRuns({ data }: { data: HuichunDailyRuns }) {
   const latest = data.records[0]
-  return <><CalendarNotice data={data} /><details className="border-t border-border pt-3 text-xs">
+  return <details className="border-t border-border pt-3 text-xs">
     <summary className="cursor-pointer leading-relaxed">
       <span className="font-medium">盘后扫描记录</span>
       {latest && <span className="ml-2 text-secondary">{latest.date} · {runLabel(latest)}</span>}
@@ -44,15 +52,25 @@ export function DailyRuns({ data }: { data: HuichunDailyRuns }) {
           ].filter(Boolean).join(' · ') || '—'}</td>
         </tr>)}</tbody>
       </table></div>}
-  </details></>
+  </details>
 }
 
-function CalendarNotice({ data }: { data: HuichunCalendarStatus }) {
+export function CalendarNotice({ data }: { data: HuichunCalendarStatus }) {
   const state = data.calendar_validity_status
   if (state !== 'expiring' && state !== 'expired') return null
   return <p role="status" aria-label="交易日历状态" className="my-3 text-xs leading-relaxed text-warning">
     {state === 'expired' ? `交易日历已于 ${data.calendar_coverage_end} 到期，监控与新收益计算等待日历更新。`
       : `交易日历覆盖至 ${data.calendar_coverage_end}，剩余 ${data.calendar_days_remaining} 天。请在到期前更新交易日历。`}
+  </p>
+}
+
+export function PublicationNotice({ coverage }: { coverage: HuichunCoverage }) {
+  const status = coverage.publication_status
+  if (!status) return null
+  const warning = status === 'stale' || status === 'incomplete' || status === 'calendar_unverified'
+  return <p role="status" aria-label="筛选数据状态" className={`text-xs leading-relaxed ${warning ? 'text-warning' : 'text-secondary'}`}>
+    {publicationLabels[status]}
+    {status === 'stale' && coverage.expected_daily_date && ` · 应到 ${coverage.expected_daily_date}`}
   </p>
 }
 
@@ -66,11 +84,7 @@ export function StageCounts({ coverage, day }: { coverage: HuichunCoverage; day:
     .filter(([key, count]) => key in rejectionLabels && count > 0)
   return <section aria-label="截止日筛选统计" className="my-4 border-y border-border py-3">
     {coverage.history_truncated && <p className="mb-3 text-xs text-secondary">可核验计算区间自 {coverage.calculation_start_date} 起，较早行情未参与指标计算，预热从此重新累计。</p>}
-    <div className="flex flex-wrap items-baseline justify-between gap-2">
-      <h3 className="text-xs font-medium">{day} 筛选统计</h3>
-      {coverage.publication_status && <span className="text-xs text-secondary">{publicationLabels[coverage.publication_status]}
-        {coverage.publication_status === 'stale' && coverage.expected_daily_date && ` · 应到 ${coverage.expected_daily_date}`}</span>}
-    </div>
+    <h3 className="text-xs font-medium">{day} 筛选统计</h3>
     <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 sm:grid-cols-4">
       {stages.map(([key, label]) => <div key={key} className="flex items-baseline justify-between gap-2 text-xs">
         <dt className="text-secondary">{label}</dt><dd className="font-medium tabular-nums">{counts[key].toLocaleString('zh-CN')}</dd>
@@ -103,10 +117,14 @@ export function ThresholdCell({ row }: { row: HuichunObservation }) {
   if (value == null || !Number.isFinite(value)) return <td className="px-3 py-3 text-secondary">—</td>
   const check = (pass: boolean | null | undefined) => pass == null ? '待核验' : pass ? '通过' : '未通过'
   return <td className="whitespace-nowrap px-3 py-3 tabular-nums">
-    <span>{value < 0 ? '平收可金叉' : value === 0 ? '需高于平收' : `涨幅须超过约 ${pct(value)}`}</span>
-    <details className="mt-1 text-secondary"><summary className="cursor-pointer">临界价约 {row.cross_threshold_price?.toFixed(4) ?? '—'} 元</summary>
-      <p>临界处：零轴{check(row.threshold_zero_pass)}，趋势{check(row.threshold_trend_pass)}</p>
-      {row.first_watch_date && <p>首次观察 {row.first_watch_date}</p>}
+    <span>{value < 0 ? '平收可金叉' : value === 0 ? '需高于平收' : `涨幅 > 约 ${pct(value)}`}</span>
+    <details className="mt-1 text-secondary"><summary className="cursor-pointer rounded focus-visible:outline focus-visible:outline-accent">临界价约 {row.cross_threshold_price?.toFixed(4) ?? '—'} 元</summary>
+      <div className="mt-1 max-w-64 space-y-1 whitespace-normal leading-relaxed">
+        <p>次日收盘须严格超过未取整的临界值才会金叉。</p>
+        <p>临界处：零轴{check(row.threshold_zero_pass)}，趋势{check(row.threshold_trend_pass)}</p>
+        <p>临界价按观察日原价尺度折算，遇除权须换算；完整形态仍须满足实际收盘时的零轴与均线条件。</p>
+        {row.first_watch_date && <p>首次观察 {row.first_watch_date}</p>}
+      </div>
     </details>
   </td>
 }

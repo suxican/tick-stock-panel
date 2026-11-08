@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { cn } from '@/lib/cn'
 
 export const buttonClass = 'inline-flex min-h-9 items-center justify-center gap-1.5 rounded-btn border border-border bg-elevated px-3 py-1.5 text-xs text-secondary transition-colors hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50'
-export const primaryClass = `${buttonClass} border-accent/50 bg-accent/10 text-foreground hover:bg-accent/20`
+export const primaryClass = 'inline-flex min-h-9 items-center justify-center gap-1.5 rounded-btn border border-blue-600 bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50'
 export const inputClass = 'min-h-9 w-full min-w-0 rounded-btn border border-border bg-base px-2.5 py-1.5 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-50'
 export const panelClass = 'rounded-card border border-border bg-surface p-4'
 

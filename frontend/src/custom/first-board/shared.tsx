@@ -12,23 +12,29 @@ export const marketStates = [{ value: 'strong', label: '强势' }, { value: 'lea
 
 const badgeClass = 'inline-flex shrink-0 items-center whitespace-nowrap border px-2 py-0.5 text-xs font-medium'
 const neutralBadgeClass = 'border-border bg-elevated text-secondary'
+/*
+ * 颜色只表达一类含义：红绿留给涨跌数值；蓝色表示正向信号或可操作；
+ * 琥珀表示接近或触及涨停价（描边→实心逐级加强）；分类与数据状态一律用灰色。
+ */
+export const positiveBadgeClass = 'border-accent/40 bg-accent/10 text-blue-700 dark:text-blue-300'
 const stateColors: Record<FirstBoardState, string> = {
-  watch: 'border-blue-500/25 bg-blue-500/10 text-blue-800 dark:text-blue-300',
-  approaching: 'border-amber-500/25 bg-amber-500/10 text-amber-800 dark:text-amber-300',
-  sealed: 'border-rose-500/25 bg-rose-500/10 text-rose-800 dark:text-rose-300',
-  broken: 'border-orange-500/25 bg-orange-500/10 text-orange-800 dark:text-orange-300',
-  invalid: 'border-slate-500/25 bg-slate-500/10 text-slate-700 dark:text-slate-300',
+  watch: neutralBadgeClass,
+  approaching: 'border-amber-500/50 bg-transparent text-amber-800 dark:text-amber-300',
+  sealed: 'border-amber-500/40 bg-amber-500/15 text-amber-800 dark:text-amber-300',
+  broken: 'border-dashed border-border bg-transparent text-secondary',
+  invalid: 'border-transparent bg-transparent font-normal text-muted',
 }
 export const eventLabels = { buy_candidate: '买入候选', approaching: '临近涨停', sealed: '涨停价观察', broken: '开板观察', invalid: '失效', exit_candidate: '退出提示', watch: '进入观察' }
 const eventColors: Record<string, string> = {
   ...stateColors,
-  buy_candidate: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300',
-  exit_candidate: 'border-red-500/25 bg-red-500/10 text-red-800 dark:text-red-300',
+  buy_candidate: positiveBadgeClass,
+  exit_candidate: 'border-accent/50 bg-transparent text-blue-700 dark:text-blue-300',
 }
+// 形态只是分类，用中性描边；圆角与状态徽章区分。
 const patternColors: Record<FirstBoardEvent['pattern'], string> = {
-  platform: 'border-cyan-500/40 text-cyan-800 dark:text-cyan-300',
-  trend: 'border-indigo-500/40 text-indigo-800 dark:text-indigo-300',
-  oversold: 'border-violet-500/40 text-violet-800 dark:text-violet-300',
+  platform: 'border-border text-secondary',
+  trend: 'border-border text-secondary',
+  oversold: 'border-border text-secondary',
   exit: neutralBadgeClass,
 }
 

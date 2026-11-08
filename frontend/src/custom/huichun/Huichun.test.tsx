@@ -92,12 +92,17 @@ async function render(tab = 'candidates') {
 }
 function button(label: string) { return [...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent?.trim() === label)! }
 async function click(label: string) { expect(button(label)).toBeDefined(); await act(async () => button(label).click()); await settle() }
-function candidateRows() { return [...host.querySelectorAll<HTMLTableRowElement>('table[aria-label="回春候选股票"] tbody tr')] }
+function candidateRows() { return [...host.querySelectorAll<HTMLTableRowElement>('table[aria-label="回春候选股票"] tbody tr:not([data-detail-row])')] }
 function displayedSymbols() { return candidateRows().map(row => row.textContent!.match(/[0-9]{6}\.(?:SH|SZ|BJ)/)![0]) }
-function observationRows() { return [...host.querySelectorAll<HTMLTableRowElement>('table[aria-label="待金叉观察池"] tbody tr')] }
+function observationRows() { return [...host.querySelectorAll<HTMLTableRowElement>('table[aria-label="待金叉观察池"] tbody tr:not([data-detail-row])')] }
 function observationSymbols() { return observationRows().map(row => row.textContent!.match(/[0-9]{6}\.(?:SH|SZ|BJ)/)![0]) }
 function trackingRows() { return [...host.querySelectorAll<HTMLTableRowElement>('table[aria-label="回春收益跟踪"] tbody tr')] }
 function trackingCell(row: HTMLTableRowElement, label: string) {
+  if (label === '基准收盘（元）') {
+    const baseline = row.querySelector<HTMLElement>('[data-field="base_close"]')!
+    baseline.closest('details')!.open = true
+    return baseline
+  }
   const headers = [...host.querySelectorAll('table[aria-label="回春收益跟踪"] th')]
   const index = headers.findIndex(header => header.textContent === label || header.textContent === `${label}复权`)
   expect(index, `缺少${label}列`).toBeGreaterThanOrEqual(0)
@@ -130,6 +135,57 @@ it('keeps the empty candidate list provisional until closing data has been verif
   await render()
   expect(host.textContent).toContain('候选数量待收盘数据核准')
   expect(host.textContent).not.toContain('暂无符合当前规则的候选')
+  const publication = host.querySelector('[aria-label="筛选数据状态"]')!
+  expect(publication.textContent).toContain('收盘数据待核验，已暂停监控推送')
+  expect(publication.closest('details')).toBeNull()
+})
+
+it('reveals secondary metrics without changing the stock preview or scan and resets details for a new snapshot', async () => {
+  await render()
+  expect(host.querySelector('[data-detail-row]')).toBeNull()
+  expect(candidateRows()[0].textContent).not.toContain('高于均线')
+  const detailsButton = host.querySelector<HTMLButtonElement>('[aria-label="查看 测试股票 2026-09-30 详情"]')!
+  await act(async () => detailsButton.click())
+  expect(detailsButton.getAttribute('aria-expanded')).toBe('true')
+  const details = host.querySelector('[data-detail-row]')!
+  expect(details.textContent).toContain('高于均线2.00%')
+  expect(details.textContent).toContain('均线涨幅1.00%')
+  expect(details.textContent).toContain('信号收盘（元）10.00')
+  expect(host.querySelector('[role="dialog"]')).toBeNull()
+  expect(calls.huichunScan).not.toHaveBeenCalled()
+  const next = snapshot()
+  next.scan!.id = 'scan2'
+  calls.huichunSnapshot.mockResolvedValue(next)
+  await act(async () => { await client.invalidateQueries({ queryKey: QK.huichunSnapshot }) })
+  await settle()
+  expect(host.querySelector('[data-detail-row]')).toBeNull()
+})
+
+it('shows batch actions only after selection and clears them without changing tracking', async () => {
+  await render()
+  expect(host.querySelector('[aria-label="候选批量操作"]')).toBeNull()
+  await act(async () => host.querySelector<HTMLInputElement>('[aria-label="选择 测试股票 2026-09-30"]')!.click())
+  expect(host.querySelector('[aria-label="候选批量操作"]')?.textContent).toContain('已选 1 条')
+  expect(button('加入所选跟踪（1）').disabled).toBe(false)
+  await click('清空选择')
+  expect(host.querySelector('[aria-label="候选批量操作"]')).toBeNull()
+  expect(calls.huichunAddTracking).not.toHaveBeenCalled()
+})
+
+it.each(['waiting', 'missed'] as const)('keeps latest %s scan visible even when an older snapshot is ready', async status => {
+  const previous = snapshot()
+  previous.scan!.coverage.publication_status = 'ready'
+  calls.huichunSnapshot.mockResolvedValue(previous)
+  calls.huichunDailyRuns.mockResolvedValue({ calendar_status: 'verified', tracking_since: null, records: [
+    { date: '2026-10-09', status, reason: '最新交易日尚无完整扫描结果' },
+  ] })
+  await render()
+  const notice = host.querySelector('[aria-label="盘后扫描状态"]')!
+  expect(notice.textContent).toContain('2026-10-09')
+  expect(notice.textContent).toContain(status === 'waiting' ? '等待收盘数据' : '当日漏扫')
+  expect(notice.closest('details')).toBeNull()
+  expect(host.querySelector<HTMLDetailsElement>('details[aria-label="筛选详情"]')?.open).toBe(false)
+  expect(candidateRows()).toHaveLength(1)
 })
 
 it('explains a dated empty scan using terminal counts and clustered factor failures', async () => {
@@ -146,7 +202,10 @@ it('explains a dated empty scan using terminal counts and clustered factor failu
   const coverage = host.querySelector('[aria-label="截止日筛选统计"]')!
   expect(coverage.textContent).toContain('有效收盘97')
   expect(coverage.textContent).toContain('首次金叉未通过1')
-  expect(coverage.textContent).toContain('2026-10-08')
+  const publication = host.querySelector('[aria-label="筛选数据状态"]')!
+  expect(publication.textContent).toContain('2026-10-08')
+  expect(publication.closest('details')).toBeNull()
+  expect(coverage.closest('details')?.open).toBe(false)
   expect(host.textContent).toContain('2026-09-10（7 只）')
   expect(host.textContent).toContain('零轴距离超限 1')
 })
@@ -346,7 +405,7 @@ it('opens a legacy tracked signal with its frozen rules without requiring a curr
 async function sortBy(label: string) {
   const header = host.querySelector<HTMLButtonElement>(`button[aria-label="按${label}排序"]`)
   expect(header, `缺少${label}排序按钮`).not.toBeNull()
-  await act(async () => header!.click())
+  await act(async () => { const disclosure = header!.closest('details'); if (disclosure) disclosure.open = true; header!.click() })
   await settle()
 }
 async function input(label: string, value: string) {
@@ -697,8 +756,10 @@ it('shows shared board tags and latest quotes separately from signal prices', as
   expect(rows[0].textContent).toContain('创')
   expect(rows[0].textContent).toContain('119.15')
   expect(rows[0].textContent).toContain('-9.92%')
-  expect(rows[0].textContent).toContain('10.00')
-  expect(rows[0].querySelectorAll('.text-bear')).toHaveLength(2)
+  expect(rows[0].textContent).not.toContain('10.00')
+  expect(rows[0].querySelectorAll('.text-bear')).toHaveLength(1)
+  await click('详情')
+  expect(host.querySelector('[data-detail-row]')?.textContent).toContain('信号收盘（元）10.00')
   const stockCell = rows[0].querySelectorAll('td')[1]
   expect(stockCell.textContent!.indexOf('凌玮科技')).toBeLessThan(stockCell.textContent!.indexOf('301373.SZ'))
   const nameLine = stockCell.querySelector('button')!.parentElement!
@@ -884,7 +945,7 @@ it('shows an empty dated observation pool for a completed scan', async () => {
   await render('watch')
   expect(host.textContent).toContain('2026-09-30')
   expect(host.textContent).toMatch(/暂无[^。]*观察|观察[^。]*暂无/)
-  expect(host.textContent).not.toMatch(/观察[^。]*请重新筛选/)
+  expect(host.textContent).not.toContain('此历史结果尚未生成待金叉观察池，请重新筛选')
   expect(observationRows()).toHaveLength(0)
   expect(calls.marketSnapshotForSymbols).not.toHaveBeenCalled()
 })
@@ -915,7 +976,10 @@ it('keeps observation quotes, sorting and preview navigation separate from confi
   expect(first.textContent).toContain('119.15')
   expect(first.textContent).toContain('-9.92%')
   expect(first.textContent).toContain('0.60%')
-  expect(first.textContent).toContain('1.00%')
+  expect(first.textContent).not.toContain('1.00%')
+  await click('详情')
+  expect(host.querySelector('[data-detail-row]')?.textContent).toContain('昨日差距1.00%')
+  await click('收起')
   expect(first.textContent).toContain('创')
   expect(first.textContent).toContain('待金叉')
   const nameLine = first.querySelector('button')!.parentElement!
@@ -1002,7 +1066,7 @@ function dimensionResult(id: string, field: string, rows: Record<string, unknown
     fields: dimensionConfig(id, field).fields, rows }
 }
 function sectorCell(row: HTMLTableRowElement, _watching = false) {
-  return row.querySelectorAll<HTMLTableCellElement>('td')[5]
+  return row.querySelector<HTMLTableCellElement>('[data-column="sector_text"]')!
 }
 async function retryDimensionError(message: string) {
   const notice = [...host.querySelectorAll('[role="alert"]')].find(item => item.textContent?.includes(message))
@@ -1033,13 +1097,17 @@ it('shows current industry and collapsible concepts in both pools using the same
   const cell = sectorCell(candidateRows()[0])
   expect(cell.textContent).toContain('金融-银行-股份制银行')
   expect(cell.textContent).toContain('机器人')
-  expect(cell.textContent).toContain('人工智能')
+  expect(cell.textContent).not.toContain('人工智能')
   expect(cell.textContent).not.toContain('新能源')
   expect(cell.textContent).not.toContain('芯片')
-  await click('展开 2 项题材')
-  expect(sectorCell(candidateRows()[0]).textContent).toContain('新能源')
-  expect(sectorCell(candidateRows()[0]).textContent).toContain('芯片')
-  await click('收起题材')
+  await act(async () => cell.querySelector<HTMLButtonElement>('button')!.click())
+  const popup = document.querySelector('[role="dialog"][aria-label="题材与行业"]')!
+  expect(popup.textContent).toContain('人工智能')
+  expect(popup.textContent).toContain('新能源')
+  expect(popup.textContent).toContain('芯片')
+  await act(async () => popup.querySelector<HTMLButtonElement>('[aria-label="收起题材与行业"]')!.click())
+  expect(document.querySelector('[role="dialog"][aria-label="题材与行业"]')).toBeNull()
+  expect(document.activeElement).toBe(cell.querySelector('button'))
   expect(sectorCell(candidateRows()[0]).textContent).not.toContain('新能源')
   expect(host.textContent).toContain('当前归属')
   expect(calls.extDataRows).toHaveBeenCalledWith('concepts', { limit: 12000 })
