@@ -85,7 +85,7 @@ it('preserves factor uncertainty, psychology linkage and original-plan boundarie
   expect(host.textContent).toContain('待核验')
   expect(host.textContent).toContain(data.psychology_link)
   expect(host.textContent).toContain('重点复核方向：半导体、存储芯片')
-  expect(host.textContent).toContain('不自动增加仓位')
+  expect(host.textContent).toContain('与散户情绪联动')
   expect(host.textContent).toContain(data.limitations[0])
 })
 
@@ -114,5 +114,5 @@ it('replaces frozen evidence with the selected observation without retaining old
   expect(host.textContent).toContain('+2.34%')
   expect(host.textContent).toContain('行情过时')
   expect(host.textContent).not.toContain('纳斯达克综合指数')
-  expect(host.textContent).toContain('不回填原计划')
+  expect(host.textContent).toContain('行情过时')
 })

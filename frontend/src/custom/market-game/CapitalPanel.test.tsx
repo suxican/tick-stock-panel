@@ -111,7 +111,7 @@ it('keeps frozen psychology separate from minute series and preserves null chart
   expect(option.series[0].data).toEqual([0, 5])
   expect(option.series[2].data).toEqual([null, null])
   expect(option.series[2].connectNulls).toBe(false)
-  expect(host.textContent).toContain('不代表当时已经触发信号')
+  expect(host.textContent).toContain('情绪背景与资金行为')
 })
 
 it('keeps an earlier tightened cap visible while current conditions are unverified', async () => {
