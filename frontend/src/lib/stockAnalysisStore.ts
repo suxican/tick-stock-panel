@@ -131,14 +131,15 @@ export function useDialogTask(): { task: ActiveTask | HistoryReport | null; mode
 
 // ===== 动作 =====
 
-export async function loadHistory(): Promise<void> {
+export async function loadHistory(): Promise<boolean> {
   try {
     const res = await api.stockAnalysisReportsList()
     history = res.reports ?? []
     historyLoaded = true
     rebuildSnap()
     emit()
-  } catch { /* 静默 */ }
+    return true
+  } catch { return false }
 }
 
 export async function findLatestHistoryReport(symbol: string): Promise<HistoryReport | null> {

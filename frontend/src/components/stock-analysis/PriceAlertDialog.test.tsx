@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api, type MonitorRule } from '@/lib/api'
 import { buildMonitorPriceLines } from '@/lib/price-alerts'
+import { QK } from '@/lib/queryKeys'
 import { PriceAlertDialog } from './PriceAlertDialog'
 
 vi.mock('@/lib/useSharedQueries', () => ({ usePreferences: () => ({ data: { webhook_default_channels: [] } }) }))
@@ -69,4 +70,10 @@ it('已有 ETF 价格提醒显示三位, 股票仍为分位输入', async () => 
 it('图中提醒标签使用规则资产类型并保留原始目标价格', () => {
   expect(buildMonitorPriceLines([rule], '159558.SZ')[0]).toMatchObject({ value: 0.828, label: '上穿 0.828' })
   expect(buildMonitorPriceLines([{ ...rule, asset_type: 'stock' }], '159558.SZ')[0]).toMatchObject({ value: 0.828, label: '上穿 0.83' })
+})
+
+it('reuses the 250-day levels cached by the shared analysis board', async () => {
+  client.setQueryData(QK.stockLevels('600000.SH', 250), { close: 10, levels: {} })
+  await render('stock')
+  expect(api.stockAnalysisLevels).not.toHaveBeenCalled()
 })

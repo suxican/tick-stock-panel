@@ -224,6 +224,7 @@ The project has repository caches, enriched history caches, realtime aggregation
 - File deletion, overwriting, migration, and batch recomputation are high-risk operations: restrict the target directory, validate paths, provide clear failure reasons, and stay fail-closed.
 - Do not execute SQL, shell, or dynamic Python through unsafe string concatenation.
 - Changes to configuration, strategy JSON, Parquet schemas, and API fields require backward compatibility by default. New fields should provide defaults, and readers should tolerate missing fields in historical data.
+- When adding, renaming, or removing a runtime data directory, or changing its file layout, semantics, update trigger, or retention policy, update [`docs/data-directory.md`](docs/data-directory.md) in the same change. Document the writer/reader, rebuild conditions, and deletion impact; describe local temporary artifacts separately without including user records or credentials.
 - When existing behavior must change, the PR must list the migration approach, degradation behavior, and scope of impact.
 - Path, encoding, recycle-bin, and permission behavior differ across Windows, macOS, Linux, and Docker. For anything involving the filesystem, review the cross-platform failure paths at minimum.
 
@@ -663,6 +664,7 @@ The measure of following this guide is not how much documentation is written, bu
 - 文件删除、覆盖、迁移和批量回算属于高风险操作：限制目标目录、验证路径、提供清晰失败原因，并保持 fail-closed。
 - 不用不安全的字符串拼接执行 SQL、Shell 或动态 Python。
 - 配置、策略 JSON、Parquet schema 和 API 字段变化默认需要向后兼容。新增字段优先提供默认值，读取历史数据时允许字段缺失。
+- 新增、重命名、删除运行时数据目录，或改变文件结构、数据口径、更新触发、保留策略时，必须在同一变更中同步更新 [`docs/data-directory.md`](docs/data-directory.md)，注明读写入口、重建条件和删除影响；本地临时产物单独说明，不写入用户记录或凭据。
 - 必须改变既有行为时，在 PR 中列出迁移方式、降级行为和影响范围。
 - Windows、macOS、Linux 和 Docker 的路径、编码、回收站及权限行为不同；涉及文件系统时至少审查跨平台失败路径。
 

@@ -1,16 +1,13 @@
 import { useState, useEffect } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Sparkles, LineChart, History as HistoryIcon, Loader2, ExternalLink, Bell, AlertTriangle } from 'lucide-react'
+import { Sparkles, LineChart, History as HistoryIcon, Loader2, ExternalLink, Bell } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
 import { StockFinancialSearch } from '@/components/financials/StockFinancialSearch'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { LastStockChip } from '@/components/LastStockChip'
-import { AnalysisKChart, type PriceLevel, type LevelType } from '@/components/stock-analysis/AnalysisKChart'
+import { StockAnalysisBoard } from '@/components/stock-analysis/StockAnalysisBoard'
 import { PriceAlertDialog } from '@/components/stock-analysis/PriceAlertDialog'
-import { api } from '@/lib/api'
 import { useLastStock } from '@/lib/useLastStock'
-import { QK } from '@/lib/queryKeys'
 import { toast } from '@/components/Toast'
 import {
   startAnalysis, findTodayReport, useHistoryReports,
@@ -170,88 +167,6 @@ export function StockAnalysis() {
         />
       )}
     </>
-  )
-}
-
-// ===== 分析看板:日 K + 关键价位 =====
-function StockAnalysisBoard({ symbol }: { symbol: string }) {
-  const kline = useQuery({
-    // QK 集中键 (start/end 空串 = 滚动最近窗口, 无日期边界)。收益: 键进集中
-    // 管理, 且 useQuoteStream 的焦点股增量合并对无边界键生效 — 此前私拼 3 元
-    // 键永远修补不到; 注意合并依赖 _focusSymbol (预览弹窗设置焦点), 看板单独
-    // 打开时仍靠 60s staleTime 重拉, 与其他日K入口的键 (带真实日期) 不共享。
-    queryKey: QK.kline(symbol, '', ''),
-    queryFn: () => api.klineDaily(symbol, 250),
-    enabled: !!symbol,
-    staleTime: 60_000,
-    placeholderData: (prev: any, prevQuery: any) =>
-      (prevQuery?.queryKey as readonly unknown[] | undefined)?.[1] === symbol ? prev : undefined,
-  })
-
-  const levelsQ = useQuery({
-    queryKey: QK.stockLevels(symbol),
-    queryFn: () => api.stockAnalysisLevels(symbol, 250),
-    enabled: !!symbol,
-    staleTime: 60_000,
-  })
-
-  if (kline.isLoading) {
-    return <div className="flex items-center justify-center py-20"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
-  }
-
-  if (kline.isError) {
-    return (
-      <EmptyState
-        icon={AlertTriangle}
-        title="日 K 数据加载失败"
-        hint="请检查网络或数据源配置后重试。"
-      />
-    )
-  }
-
-  const rows = kline.data?.rows ?? []
-  if (rows.length === 0) {
-    return <EmptyState icon={LineChart} title="暂无日 K 数据" hint="该标的尚未同步日 K,请先在数据页或自选页同步。" />
-  }
-
-  const levels = (levelsQ.data?.levels ?? {}) as Record<LevelType, PriceLevel[]>
-
-  // 涨跌色:最后一根 K 线收 vs 前一根收(无前日则按开收判断)
-  const last = rows[rows.length - 1]
-  const prev = rows[rows.length - 2]
-  const curClose = levelsQ.data?.close
-  const isUp = prev ? (last.close >= prev.close) : (last.close >= last.open)
-
-  return (
-    <div className="rounded-card border border-border/60 bg-surface/40 overflow-hidden">
-      <div className="px-4 py-3 border-b border-border/40">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <LineChart className="h-4 w-4 text-sky-400 shrink-0" />
-            <span className="text-sm font-medium text-foreground">关键价位分析</span>
-          </div>
-          <div className="flex items-baseline gap-2 shrink-0">
-            <span className="text-[10px] text-muted">{rows.length} 个交易日</span>
-            <span className="text-[10px] text-muted/60">·</span>
-            <span className="text-[10px] text-muted">当前价</span>
-            <span className={`text-[16px] leading-6 font-mono font-bold ${isUp ? 'text-bull' : 'text-bear'}`}>
-              {curClose?.toFixed(2) ?? '—'}
-            </span>
-          </div>
-        </div>
-      </div>
-      <div className="p-3">
-        <AnalysisKChart
-          rows={rows}
-          levels={levels}
-          series={levelsQ.data?.series}
-          seriesDates={levelsQ.data?.dates}
-          defaultLevelTypes={['sr', 'pivot', 'keltner_s']}
-          scopeKey={symbol}
-          height={480}
-        />
-      </div>
-    </div>
   )
 }
 

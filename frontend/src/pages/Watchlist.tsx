@@ -1,9 +1,10 @@
-import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import React, { Suspense, lazy, useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Trash2, RefreshCw, Star, X, Search, LayoutGrid, List, Rows3, BarChart3, Settings2, Plus, Check, Filter, Eye, EyeOff, Minus, ChevronsUp, Clock, RotateCcw, FileUp, FolderOpen, FolderMinus, FolderPlus } from 'lucide-react'
+import { Trash2, RefreshCw, Star, X, Search, LayoutGrid, List, Rows3, BarChart3, Settings2, Plus, Check, Filter, Eye, EyeOff, Minus, ChevronsUp, Clock, RotateCcw, FileUp, FolderOpen, FolderMinus, FolderPlus, LineChart } from 'lucide-react'
+import { Modal } from '@/components/Modal'
 import { api, type KlineRow, type MinuteKlineRow, type WatchlistGroup, type WatchlistGroupColor } from '@/lib/api'
 import { ExtSparkChart } from '@/components/screener/ExtSparkChart'
 import { fetchMinuteBatchIncremental, MINUTE_SEED_MAX } from '@/lib/minuteBatchIncremental'
@@ -61,6 +62,8 @@ import {
   buildExtColumnsParam,
   refreshExtColumns,
 } from '@/lib/watchlist-columns'
+
+const WatchlistAnalysisDialog = lazy(() => import('@/components/stock-analysis/WatchlistAnalysisDialog').then(m => ({ default: m.WatchlistAnalysisDialog })))
 
 // ===== 板块标识（筛选/卡片用） =====
 // 注: boardTag（创/科/北 标签）已移至共享 @/components/stock-table/primitives
@@ -496,6 +499,7 @@ const StockCard = React.memo(function StockCard({
   candleRows,
   showCandle,
   onPreview,
+  onAnalysis,
   onConfirmRemove,
   onCancelRemove,
   onRequestRemove,
@@ -514,6 +518,7 @@ const StockCard = React.memo(function StockCard({
   candleRows: KlineRow[]
   showCandle: boolean
   onPreview: (symbol: string, name: string) => void
+  onAnalysis: (symbol: string, name: string) => void
   onConfirmRemove: (symbol: string) => void
   onCancelRemove: () => void
   onRequestRemove: (symbol: string) => void
@@ -678,6 +683,15 @@ const StockCard = React.memo(function StockCard({
         </div>
       )}
 
+      {/* 关键分析入口 */}
+      <div className="px-3 py-1.5">
+        <button type="button" onClick={e => { e.stopPropagation(); onAnalysis(r.symbol, name ?? '') }}
+          disabled={r.asset_type === 'etf'} title={r.asset_type === 'etf' ? 'ETF 暂不支持关键价位分析' : '关键价位与历史分析报告'}
+          className="inline-flex items-center gap-1 px-2 py-1.5 rounded-btn text-xs text-secondary hover:text-accent hover:bg-elevated focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40 disabled:cursor-not-allowed"
+          aria-label={r.asset_type === 'etf' ? 'ETF 暂不支持关键价位分析' : `查看${name || r.symbol}关键分析`}>
+          <LineChart className="h-3.5 w-3.5" />关键分析
+        </button>
+      </div>
       {/* 迷你蜡烛图 */}
       {showCandle && candleRows.length > 0 && (
         <div className="border-t border-border/40 px-3 py-1.5">
@@ -825,6 +839,9 @@ export function Watchlist() {
   }, [])
   const [previewSymbol, setPreviewSymbol] = useState<string | null>(null)
   const [previewName, setPreviewName] = useState<string>('')
+  const [analysisStock, setAnalysisStock] = useState<{ symbol: string; name: string } | null>(null)
+  const openAnalysis = useCallback((symbol: string, name: string) => setAnalysisStock({ symbol, name }), [])
+  const closeAnalysis = useCallback(() => setAnalysisStock(null), [])
   // 切股导航: 默认用 previewNavItems(自选列表); 从成分弹窗打开时用成分列表覆盖
   const [previewNavList, setPreviewNavList] = useState<NavItem[]>([])
   const [dimensionTarget, setDimensionTarget] = useState<DimensionMembersTarget | null>(null)
@@ -1467,6 +1484,7 @@ export function Watchlist() {
       candleRows={klineData[r.symbol] ?? EMPTY_KLINE}
       showCandle={dailyKVisible}
       onPreview={handleCardPreview}
+      onAnalysis={openAnalysis}
       onConfirmRemove={handleCardConfirmRemove}
       onCancelRemove={handleCardCancelRemove}
       onRequestRemove={handleCardRequestRemove}
@@ -1917,6 +1935,12 @@ export function Watchlist() {
                           {monitoredSymbols.has(r.symbol) && <span className="ml-2"><RealtimeDot /></span>}
                         </button>
                         <QuoteFreshnessBadge freshness={r.quote_freshness} compact />
+                        <button type="button" onClick={() => openAnalysis(r.symbol, name ?? '')}
+                          disabled={r.asset_type === 'etf'}
+                          className="inline-flex shrink-0 items-center gap-1 px-1.5 py-1 rounded-btn text-xs text-secondary hover:text-accent hover:bg-elevated focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40 disabled:cursor-not-allowed"
+                          aria-label={r.asset_type === 'etf' ? 'ETF 暂不支持关键价位分析' : `查看${name || r.symbol}关键分析`} title={r.asset_type === 'etf' ? 'ETF 暂不支持关键价位分析' : '关键价位与历史分析报告'}>
+                          <LineChart className="h-3.5 w-3.5" /><span>分析</span>
+                        </button>
                         {/* 删除入口：从分组移除 + 从自选移除(二次确认) + 移到顶部 */}
                         <div className="ml-auto pl-1 shrink-0">
                           {confirmRemove === r.symbol ? (
@@ -2147,6 +2171,12 @@ export function Watchlist() {
         open={customizerOpen}
         onClose={() => setCustomizerOpen(false)}
       />
+
+      {analysisStock && (
+        <Suspense fallback={<Modal onClose={closeAnalysis} ariaLabel="加载关键分析"><p className="p-6 text-sm text-muted">正在加载关键分析…</p></Modal>}>
+          <WatchlistAnalysisDialog key={analysisStock.symbol} {...analysisStock} onClose={closeAnalysis} />
+        </Suspense>
+      )}
 
       <StockPreviewDialog
         symbol={previewSymbol}

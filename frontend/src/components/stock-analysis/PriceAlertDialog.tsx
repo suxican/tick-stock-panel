@@ -50,7 +50,7 @@ export function PriceAlertDialog({
   const backdrop = useDialogBackdrop(onClose)
   const { data: prefs } = usePreferences()
   const levelsQuery = useQuery({
-    queryKey: QK.stockLevels(symbol),
+    queryKey: QK.stockLevels(symbol, 250),
     queryFn: () => api.stockAnalysisLevels(symbol, 250),
     enabled: assetType === 'stock',
     staleTime: 60_000,

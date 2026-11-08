@@ -237,6 +237,8 @@ class StrategyDependencyResolver:
             if feature.startswith(("signal_", "csg_"))
         }
         required_signals.update(embedded_signals)
+        # 显式依赖的运行时限价列独立生成，不依赖用户可编辑的涨跌停信号定义。
+        required_signals.update(required_features & set(LIMIT_SIGNAL_OUTPUTS))
         required_features.difference_update(embedded_signals)
 
         full_fallback = bool(strategy.filter_history_fn and not strategy.required_features)

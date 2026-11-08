@@ -594,6 +594,7 @@ PORT=3018                      # 服务端口
 | :--- | :--- |
 | [部署指南](./docs/deployment.md) | 部署方式(Dev / Docker / GH Actions)、老 CPU 兼容、更新代码、访问密码 |
 | [配置说明](./docs/configuration.md) | 所有 `.env` 配置项详解(数据源、AI、服务、密码、数据目录) |
+| [数据目录说明](./docs/data-directory.md) | `data/` 各目录用途、文件结构、更新来源、备份与持续维护规则 |
 | [完整功能说明](./docs/features.md) | 各功能模块详细说明(策略/指标/回测/监控/个股分析/数据扩展/开放接口) |
 
 ### 策略与研究

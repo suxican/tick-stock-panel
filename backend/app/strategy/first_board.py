@@ -256,6 +256,35 @@ def filter_pattern_history(history: pl.DataFrame, params: dict, pattern: Pattern
     return result.drop([c for c in result.columns if c.startswith("_")])
 
 
+def filter_daily_pattern_history(history: pl.DataFrame, params: dict, pattern: Pattern) -> pl.DataFrame:
+    """收盘形成的次日观察池研究信号，供通用回测按下一交易日开盘撮合。
+
+    与工作台共用历史资格和形态计算，但信号记在形态确认日，不再右移一天。
+    调用方只提供已完成日线；盘中门槛不属于该研究，拒绝无效调参。
+    """
+    pattern_params = {
+        "platform": {"platform_window", "platform_max_range", "platform_near_high"},
+        "trend": {"trend_window", "trend_min_return", "trend_max_return"},
+        "oversold": {"oversold_window", "oversold_min_drawdown"},
+    }
+    if pattern not in pattern_params:
+        raise ValueError("不支持的首板日线研究形态")
+    allowed = {"universe", "lookback_days", "min_history_days"} | pattern_params[pattern]
+    unknown = set(params) - allowed
+    if unknown:
+        raise ValueError(f"首板日线研究不支持这些参数: {', '.join(sorted(unknown))}")
+    rules = FirstBoardRules.model_validate({**params, "enabled_patterns": [pattern]})
+    if not history.is_empty():
+        missing = (_REQUIRED | {"limit_up_price"}) - set(history.columns)
+        if missing:
+            raise ValueError(f"首板日线研究缺少必要行情列: {', '.join(sorted(missing))}")
+    df = _features(history, rules)
+    if df.is_empty():
+        return history.head(0)
+    result = _pattern_rows(df, rules, pattern)
+    return result.drop([c for c in result.columns if c.startswith("_")])
+
+
 def _finite(value: object) -> float | None:
     if isinstance(value, bool):
         return None

@@ -13,13 +13,13 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from datetime import date
+from datetime import date, time
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 
-from app.market_time import cn_today
+from app.market_time import cn_now, cn_today
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +134,22 @@ def filter_huichun_a0(frame: pl.DataFrame, params: dict) -> pl.DataFrame:
     from app.services.huichun_screener import filter_huichun_a0 as screen
 
     return screen(_get_repo(), frame, params)
+
+
+def filter_first_board_daily_history(frame: pl.DataFrame, params: dict, pattern: str) -> pl.DataFrame:
+    """首板收盘形态研究的受控入口；不访问工作台配置或写入数据。
+
+    策略页也可能传入当日盘中快照，故在北京时间收盘前排除当日行。
+    历史回测始终沿用输入的价格和限价证据，不另行读取当前行情。
+    """
+    from app.strategy.first_board import filter_daily_pattern_history
+
+    if "date" in frame.columns:
+        now = cn_now()
+        day = pl.col("date").cast(pl.Date, strict=False)
+        complete = day <= now.date() if now.time().replace(tzinfo=None) >= time(15) else day < now.date()
+        frame = frame.filter(complete)
+    return filter_daily_pattern_history(frame, params, pattern)
 
 
 def list_index_symbols() -> list[dict]:
