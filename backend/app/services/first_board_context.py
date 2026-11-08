@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from datetime import date
 from pathlib import Path
 
@@ -22,8 +23,8 @@ _FULL_SYMBOL = re.compile(r"^\d{6}\.(SH|SZ|BJ)$")
 
 SECTOR_PROXY_NOTE = (
     "采用当前行业二级归属的联动代理, 不等于课程中的精确题材主线; "
-    "完整行业成员行情覆盖至少 80%、至少 3 只有效行情、2 只涨幅达到 5%、"
-    "行业平均涨幅达到 1% 为工程实验门槛。"
+    "剔除本股后, 同行完整成员行情覆盖至少 80%、至少 3 只有效同行行情、2 只同行涨幅达到 5%、"
+    "同行平均涨幅达到 1% 为工程实验门槛。"
 )
 
 
@@ -125,55 +126,74 @@ def load_sector_members(repo) -> dict[str, str]:
     return {symbol: sector for symbol, sector in primary.items() if sector not in unresolved_sectors}
 
 
-def evaluate_sectors(current: pl.DataFrame, members: dict[str, str]) -> dict[str, dict]:
-    """Aggregate fresh normalized stock quotes (change_pct is a fraction).
-
-    The caller owns timestamp freshness and current-session filtering. Missing
-    and duplicated quotes never contribute breadth, strength, or a zero return.
-    """
-    normalized = {str(symbol).strip().upper(): sector for symbol, sector in members.items()
-                  if isinstance(sector, str) and sector.strip()}
-    member_counts = Counter(normalized.values())
-    sectors = sorted(set(normalized.values()))
-    output = {sector: {
-        "sector": sector, "count": 0, "up_count": 0, "strong_count": 0,
-        "member_count": member_counts[sector], "coverage": 0.0,
-        "mean_change_pct": None, "confirmed": False,
-        "reason": f"行业有效行情 0/{member_counts[sector]}，覆盖率不足 80%",
-        "proxy_note": SECTOR_PROXY_NOTE,
-    } for sector in sectors}
-    if not output or current.is_empty() or not {"symbol", "change_pct"}.issubset(current.columns):
-        return output
+def _member_quotes(current: pl.DataFrame, normalized: dict[str, str]) -> pl.DataFrame | None:
+    """Unique finite member quotes; missing or duplicated quotes are never counted."""
+    if current.is_empty() or not {"symbol", "change_pct"}.issubset(current.columns):
+        return None
     if current.schema["change_pct"] == pl.Boolean:
-        return output
-    member_frame = pl.DataFrame({"symbol": list(normalized), "sector": list(normalized.values())})
+        return None
+    member_frame = pl.DataFrame({"symbol": list(normalized), "sector": list(normalized.values())},
+                                schema={"symbol": pl.String, "sector": pl.String})
     try:
-        quotes = current.select(
+        return current.select(
             pl.col("symbol").cast(pl.String, strict=False).str.strip_chars().str.to_uppercase(),
             pl.col("change_pct").cast(pl.Float64, strict=False),
         ).with_columns(pl.len().over("symbol").alias("_count")).filter(
             (pl.col("_count") == 1) & pl.col("change_pct").is_finite()
-        ).join(member_frame, on="symbol", how="inner")
-        if quotes.is_empty():
-            return output
-        stats = quotes.group_by("sector").agg(
+        ).join(member_frame, on="symbol", how="inner").drop("_count")
+    except pl.exceptions.PolarsError:
+        return None
+
+
+def evaluate_sector_peers(current: pl.DataFrame, members: dict[str, str],
+                          symbols: Iterable[str]) -> dict[str, dict]:
+    """Per-candidate industry confirmation over peers, excluding the candidate itself.
+
+    The candidate is already near limit-up when this gate runs; counting its own
+    quote would let it fill the strong-member count and lift the mean. Peer
+    stats are the whole-sector aggregates minus the candidate's own counted
+    quote. change_pct is a fraction; the caller owns timestamp freshness.
+    """
+    normalized = {str(symbol).strip().upper(): sector for symbol, sector in members.items()
+                  if isinstance(sector, str) and sector.strip()}
+    wanted = sorted({str(symbol).strip().upper() for symbol in symbols} & normalized.keys())
+    if not wanted:
+        return {}
+    member_counts = Counter(normalized.values())
+    totals: dict[str, dict] = {}
+    own: dict[str, float] = {}
+    quotes = _member_quotes(current, normalized)
+    if quotes is not None and not quotes.is_empty():
+        totals = {row["sector"]: row for row in quotes.group_by("sector").agg(
             pl.len().alias("count"),
             (pl.col("change_pct") > 0).sum().alias("up_count"),
             (pl.col("change_pct") >= 0.05).sum().alias("strong_count"),
-            pl.col("change_pct").mean().alias("mean_change_pct"),
-        )
-    except pl.exceptions.PolarsError:
-        return output
-    for row in stats.to_dicts():
-        member_count = member_counts[row["sector"]]
-        coverage = row["count"] / member_count
-        covered = coverage >= SECTOR_MIN_QUOTE_COVERAGE
-        confirmed = covered and row["count"] >= 3 and row["strong_count"] >= 2 and row["mean_change_pct"] >= 0.01
-        detail = f"有效行情 {row['count']}/{member_count}，覆盖率 {coverage:.1%}"
-        reason = (f"行业联动代理达到实验门槛（{detail}）" if confirmed else
-                  f"行业行情覆盖率不足 80%（{detail}）" if not covered else
-                  f"行业有效样本数、强势家数或平均涨幅未达到实验门槛（{detail}）")
-        output[row["sector"]].update(
-            **row, confirmed=confirmed, coverage=coverage, reason=reason,
-        )
+            pl.col("change_pct").sum().alias("change_sum"),
+        ).to_dicts()}
+        own = dict(quotes.filter(pl.col("symbol").is_in(wanted)).select("symbol", "change_pct").iter_rows())
+    output = {}
+    for symbol in wanted:
+        sector = normalized[symbol]
+        total = totals.get(sector, {})
+        change = own.get(symbol)
+        counted = change is not None
+        count = total.get("count", 0) - counted
+        up_count = total.get("up_count", 0) - (counted and change > 0)
+        strong_count = total.get("strong_count", 0) - (counted and change >= 0.05)
+        member_count = member_counts[sector] - 1
+        coverage = count / member_count if member_count else 0.0
+        mean = (total.get("change_sum", 0.0) - (change if counted else 0.0)) / count if count else None
+        covered = member_count > 0 and coverage >= SECTOR_MIN_QUOTE_COVERAGE
+        confirmed = covered and count >= 3 and strong_count >= 2 and mean is not None and mean >= 0.01
+        detail = f"同行有效行情 {count}/{member_count}，覆盖率 {coverage:.1%}"
+        reason = ("剔除本股后行业内没有其他成员，无法确认同行联动" if not member_count else
+                  f"剔除本股后行业同行联动达到实验门槛（{detail}）" if confirmed else
+                  f"剔除本股后行业同行行情覆盖率不足 80%（{detail}）" if not covered else
+                  f"剔除本股后行业同行有效样本数、强势家数或平均涨幅未达到实验门槛（{detail}）")
+        output[symbol] = {
+            "sector": sector, "count": count, "up_count": up_count, "strong_count": strong_count,
+            "member_count": member_count, "coverage": coverage, "mean_change_pct": mean,
+            "confirmed": confirmed, "excludes_candidate": True, "reason": reason,
+            "proxy_note": SECTOR_PROXY_NOTE,
+        }
     return output

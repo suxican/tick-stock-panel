@@ -268,9 +268,8 @@ def test_priority_is_frozen_with_signal_and_sample_and_expires_on_read(rig, monk
 
 def test_concept_shadow_requires_covered_industry_and_other_buy_gates(rig, monkeypatch):
     monkeypatch.setattr(rig.svc._radar, "snapshot", lambda *args, **kw: {})
-    monkeypatch.setattr(fb, "evaluate_sectors", lambda *_: {
-        "测试行业": {"coverage": .9, "count": 10, "confirmed": False, "reason": "同行偏弱"},
-    })
+    monkeypatch.setattr(fb, "evaluate_sector_peers", lambda *_: {symbol: {
+        "coverage": .9, "count": 10, "confirmed": False, "reason": "同行偏弱"} for symbol in SYMBOLS})
     for ctx in rig.contexts.values():
         ctx["groups"][0]["peer_strong"] = True
     rig.svc.save_config({**rig.svc.get_config(), "require_sector_confirmation": True})

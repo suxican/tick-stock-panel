@@ -26,7 +26,7 @@ from app.services.first_board_attention_data import AttentionData
 from app.services.first_board_context import (
     SECTOR_MIN_QUOTE_COVERAGE,
     SECTOR_PROXY_NOTE,
-    evaluate_sectors,
+    evaluate_sector_peers,
     load_environment,
     load_sector_members,
 )
@@ -800,13 +800,13 @@ class FirstBoardService:
                 return
             now = _beijing(now or _now())
             fresh, times = self._fresh_quotes(current, now, config)
-            sectors = evaluate_sectors(fresh, self._sectors)
             prices = _positive_prices(fresh, "raw_close")
             limits = _positive_prices(fresh, "limit_up_price") if config.exit_hold_limit_up else {}
             realtime_blocked = self._realtime_block_reason()
             live = config.enabled and not realtime_blocked and as_of == now.date() and _continuous(now)
             feedback_gate = _feedback_gate(feedback, config, as_of)
             rows = evaluate_candidates(self._candidates, current, config.rules, as_of=as_of)
+            peer_sectors = evaluate_sector_peers(fresh, self._sectors, {row["symbol"] for row in rows})
             attention = self._attention(rows, fresh, now, live)
             visible_symbols = {r["symbol"] for r in rows if r["symbol"] in times
                                and r["change_pct"] is not None
@@ -850,7 +850,7 @@ class FirstBoardService:
                         row["evidence"]["feedback_gate"] = feedback_gate
                         if not feedback_gate["allowed"]:
                             blocked.append(feedback_gate["reason"])
-                    sector = sectors.get(row["sector"], {})
+                    sector = peer_sectors.get(symbol, {})
                     row["sector_confirmation"] = sector
                     row["evidence"]["environment"] = environment
                     row["evidence"]["sector_confirmation"] = sector

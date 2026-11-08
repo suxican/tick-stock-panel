@@ -532,18 +532,51 @@ def test_insufficient_industry_coverage_blocks_live_buy_until_recovered(service,
         service._sectors = dict.fromkeys(symbols, "金融-银行")
 
     monkeypatch.setattr(service, "_prepare", prepare)
-    for fresh_count, expected in [(3, False), (80, True), (3, False)]:
+    # 本股报价不计入同行覆盖: 80 只报价只覆盖 79/99 只同行。
+    for fresh_count, expected in [(3, False), (80, False), (81, True), (3, False)]:
         frame = pl.concat([quotes(symbol=symbol) for symbol in symbols[:fresh_count]])
         service.process_snapshot(frame, NOW.date(), now=NOW)
         row = service.snapshot()["rows"][0]
         assert row["can_buy"] is expected
-        assert row["sector_confirmation"]["coverage"] == fresh_count / 100
-        assert row["sector_confirmation"]["member_count"] == 100
+        assert row["sector_confirmation"]["coverage"] == pytest.approx((fresh_count - 1) / 99)
+        assert row["sector_confirmation"]["member_count"] == 99
         if not expected:
             assert any("覆盖率" in reason for reason in row["blocked_reasons"])
 
 
-@pytest.mark.parametrize("manual_price,current_price,should_exit", [(12., 10.5, False), (8., 9.5, True)])
+@pytest.mark.parametrize("peer_changes,expected", [
+    # 本股 +8% 不能替同行凑数: 只有 1 只同行涨 5% 时不得确认联动。
+    ([.06, 0., 0.], False),
+    ([.06, .05, 0.], True),
+    # 本股涨幅不得抬高同行均值: 同行 2 只强势但均涨不足 1%。
+    ([.05, .05, -.04, -.035], False),
+])
+def test_industry_confirmation_excludes_the_candidate_itself(service, monkeypatch, peer_changes, expected):
+    service.save_config({**service.get_config(), "require_sector_confirmation": True})
+    peers = [f"{600001 + i}.SH" for i in range(len(peer_changes))]
+    original = service._prepare
+
+    def prepare(*args):
+        original(*args)
+        service._sectors = dict.fromkeys([SYMBOL, *peers], "金融-银行")
+
+    monkeypatch.setattr(service, "_prepare", prepare)
+    frame = pl.concat([quotes(), *[quotes(symbol=symbol, change_pct=change)
+                                   for symbol, change in zip(peers, peer_changes, strict=True)]])
+    service.process_snapshot(frame, NOW.date(), now=NOW)
+    row = service.snapshot()["rows"][0]
+    sector = row["sector_confirmation"]
+    assert row["can_buy"] is expected
+    assert sector["confirmed"] is expected
+    assert sector["excludes_candidate"] is True
+    assert sector["member_count"] == len(peers) and sector["count"] == len(peers)
+    assert sector["mean_change_pct"] == pytest.approx(sum(peer_changes) / len(peers))
+    assert "剔除本股" in sector["reason"]
+    if not expected:
+        assert sector["reason"] in row["blocked_reasons"]
+
+
+@pytest.mark.parametrize("manual_price,current_price,should_exit",[(12., 10.5, False), (8., 9.5, True)])
 def test_live_exit_and_order_use_first_board_batch_cost(service, monkeypatch, manual_price, current_price, should_exit):
     data_dir = service.repo.store.data_dir
     paper.create_account(data_dir, 100_000, slippage_bps=0)

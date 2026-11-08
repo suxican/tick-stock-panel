@@ -10,7 +10,7 @@ from app.api.first_board import router
 from app.market_time import CN_TZ
 from app.services import first_board as fb
 from app.services.first_board import FirstBoardService
-from app.services.first_board_context import evaluate_sectors
+from app.services.first_board_context import evaluate_sector_peers
 
 
 @pytest.fixture
@@ -229,8 +229,8 @@ def test_missing_service_returns_explicit_unavailable():
 
 def test_snapshot_exposes_industry_coverage_and_block_reason(client):
     members = {f"{600000 + i}.SH": "金融-银行" for i in range(100)}
-    quotes = pl.DataFrame({"symbol": list(members)[:3], "change_pct": [.08, .06, .01]})
-    sector = evaluate_sectors(quotes, members)["金融-银行"]
+    quotes = pl.DataFrame({"symbol": list(members)[:4], "change_pct": [.08, .06, .01, .02]})
+    sector = evaluate_sector_peers(quotes, members, ["600000.SH"])["600000.SH"]
     service = client.app.state.first_board_service
     service._snapshot["rows"] = [{
         "symbol": "600000.SH", "sector_confirmation": sector,
@@ -240,8 +240,9 @@ def test_snapshot_exposes_industry_coverage_and_block_reason(client):
     response = client.get("/api/first-board/snapshot")
     assert response.status_code == 200
     row = response.json()["rows"][0]
-    assert row["sector_confirmation"]["member_count"] == 100
+    assert row["sector_confirmation"]["member_count"] == 99
     assert row["sector_confirmation"]["count"] == 3
-    assert row["sector_confirmation"]["coverage"] == .03
+    assert row["sector_confirmation"]["coverage"] == pytest.approx(3 / 99)
     assert row["sector_confirmation"]["confirmed"] is False
+    assert row["sector_confirmation"]["excludes_candidate"] is True
     assert "覆盖率" in row["blocked_reasons"][0]

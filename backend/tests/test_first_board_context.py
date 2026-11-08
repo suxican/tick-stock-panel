@@ -34,15 +34,72 @@ def test_environment_never_uses_today_or_future(tmp_path, monkeypatch):
                                          allowed_states=["strong"])["allowed"]
 
 
+CANDIDATE = "600999.SH"
+
+
+def peers_of(quotes, members, candidate=CANDIDATE):
+    return context.evaluate_sector_peers(quotes, members, [candidate])[candidate]
+
+
 def test_sector_confirmation_uses_fraction_units_and_unique_quotes():
-    members = {"600000.SH": "金融-银行", "600001.SH": "金融-银行", "600002.SH": "金融-银行"}
-    quotes = pl.DataFrame({"symbol": list(members), "change_pct": [.06, .05, -.01]})
-    result = context.evaluate_sectors(quotes, members)["金融-银行"]
-    assert result["confirmed"] and result["count"] == 3
+    members = dict.fromkeys(["600000.SH", "600001.SH", "600002.SH", CANDIDATE], "金融-银行")
+    quotes = pl.DataFrame({"symbol": list(members), "change_pct": [.06, .05, -.01, .09]})
+    result = peers_of(quotes, members)
+    assert result["confirmed"] and result["count"] == 3 and result["member_count"] == 3
     assert result["mean_change_pct"] == pytest.approx(1 / 30)
+    assert result["strong_count"] == 2 and result["up_count"] == 2
     duplicated = pl.concat([quotes, quotes.head(1)])
-    result = context.evaluate_sectors(duplicated, members)["金融-银行"]
+    result = peers_of(duplicated, members)
     assert not result["confirmed"] and result["count"] == 2
+
+
+@pytest.mark.parametrize("changes,confirmed", [
+    # 旧口径把本股计入: 3 只有效、2 只强势、均涨 3.5% 即可确认。
+    ([.08, .06, 0., 0.], False),
+    # 本股 +9% 抬高了整体均值; 同行均涨仅 0.625%。
+    ([.09, .05, .05, -.04, -.035], False),
+    ([.08, .06, .05, 0.], True),
+])
+def test_sector_confirmation_never_counts_the_candidate_itself(changes, confirmed):
+    symbols = [CANDIDATE, *[f"{600000 + i}.SH" for i in range(len(changes) - 1)]]
+    members = dict.fromkeys(symbols, "金融-银行")
+    result = peers_of(pl.DataFrame({"symbol": symbols, "change_pct": changes}), members)
+    assert result["confirmed"] is confirmed
+    assert result["excludes_candidate"] is True
+    assert result["member_count"] == result["count"] == len(changes) - 1
+    assert result["mean_change_pct"] == pytest.approx(sum(changes[1:]) / (len(changes) - 1))
+    assert "剔除本股" in result["reason"]
+
+
+def test_candidate_quote_state_does_not_change_peer_denominator():
+    peers = [f"{600000 + i}.SH" for i in range(3)]
+    members = dict.fromkeys([*peers, CANDIDATE], "金融-银行")
+    peer_quotes = pl.DataFrame({"symbol": peers, "change_pct": [.06, .05, .02]})
+    without_own = peers_of(peer_quotes, members)
+    with_own = peers_of(pl.concat([peer_quotes, pl.DataFrame({"symbol": [CANDIDATE], "change_pct": [.1]})]),
+                        members)
+    duplicated_own = peers_of(pl.concat([peer_quotes, pl.DataFrame(
+        {"symbol": [CANDIDATE, CANDIDATE], "change_pct": [.1, .1]})]), members)
+    for result in (without_own, with_own, duplicated_own):
+        assert result["member_count"] == 3 and result["count"] == 3 and result["confirmed"] is True
+        assert result["mean_change_pct"] == pytest.approx(.13 / 3)
+
+
+def test_sole_sector_member_cannot_confirm_itself():
+    members = {CANDIDATE: "金融-银行"}
+    result = peers_of(pl.DataFrame({"symbol": [CANDIDATE], "change_pct": [.09]}), members)
+    assert result["member_count"] == 0 and result["coverage"] == 0
+    assert result["confirmed"] is False and "没有其他成员" in result["reason"]
+
+
+def test_peer_confirmation_is_keyed_by_requested_member_symbols():
+    members = {"600000.SH": "金融-银行", "600001.SH": "金融-银行", "000001.SZ": "制造-机械"}
+    quotes = pl.DataFrame({"symbol": list(members), "change_pct": [.06, .01, .02]})
+    result = context.evaluate_sector_peers(quotes, members, [" 600000.sh ", "600002.SH", "000001.SZ"])
+    assert set(result) == {"600000.SH", "000001.SZ"}
+    assert result["600000.SH"]["count"] == 1 and result["600000.SH"]["mean_change_pct"] == pytest.approx(.01)
+    assert result["000001.SZ"]["member_count"] == 0
+    assert context.evaluate_sector_peers(quotes, members, []) == {}
 
 
 def test_industry_members_resolve_codes_through_repository(monkeypatch):
@@ -64,9 +121,10 @@ def test_industry_source_failure_is_isolated(monkeypatch):
 
 @pytest.mark.parametrize("fresh_count,confirmed", [(3, False), (79, False), (80, True), (100, True)])
 def test_sector_confirmation_requires_complete_member_coverage(fresh_count, confirmed):
-    members = {f"{600000 + i}.SH": "制造-机械" for i in range(100)}
-    quotes = pl.DataFrame({"symbol": list(members)[:fresh_count], "change_pct": [.06] * fresh_count})
-    result = context.evaluate_sectors(quotes, members)["制造-机械"]
+    members = {f"{600000 + i}.SH": "制造-机械" for i in range(100)} | {CANDIDATE: "制造-机械"}
+    symbols = [*list(members)[:fresh_count], CANDIDATE]
+    quotes = pl.DataFrame({"symbol": symbols, "change_pct": [.06] * len(symbols)})
+    result = peers_of(quotes, members)
     assert result["confirmed"] is confirmed
     assert result["member_count"] == 100
     assert result["count"] == fresh_count
@@ -76,18 +134,19 @@ def test_sector_confirmation_requires_complete_member_coverage(fresh_count, conf
 
 
 def test_sector_missing_invalid_and_duplicate_quotes_do_not_shrink_denominator():
-    members = {f"{600000 + i}.SH": "制造-机械" for i in range(5)}
+    members = {f"{600000 + i}.SH": "制造-机械" for i in range(5)} | {CANDIDATE: "制造-机械"}
     quotes = pl.DataFrame({
         "symbol": [*list(members), "600000.SH", "600099.SH"],
-        "change_pct": [.06, .06, .06, float("nan"), None, .07, .1],
+        "change_pct": [.06, .06, .06, float("nan"), None, .09, .07, .1],
     })
-    result = context.evaluate_sectors(quotes, members)["制造-机械"]
+    result = peers_of(quotes, members)
     assert result["member_count"] == 5
     assert result["count"] == 2
     assert result["coverage"] == .4
     assert result["confirmed"] is False
-    empty = context.evaluate_sectors(pl.DataFrame(), members)["制造-机械"]
+    empty = peers_of(pl.DataFrame(), members)
     assert empty["member_count"] == 5 and empty["coverage"] == 0
+    assert empty["count"] == 0 and empty["mean_change_pct"] is None and "覆盖率" in empty["reason"]
 
 
 def test_industry_aliases_are_not_counted_twice_in_coverage(monkeypatch):
@@ -100,11 +159,10 @@ def test_industry_aliases_are_not_counted_twice_in_coverage(monkeypatch):
     repo = SimpleNamespace(get_instruments=lambda: pl.DataFrame({"symbol": symbols}))
     members = context.load_sector_members(repo)
     assert members == dict.fromkeys(symbols, "金融-银行")
-    result = context.evaluate_sectors(
-        pl.DataFrame({"symbol": symbols, "change_pct": [.06, .06, .06]}), members,
-    )["金融-银行"]
-    assert result["member_count"] == 3 and result["coverage"] == 1
-    assert result["confirmed"] is True
+    result = peers_of(pl.DataFrame({"symbol": symbols, "change_pct": [.06, .06, .06]}), members,
+                      candidate=symbols[0])
+    # 别名若被重复计入, 同行分母会大于剔除本股后的 2 只。
+    assert result["member_count"] == 2 and result["coverage"] == 1
 
 
 @pytest.mark.parametrize("ambiguous", [False, True])
@@ -130,9 +188,9 @@ def test_unresolved_secondary_industry_does_not_shrink_primary_denominator(monke
     symbols = [f"{600000 + i}.SH" for i in range(4)]
     repo = SimpleNamespace(get_instruments=lambda: pl.DataFrame({"symbol": symbols}))
     members = context.load_sector_members(repo)
-    result = context.evaluate_sectors(
-        pl.DataFrame({"symbol": symbols[1:], "change_pct": [.06] * 3}), members,
-    )["A-clean"]
-    assert result["member_count"] == 4
-    assert result["coverage"] == .75
+    result = peers_of(pl.DataFrame({"symbol": symbols[1:], "change_pct": [.06] * 3}), members,
+                      candidate=symbols[1])
+    # 600000.SH 仍留在同行分母内, 无行情时不能被丢弃以抬高覆盖率。
+    assert result["member_count"] == 3
+    assert result["coverage"] == pytest.approx(2 / 3)
     assert result["confirmed"] is False
