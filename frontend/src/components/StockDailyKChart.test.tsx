@@ -3,13 +3,17 @@ import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import type { KlineRow } from '@/lib/api'
 import { StockDailyKChart } from './StockDailyKChart'
 
 const calls = vi.hoisted(() => ({ klineDaily: vi.fn(), huichunChart: vi.fn(), chart: vi.fn() }))
 vi.mock('@/lib/api', () => ({ api: calls }))
-vi.mock('./EChartsCandlestick', async importOriginal => ({
-  ...await importOriginal<typeof import('./EChartsCandlestick')>(),
+vi.mock('./EChartsCandlestick', () => ({
   EChartsCandlestick: (props: unknown) => { calls.chart(props); return <div data-chart="daily" /> },
+}))
+
+vi.mock('./charts/LightweightDaily', () => ({
+  LightweightDaily: (props: unknown) => { calls.chart(props); return <div data-chart="daily" /> },
 }))
 
 const range = { start: '2026-01-01', end: '2026-10-22' }
@@ -26,11 +30,21 @@ function response(symbol = '600000.SH', dif = .31) {
     missing_observed_days: 0 as number | null, segment_count: 1 as number | null, rules: context.rules, rule_revision: context.rule_revision } }
 }
 
+const fixture = ({ rows: [
+  { date: '2026-11-03', open: 10, high: 11, low: 10, close: 11, volume: 100, signal_limit_up: true, consecutive_limit_ups: 3 },
+  { date: '2026-11-04', open: 11, high: 12, low: 10, close: 10.5, volume: 100, signal_limit_up: true, signal_broken_limit_up: true },
+  { date: '2026-11-05', open: 10.5, high: 11, low: 10, close: 10.8, volume: 100 },
+  { date: '2026-11-06', open: 10.2, high: 11.88, low: 9.72, close: 9.72, volume: 100, signal_limit_down: true, signal_broken_limit_up: true },
+] as KlineRow[] })
+const originalRows = fixture.rows
+
 let host: HTMLDivElement
 let root: Root
 let client: QueryClient
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+  localStorage.clear()
+  fixture.rows = originalRows
   Object.values(calls).forEach(call => call.mockReset())
   calls.klineDaily.mockResolvedValue({ ...response('600000.SH', -.7), source: 'enriched' })
   calls.huichunChart.mockResolvedValue(response())
@@ -43,6 +57,7 @@ afterEach(async () => {
   await act(async () => root.unmount())
   client.clear()
   host.remove()
+  localStorage.clear()
 })
 async function settle() {
   for (let i = 0; i < 5; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
@@ -73,14 +88,16 @@ it.each([
   expect(!!host.querySelector('[data-chart]')).toBe(allowed)
 })
 
-it('回春日K展示后端完整历史计算的10/20/9及G/D/R形态日期', async () => {
-  await render({ huichunChart: context })
+it.each(['echarts', 'lightweight'] as const)('%s 回春日K展示后端完整历史计算的10/20/9及G/D/R形态日期', async renderer => {
+  await render({ huichunChart: context, renderer })
   expect(calls.huichunChart).toHaveBeenCalledWith({
     symbol: context.symbol, as_of: context.as_of, rules: context.rules, rule_revision: context.rule_revision,
     start_date: range.start, end_date: context.as_of,
   })
   expect(calls.klineDaily).not.toHaveBeenCalled()
   expect(lastChart().data[0].macd_dif).toBe(.31)
+  expect(lastChart().macdParameters).toEqual([10, 20, 9])
+  expect(lastChart().trendMaPeriod).toBe(60)
   expect(lastChart().activeIndicators).toContain('macd')
   expect(lastChart().markers).toEqual(expect.arrayContaining([
     expect.objectContaining({ date: context.g_date, label: 'G', kind: 'neutral' }),
@@ -197,4 +214,96 @@ it('日期范围晚于形态日时提示调整范围且不发送无效查询', a
   expect(host.textContent).not.toContain('数据格式异常')
   expect(calls.huichunChart).not.toHaveBeenCalled()
   expect(calls.klineDaily).not.toHaveBeenCalled()
+})
+
+const props = lastChart
+async function renderMarkers(extra: Partial<ComponentProps<typeof StockDailyKChart>> = {}) {
+  calls.klineDaily.mockResolvedValue({ symbol: '605365.SH', source: 'enriched', rows: fixture.rows })
+  await render({ symbol: '605365.SH', renderer: 'lightweight', dateRange: { start: '2026-11-01', end: '2026-11-06' }, ...extra })
+}
+
+it('identifies limit events from existing signals, prioritizing a limit-down close over a broken limit-up', async () => {
+  await renderMarkers({ markers: [{ date: '2026-11-05', kind: 'buy', label: '策略买点' }] })
+  expect((host.querySelector('[aria-label="异动显示方式"]') as HTMLSelectElement).value).toBe('label')
+  expect(props().markerStyle).toBe('label')
+  expect(props().markers).toEqual([
+    expect.objectContaining({ label: '策略买点' }),
+    expect.objectContaining({ date: '2026-11-03', event: 'limit_up', label: '3', color: '#FACC15' }),
+    expect.objectContaining({ date: '2026-11-04', event: 'broken_limit_up', label: '炸', color: '#8B5CF6' }),
+    expect.objectContaining({ date: '2026-11-06', event: 'limit_down', kind: 'sell', above: false, label: '跌', color: '#22D3EE' }),
+  ])
+  expect(props().markers[0].event).toBeUndefined()
+})
+
+it.each([
+  ['bearish recovery', { open: 4.75, signal_limit_down_recovery: false }, 'limit_down_recovery'],
+  ['bullish recovery', { open: 4.6, signal_limit_down_recovery: true }, 'limit_down_recovery'],
+  ['doji recovery', { open: 4.7 }, 'limit_down_recovery'],
+  ['no custom signal', { signal_limit_down_recovery: undefined }, 'limit_down_recovery'],
+  ['not touching the raw limit', { raw_low: 9.01 }, undefined],
+  ['still at the raw limit', { raw_close: 9.005 }, undefined],
+  ['no-limit day overrides old signal', { limit_down_price: null, signal_limit_down_recovery: true }, undefined],
+  ['invalid raw price', { raw_low: NaN, signal_limit_down_recovery: true }, undefined],
+  ['missing raw price', { raw_close: undefined }, undefined],
+  ['legacy recovery signal', { raw_low: undefined, raw_close: undefined, limit_down_price: undefined, signal_limit_down_recovery: true }, 'limit_down_recovery'],
+  ['legacy absent signal', { raw_low: undefined, raw_close: undefined, limit_down_price: undefined }, undefined],
+  ['sealed limit-down wins', { signal_limit_down: true }, 'limit_down'],
+  ['broken limit-up wins a two-sided touch', { signal_broken_limit_up: true }, 'broken_limit_up'],
+  ['sealed limit-up wins', { signal_limit_up: true }, 'limit_up'],
+] as [string, Partial<KlineRow>, string | undefined][])('identifies %s from raw limit metadata without changing signal definitions', async (_name, patch, event) => {
+  const row: KlineRow = { date: '2026-11-05', open: 4.75, high: 5, low: 4.5, close: 4.7, volume: 100,
+    raw_low: 9, raw_close: 9.4, limit_down_price: 9.005, ...patch }
+  fixture.rows = [row]
+  await renderMarkers()
+  expect(props().markers.map((marker: { event?: string }) => marker.event)).toEqual(event ? [event] : [])
+  expect(fixture.rows[0]).toEqual(row)
+  await renderMarkers({ renderer: 'echarts' })
+  expect(props().markers.some((marker: { event?: string }) => marker.event === 'limit_down_recovery')).toBe(false)
+  await renderMarkers({ showLimitMarkers: false })
+  expect(props().markers).toEqual([])
+})
+
+it('persists the style independently of the existing marker on/off switch', async () => {
+  await renderMarkers()
+  const select = host.querySelector('[aria-label="异动显示方式"]') as HTMLSelectElement
+  expect([...select.options].map(option => [option.value, option.text])).toEqual([['label', '文字'], ['candle', '颜色']])
+  await act(async () => { select.value = 'candle'; select.dispatchEvent(new Event('change', { bubbles: true })) })
+  expect(props().markerStyle).toBe('candle')
+  expect(JSON.parse(localStorage.getItem('stock_daily_marker_style')!)).toBe('candle')
+  const toggle = [...host.querySelectorAll('button')].find(button => button.textContent === '异动')!
+  await act(async () => toggle.click())
+  expect(props().showMarkers).toBe(false)
+  expect(select.disabled).toBe(true)
+  await act(async () => toggle.click())
+  expect(props().showMarkers).toBe(true)
+  await act(async () => root.unmount())
+  root = createRoot(host)
+  await renderMarkers()
+  expect(props().markerStyle).toBe('candle')
+})
+
+it('falls back from a saved arrow preference to text labels without discarding candle preferences', async () => {
+  localStorage.setItem('stock_daily_marker_style', JSON.stringify('arrow'))
+  await renderMarkers()
+  expect(props().markerStyle).toBe('label')
+  expect((host.querySelector('[aria-label="异动显示方式"]') as HTMLSelectElement).value).toBe('label')
+  expect(host.querySelector('option[value="arrow"]')).toBeNull()
+})
+
+it('rejects unknown saved styles and leaves legacy ECharts consumers on their existing behavior', async () => {
+  localStorage.setItem('stock_daily_marker_style', JSON.stringify('unsupported'))
+  await renderMarkers()
+  expect(props().markerStyle).toBe('label')
+  await renderMarkers({ renderer: 'echarts' })
+  expect(host.querySelector('[aria-label="异动显示方式"]')).toBeNull()
+  expect(props().markerStyle).toBeUndefined()
+  expect(props().markers.some((marker: { event?: string }) => marker.event === 'limit_down')).toBe(false)
+  expect(props().markers).toContainEqual(expect.objectContaining({ date: '2026-11-06', event: 'broken_limit_up' }))
+})
+
+it('hides the style selector wherever the existing event toggle is unavailable', async () => {
+  await renderMarkers({ showMarkerToggle: false })
+  expect(host.querySelector('[aria-label="异动显示方式"]')).toBeNull()
+  await renderMarkers({ showLimitMarkers: false })
+  expect(host.querySelector('[aria-label="异动显示方式"]')).toBeNull()
 })

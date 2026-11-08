@@ -96,6 +96,14 @@ def test_daily_latest_returns_only_current_memory_row(monkeypatch) -> None:
         "change_pct": None,
         "ma5": 10.2,
         "is_live": True,
+        "raw_low": None,
+        "raw_close": None,
+        "limit_down_price": None,
+        "signal_limit_down": None,
+        "signal_limit_down_recovery": None,
+        "signal_limit_up": False,
+        "signal_broken_limit_up": None,
+        "consecutive_limit_ups": None,
     }
     assert repo.latest_asset_calls == 0
 
@@ -111,9 +119,51 @@ def test_daily_latest_returns_none_for_stale_cache(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json() == {
         "symbol": "600000.SH",
+        "asset_type": "stock",
         "row": None,
         "source": "none",
     }
+
+
+@pytest.mark.parametrize("opening", [4.6, 4.75])
+def test_live_daily_preserves_raw_limit_metadata_for_both_recovery_directions(monkeypatch, opening) -> None:
+    from app.api import kline as kline_api
+
+    monkeypatch.setattr(kline_api, "cn_today", lambda: BJ)
+    frame = _frame_on(BJ).with_columns(
+        pl.lit(opening).alias("open"), pl.lit(4.7).alias("close"),
+        pl.lit(9.0).alias("raw_low"), pl.lit(9.4).alias("raw_close"),
+        pl.lit(9.005).alias("limit_down_price"),
+        pl.lit(False).alias("signal_limit_down"),
+        pl.lit(opening < 4.7).alias("signal_limit_down_recovery"),
+        pl.lit(False).alias("signal_broken_limit_up"),
+        pl.lit(0).alias("consecutive_limit_ups"),
+    )
+    client, _ = _client(frame, BJ)
+    row = client.get("/api/kline/daily/latest", params={"symbol": "600000.SH"}).json()["row"]
+    assert row["raw_low"] == 9.0
+    assert row["raw_close"] == 9.4
+    assert row["limit_down_price"] == 9.005
+    assert row["signal_limit_down_recovery"] is (opening < 4.7)
+    assert row["signal_limit_down"] is False
+    assert row["signal_limit_up"] is False
+    assert row["signal_broken_limit_up"] is False
+    assert row["consecutive_limit_ups"] == 0
+
+
+def test_live_daily_clears_stale_limit_metadata_when_source_fields_are_missing(monkeypatch) -> None:
+    from app.api import kline as kline_api
+
+    monkeypatch.setattr(kline_api, "cn_today", lambda: BJ)
+    old_row = {"date": str(BJ), "raw_low": 9.0, "raw_close": 9.4, "limit_down_price": 9.005,
+               "signal_limit_down": True, "signal_limit_down_recovery": True,
+               "signal_broken_limit_up": True, "consecutive_limit_ups": 2}
+    rows = kline_api._maybe_inject_live_candle(_request(_frame_on(BJ), BJ), "600000.SH", [old_row])
+    assert rows[0]["close"] == 10.6
+    for key in ("raw_low", "raw_close", "limit_down_price", "signal_limit_down",
+                "signal_limit_down_recovery", "signal_broken_limit_up", "consecutive_limit_ups"):
+        assert rows[0][key] is None
+    assert rows[0]["signal_limit_up"] is False
 
 
 def test_daily_latest_returns_none_when_symbol_is_missing(monkeypatch) -> None:
@@ -127,6 +177,7 @@ def test_daily_latest_returns_none_when_symbol_is_missing(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json() == {
         "symbol": "600001.SH",
+        "asset_type": "stock",
         "row": None,
         "source": "none",
     }
@@ -147,6 +198,7 @@ def test_daily_latest_uses_etf_enriched_cache(monkeypatch) -> None:
     response = client.get("/api/kline/daily/latest", params={"symbol": "510300.SH"})
 
     assert response.status_code == 200
+    assert response.json()["asset_type"] == "etf"
     assert response.json()["row"]["close"] == 10.6
     assert response.json()["source"] == "live"
     assert repo.latest_asset_calls == 1
@@ -170,6 +222,7 @@ def test_daily_latest_uses_index_enriched_cache(monkeypatch) -> None:
 
     assert response.status_code == 200
     body = response.json()
+    assert body["asset_type"] == "index"
     assert body["row"] is not None
     assert body["row"]["close"] == 10.6
     assert body["source"] == "live"
@@ -271,32 +324,36 @@ def test_get_daily_default_end_is_beijing_today(monkeypatch) -> None:
 
 @pytest.mark.parametrize("local", [True, False], ids=["local", "fallback"])
 @pytest.mark.parametrize("includes_today", [False, True], ids=["historical", "current"])
-def test_daily_explicit_window_limits_rows_and_live_candle(monkeypatch, local, includes_today):
-    from types import SimpleNamespace
-
+@pytest.mark.parametrize("window_days", [2, 400], ids=["short-window", "long-window"])
+def test_daily_explicit_window_limits_rows_and_live_candle(monkeypatch, tmp_path, local, includes_today, window_days):
     from app.api import kline as kline_api
+    from app.tickflow.capabilities import CapabilitySet
+    from app.tickflow.repository import DataStore, KlineRepository
 
     today = date(2026, 11, 4)
-    start = date(2026, 11, 2)
+    start = today - timedelta(days=window_days)
     end = today if includes_today else date(2026, 11, 3)
     symbol = "002086.SZ"
-    client, repo = _client(_frame_on(today, symbol), today)
+    client, _ = _client(_frame_on(today, symbol), today)
+    repo = KlineRepository(DataStore(tmp_path))
+    client.app.state.repo = repo
+    client.app.state.quote_service.notify_data_updated = lambda *_: None
     monkeypatch.setattr(kline_api, "cn_today", lambda: today)
     # 合成连续交易日，含选定窗口前的 MA 预热数据，以及实时日。
-    dates = [date(2026, 10, d) for d in (26, 27, 28, 29, 30)] + [start, date(2026, 11, 3), today]
+    dates = sorted({start - timedelta(days=n) for n in range(6)} | {end, today})
     raw = pl.concat([_frame_on(d, symbol) for d in dates]).drop("ma5", "signal_limit_up")
     monkeypatch.setattr(repo, "get_daily_asset", lambda _at, _s, a, b:
                         raw.filter(pl.col("date").is_between(a, b)) if local else pl.DataFrame(),
                         raising=False)
     calls = []
 
-    def fetch(_symbols, **params):
+    def fetch(_symbols, _capset, **params):
         calls.append(params)
-        return raw
+        yield raw
 
-    monkeypatch.setattr(kline_api.kline_sync, "sync_daily_batch", fetch)
-    client.app.state.capabilities = SimpleNamespace(has=lambda _cap: True)
-    monkeypatch.setattr(kline_api.kline_sync, "fetch_adj_factor_single", lambda s: pl.DataFrame({
+    monkeypatch.setattr(kline_api.kline_sync, "iter_daily_frames", fetch)
+    client.app.state.capabilities = CapabilitySet()
+    monkeypatch.setattr(kline_api.kline_sync, "fetch_adj_factor_single", lambda s, **_: pl.DataFrame({
         "symbol": [s], "trade_date": [today], "ex_factor": [2.0],
     }))
 

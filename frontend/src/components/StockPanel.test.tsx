@@ -6,15 +6,19 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { StockPanel } from './StockPanel'
 import type { HuichunChartContext } from '@/lib/huichun-chart'
 
-const calls = vi.hoisted(() => ({ klineDaily: vi.fn(), huichunChart: vi.fn(), info: vi.fn(), chart: vi.fn(), intraday: vi.fn() }))
+const calls = vi.hoisted(() => ({ klineDaily: vi.fn(), huichunChart: vi.fn(), info: vi.fn(), chart: vi.fn(), intraday: vi.fn(), quoteSubscription: vi.fn() }))
 vi.mock('@/lib/api', () => ({ api: calls }))
+vi.mock('@/lib/useQuoteSubscription', () => ({ useQuoteSubscription: calls.quoteSubscription }))
+vi.mock('@/lib/kline', async importOriginal => ({
+  ...await importOriginal<typeof import('@/lib/kline')>(),
+  cnToday: () => '2026-09-30',
+}))
 vi.mock('@/lib/useSharedQueries', () => ({ useCapabilities: () => ({ data: { capabilities: {} } }) }))
 vi.mock('@/lib/useFinancials', () => ({ useFinancialMetrics: () => ({}), financialMetricsQueryOptions: vi.fn() }))
 vi.mock('@/lib/stock-info-fields', () => ({ loadInfoFields: () => [], saveInfoFields: vi.fn(), buildInfoExtColumnsParam: () => undefined }))
 vi.mock('./StockInfoBar', () => ({ StockInfoBar: (props: unknown) => { calls.info(props); return null } }))
 vi.mock('./StockIntradayChart', () => ({ StockIntradayChart: (props: unknown) => { calls.intraday(props); return null } }))
-vi.mock('./EChartsCandlestick', async importOriginal => ({
-  ...await importOriginal<typeof import('./EChartsCandlestick')>(),
+vi.mock('./EChartsCandlestick', () => ({
   EChartsCandlestick: (props: unknown) => { calls.chart(props); return <div data-chart="daily" /> },
 }))
 
@@ -53,6 +57,7 @@ it('回春信息条和曲线共享专用查询，邻股不沿用当前形态上�
   expect(calls.klineDaily).not.toHaveBeenCalled()
   expect(calls.info.mock.calls.at(-1)?.[0].rows[0].macd_dif).toBe(.2)
   expect(calls.chart.mock.calls.at(-1)?.[0].data[0].macd_dif).toBe(.2)
+  expect(calls.quoteSubscription).toHaveBeenLastCalledWith(context.symbol, false)
 })
 
 it('上下文错股时信息条和图表都不显示旧股票数据', async () => {
@@ -62,6 +67,13 @@ it('上下文错股时信息条和图表都不显示旧股票数据', async () =
   expect(calls.info.mock.calls.at(-1)?.[0].name).toBeUndefined()
   expect(host.querySelector('[data-chart]')).toBeNull()
   expect(calls.klineDaily).not.toHaveBeenCalled()
+})
+
+it('普通当日日K继续订阅报价，历史回春关闭报价订阅', async () => {
+  await render()
+  expect(calls.quoteSubscription).toHaveBeenLastCalledWith(context.symbol, true)
+  await render(context.symbol, context)
+  expect(calls.quoteSubscription).toHaveBeenLastCalledWith(context.symbol, false)
 })
 
 it('历史股票按指定区间请求日 K，并且只有来源日有行情时才打开该日分时', async () => {

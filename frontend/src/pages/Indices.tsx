@@ -5,8 +5,9 @@ import { Activity, Loader2, RefreshCw } from 'lucide-react'
 import { api, type CatalogIndex, type IndexQuote, type KlineRow, type MinuteKlineRow } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { useCapabilityMatrix } from '@/lib/useSharedQueries'
-import { EChartsCandlestick, type OHLC } from '@/components/EChartsCandlestick'
-import { EChartsIntraday } from '@/components/EChartsIntraday'
+import type { OHLC } from '@/lib/chart-types'
+import { LightweightDaily } from '@/components/charts/LightweightDaily'
+import { LightweightIntraday } from '@/components/charts/LightweightIntraday'
 
 function defaultRange() {
   const end = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })
@@ -311,12 +312,11 @@ export function Indices() {
           {chartRows.length > 0 && (
             <div className={`grid min-w-0 gap-3 ${!isOverseas && !isThsIndex && hasMinuteCap ? 'xl:grid-cols-2' : ''}`}>
               <div className="min-w-0">
-                <EChartsCandlestick
+                <LightweightDaily
                   data={chartRows}
                   height={620}
                   showMA={true}
                   showInfoBar={true}
-                  showMarkers={false}
                   symbol={selectedSymbol}
                   linkedPrice={linkedPrice}
                   onDateClick={(date) => {
@@ -333,8 +333,10 @@ export function Indices() {
                   <div className="flex h-full items-center justify-center text-xs text-muted">暂无分时数据</div>
                 )}
                 {minuteRows.length > 0 && (
-                  <EChartsIntraday
+                  <LightweightIntraday
                     key={`${selectedSymbol}:${selectedDate}`}
+                    symbol={selectedSymbol}
+                    assetType="index"
                     data={minuteRows}
                     height={620}
                     prevClose={prevClose}

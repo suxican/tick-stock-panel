@@ -96,3 +96,35 @@ def test_raw_quote_accessor_keeps_market_source_time_and_returns_copy(monkeypatc
     assert snapshot["600000.SH"]["received_ts"] > 1000
     snapshot["600000.SH"]["last_price"] = 99
     assert service.get_market_records()["600000.SH"]["last_price"] == 10
+
+
+def test_partial_quote_publication_keeps_untouched_asset_records(monkeypatch):
+    from app.services.quote_service import QuoteService
+
+    service = QuoteService()
+    service._repo = SimpleNamespace(
+        get_index_symbol_set=lambda: {"000001.SH"},
+        get_etf_instruments=lambda: pl.DataFrame({"symbol": ["159558.SZ", "510300.SH"]}),
+    )
+    monkeypatch.setattr("app.services.quote_service._persist_last_fetch", lambda value: None)
+    monkeypatch.setattr(service, "_broadcast_quote_updated", lambda: None)
+    original = [
+        {"symbol": symbol, "last_price": 10, "timestamp": 1000}
+        for symbol in ["600000.SH", "600519.SH", "159558.SZ", "510300.SH", "000001.SH"]
+    ]
+    service._process_full_market_records(original, t0=0, now_ts=0,
+                                        final_boundary_ms=9_999_999, source="first")
+    old = service.get_market_records()
+    updated = [{"symbol": "600519.SH", "last_price": 11, "timestamp": 2000},
+               {"symbol": "159558.SZ", "last_price": 12, "timestamp": 2000}]
+    service._process_full_market_records(updated, t0=0, now_ts=0, source="second",
+                                        partial_assets={"stock", "etf"}, replace_index_cache=False,
+                                        final_boundary_ms=9_999_999)
+    result = service.get_market_records()
+    for symbol in ["600000.SH", "510300.SH", "000001.SH"]:
+        assert result[symbol] == old[symbol]
+    assert result["600519.SH"]["last_price"] == 11
+    assert result["159558.SZ"]["source"] == "second"
+    service._process_full_market_records(updated, t0=0, now_ts=0, source="third",
+                                        final_boundary_ms=9_999_999)
+    assert set(service.get_market_records()) == {"600519.SH", "159558.SZ"}

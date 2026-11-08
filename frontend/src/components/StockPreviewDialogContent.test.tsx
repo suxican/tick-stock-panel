@@ -7,14 +7,14 @@ import { StockPreviewDialogContent, type Props } from './StockPreviewDialogConte
 import type { HuichunChartContext } from '@/lib/huichun-chart'
 
 const calls = vi.hoisted(() => ({
-  watchlistList: vi.fn(), monitorRulesList: vi.fn(), panel: vi.fn(), minutes: vi.fn(), datePicker: vi.fn(), setFocusSymbol: vi.fn(), clearFocusSymbol: vi.fn(),
+  watchlistList: vi.fn(), monitorRulesList: vi.fn(), panel: vi.fn(), minutes: vi.fn(), datePicker: vi.fn(),
 }))
+const clock = vi.hoisted(() => ({ now: Date.parse('2026-10-22T02:00:00Z') }))
 vi.mock('@/lib/api', () => ({ api: calls }))
 vi.mock('@/lib/useSharedQueries', () => ({ usePreferences: () => ({ data: {} }) }))
 vi.mock('@/lib/useCustomSignalNames', () => ({ useCustomSignalNames: () => ({}) }))
-vi.mock('@/lib/useQuoteStream', () => ({ setFocusSymbol: calls.setFocusSymbol, clearFocusSymbol: calls.clearFocusSymbol }))
+vi.mock('@/lib/useQuoteClock', () => ({ useQuoteClock: () => clock.now }))
 vi.mock('./StockPanel', () => ({
-  getDefaultRange: () => ({ start: '2026-04-22', end: '2026-10-22' }),
   StockPanel: (props: unknown) => { calls.panel(props); return <div data-stock-panel="true" /> },
 }))
 vi.mock('./StockMultiDayIntradayChart', () => ({ StockMultiDayIntradayChart: (props: unknown) => { calls.minutes(props); return <div data-intraday="true" /> } }))
@@ -35,6 +35,7 @@ let client: QueryClient
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   Object.values(calls).forEach(call => call.mockReset())
+  clock.now = Date.parse('2026-10-22T02:00:00Z')
   calls.watchlistList.mockResolvedValue({ symbols: [], groups: [] })
   calls.monitorRulesList.mockResolvedValue({ rules: [] })
   host = document.createElement('div')
@@ -104,7 +105,6 @@ it('回春预览传递完整上下文，默认范围覆盖G至R并停在形态�
   expect(panel().showIntraday).toBe(false)
   expect(panel().visibleBars).toBe('all')
   expect(panel().onPriceDoubleClick).toBeUndefined()
-  expect(calls.setFocusSymbol).not.toHaveBeenCalled()
   await click('1年')
   expect(panel().dateRange).toEqual({ start: '2023-09-30', end: context.as_of })
 })
@@ -116,7 +116,7 @@ it('显式查看普通分时时退出历史日K源并提示口径', async () => 
   expect(panel().huichunChart).toBeUndefined()
   expect(panel().dateRange.end).toBe('2026-10-22')
   expect(host.textContent).toContain('此处为普通分时行情')
-  expect(calls.setFocusSymbol).toHaveBeenCalledWith(context.symbol)
+  expect(panel().renderer).toBe('lightweight')
 })
 
 it('普通预览保留默认范围和分时交互', async () => {
@@ -125,5 +125,32 @@ it('普通预览保留默认范围和分时交互', async () => {
   expect(panel().dateRange).toEqual({ start: '2026-04-22', end: '2026-10-22' })
   expect(panel().showIntraday).toBe(true)
   expect(panel().onPriceDoubleClick).toBeTypeOf('function')
-  expect(calls.setFocusSymbol).toHaveBeenCalledWith('600000.SH')
+  expect(panel().renderer).toBe('lightweight')
+})
+
+it('普通快捷范围随北京时间换日，手动范围保持不动', async () => {
+  await render()
+  clock.now = Date.parse('2026-10-22T16:05:00Z')
+  await render()
+  expect(panel().dateRange).toEqual({ start: '2026-04-23', end: '2026-10-23' })
+  await click('1年')
+  clock.now = Date.parse('2026-10-23T16:05:00Z')
+  await render()
+  expect(panel().dateRange).toEqual({ start: '2025-10-24', end: '2026-10-24' })
+  await act(() => calls.datePicker.mock.calls.at(-1)![0].onChange('2026-10-20'))
+  clock.now = Date.parse('2026-10-24T16:05:00Z')
+  await render()
+  expect(panel().dateRange).toEqual({ start: '2025-10-24', end: '2026-10-20' })
+})
+
+it('换日不推进历史来源日或回春形态日', async () => {
+  await render(undefined, { tradeDate: '2024-09-30' })
+  await click('1年')
+  clock.now = Date.parse('2026-10-22T16:05:00Z')
+  await render(undefined, { tradeDate: '2024-09-30' })
+  expect(panel().dateRange).toEqual({ start: '2023-09-30', end: '2024-09-30' })
+  await render(context)
+  clock.now = Date.parse('2026-10-23T16:05:00Z')
+  await render(context)
+  expect(panel().dateRange).toEqual({ start: context.g_date, end: context.as_of })
 })
