@@ -2,7 +2,8 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 import { type KlineRow, type FinancialMetricRecord } from '@/lib/api'
-import { klineDailyQueryOptions, klineMinuteQueryOptions, klineMinuteRangeQueryOptions, DEFAULT_INTRADAY_DAYS } from '@/lib/kline'
+import { klineDailyQueryOptions, klineMinuteQueryOptions, klineMinuteRangeQueryOptions, DEFAULT_INTRADAY_DAYS, cnToday } from '@/lib/kline'
+import { useQuoteSubscription } from '@/lib/useQuoteSubscription'
 import { StockInfoBar } from '@/components/StockInfoBar'
 import { StockDailyKChart, getDefaultRange, toOHLC } from '@/components/StockDailyKChart'
 import { StockIntradayChart } from '@/components/StockIntradayChart'
@@ -10,7 +11,8 @@ import { financialMetricsQueryOptions, useFinancialMetrics } from '@/lib/useFina
 import { useCapabilities } from '@/lib/useSharedQueries'
 import { scheduleNeighborPrefetch } from '@/lib/neighborPrefetch'
 import { stockChartQueryOptions, type HuichunChartContext } from '@/lib/huichun-chart'
-import type { ChartMarker, ChartPriceLine, ChartRange } from '@/components/EChartsCandlestick'
+import type { ChartMarker, ChartPriceLine, ChartRange, ChartRenderer } from '@/lib/chart-types'
+import { dailyChartHeight } from '@/lib/chart-layout'
 import {
   loadInfoFields,
   saveInfoFields,
@@ -20,6 +22,10 @@ import {
 
 interface Props {
   symbol: string
+  onAssetType?: (assetType: 'stock' | 'etf' | 'index') => void
+  renderer?: ChartRenderer
+  /** 详情顶栏已有名称时可隐藏报价条的重复身份；独立面板默认保留。 */
+  showQuoteIdentity?: boolean
   height?: number
   showIntraday?: boolean
   className?: string
@@ -28,6 +34,9 @@ interface Props {
   onVisibleTradeDate?: (date: string | null) => void
   /** 来自有明确交易日的列表。无该日K时，不打开其他日期的分时。 */
   preferredTradeDate?: string | null
+  /** 回放等场景可控制分时日期；未传时沿用自动选择最新日的行为。 */
+  selectedDate?: string | null
+  onIntradayClose?: () => void
   /** 外部传入的日期范围 */
   dateRange?: { start: string; end: string }
   markers?: ChartMarker[]
@@ -64,12 +73,17 @@ export { getDefaultRange }
 
 export function StockPanel({
   symbol,
+  onAssetType,
+  renderer = 'echarts',
+  showQuoteIdentity = true,
   height = 520,
   showIntraday = true,
   className,
   onSelectDate,
   onVisibleTradeDate,
   preferredTradeDate,
+  selectedDate: controlledSelectedDate,
+  onIntradayClose,
   dateRange: externalDateRange,
   markers,
   ranges,
@@ -118,6 +132,7 @@ export function StockPanel({
   const rangeStart = externalDateRange?.start ?? defaultDateRange.start
   const rangeEnd = externalDateRange?.end ?? defaultDateRange.end
   const dateRange = useMemo(() => ({ start: rangeStart, end: rangeEnd }), [rangeStart, rangeEnd])
+  useQuoteSubscription(symbol, !huichunChart && rangeEnd >= cnToday())
 
   // 日K查询由本组件持有 (与 StockDailyKChart 共享同一 cache key/配置, 只发一次请求)。
   // 信息条直接读 query data: 切股到已预取邻股时首帧即有数据, 配合 StockInfoBar 加载态占位,
@@ -130,6 +145,9 @@ export function StockPanel({
   const latestTradeDate = !kline.isPlaceholderData ? rows.at(-1)?.date ?? null : null
   const stockInfo = contextUnavailable ? undefined : kline.data?.stock_info
   const name = contextUnavailable ? undefined : kline.data?.name
+  useEffect(() => {
+    if (!contextUnavailable && kline.data?.asset_type) onAssetType?.(kline.data.asset_type)
+  }, [contextUnavailable, kline.data?.asset_type, onAssetType])
 
   const handleDateClick = useCallback((date: string) => {
     if (date < rangeStart || date > rangeEnd || kline.isPlaceholderData) return
@@ -182,18 +200,16 @@ export function StockPanel({
     ? pickedBar.day : undefined
   useEffect(() => { setPickedBar(undefined) }, [symbol, rangeStart, rangeEnd, preferredTradeDate])
   const defaultDay = preferredTradeDate === undefined ? latestTradeDate : preferredTradeDate
-  const visibleDay = clickedDay ?? defaultDay
+  const visibleDay = controlledSelectedDate === undefined ? clickedDay ?? defaultDay : controlledSelectedDate
   const visibleIdx = !kline.isPlaceholderData && visibleDay ? rows.findIndex(row => row.date === visibleDay) : -1
-  const selectedDate = (clickedDay || showIntraday) && visibleIdx >= 0 ? visibleDay : null
+  const selectedDate = (controlledSelectedDate || clickedDay || showIntraday) && visibleIdx >= 0 ? visibleDay : null
   useEffect(() => { onVisibleTradeDate?.(visibleDay) }, [onVisibleTradeDate, visibleDay])
 
   const selectedIdx = selectedDate ? visibleIdx : -1
   const selectedRow = selectedIdx >= 0 ? rows[selectedIdx] : undefined
   const prevClose = selectedIdx > 0
     ? rows[selectedIdx - 1].close
-    : rows.length >= 2
-      ? rows[rows.length - 2].close
-      : undefined
+    : undefined
   if (!symbol) return null
 
   // 财务指标最新一期（metrics 按 period_end 排序，取首项）
@@ -201,11 +217,14 @@ export function StockPanel({
 
   return (
     <div className={className}>
-      {preferredTradeDate && kline.isSuccess && !kline.isPlaceholderData && visibleIdx < 0 && (
+      {preferredTradeDate && controlledSelectedDate === undefined && kline.isSuccess && !kline.isPlaceholderData && visibleIdx < 0 && (
         <p className="mb-2 text-xs text-secondary">{preferredTradeDate} 暂无日 K，图表仅展示区间内已有行情。</p>
       )}
       <StockInfoBar
+        freshness={contextUnavailable ? undefined : kline.data?.quote_freshness}
+        assetType={contextUnavailable ? undefined : kline.data?.asset_type}
         symbol={symbol}
+        showIdentity={showQuoteIdentity}
         name={name}
         stockInfo={stockInfo}
         rows={rawRows}
@@ -221,11 +240,14 @@ export function StockPanel({
       />
 
       {infoBarOnly ? null : (
-      <div className="flex gap-3 items-start">
+      <div className={renderer === 'lightweight'
+        ? `grid min-w-0 grid-cols-1 items-start overflow-hidden rounded-lg border border-border/70 ${showIntraday && selectedDate && !intradayDismissed ? 'xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]' : ''}`
+        : 'flex gap-3 items-start'}>
         <StockDailyKChart
           symbol={symbol}
+          renderer={renderer}
           height={height}
-          className={`${dailyKlineFlex} min-w-0`}
+          className={renderer === 'lightweight' ? 'min-w-0' : `${dailyKlineFlex} min-w-0`}
           dateRange={dateRange}
           markers={markers}
           ranges={ranges}
@@ -235,17 +257,17 @@ export function StockPanel({
           linkedPrice={linkedPrice}
           onDateClick={handleDateClick}
           onPriceDoubleClick={onPriceDoubleClick}
-          visibleBars={visibleBars ?? (showIntraday ? 40 : 60)}
+          visibleBars={visibleBars ?? (renderer === 'lightweight' ? undefined : showIntraday ? 40 : 60)}
           extColumns={extColumns}
           addedDate={addedDate}
           huichunChart={huichunChart}
         />
 
         {showIntraday && selectedDate && !intradayDismissed && (
-          <div className="relative flex-1 min-w-0 border-l border-border pl-3">
+          <div className={renderer === 'lightweight' ? 'relative min-w-0 border-t border-border/60 xl:border-l xl:border-t-0' : 'relative flex-1 min-w-0 border-l border-border pl-3'}>
             <button
-              onClick={() => setIntradayDismissed(true)}
-              className="absolute -left-1.5 -top-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-border bg-surface text-muted shadow-sm transition-colors hover:text-foreground hover:bg-elevated"
+              onClick={() => onIntradayClose ? onIntradayClose() : setIntradayDismissed(true)}
+              className={renderer === 'lightweight' ? 'absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded text-muted transition-colors hover:bg-elevated hover:text-foreground' : 'absolute -left-1.5 -top-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-border bg-surface text-muted shadow-sm transition-colors hover:text-foreground hover:bg-elevated'}
               title="收起分时图"
               aria-label="收起分时图"
             >
@@ -253,8 +275,9 @@ export function StockPanel({
             </button>
             <StockIntradayChart
               symbol={symbol}
+              renderer={renderer}
               date={selectedDate}
-              height={height}
+              height={renderer === 'lightweight' ? dailyChartHeight(height, 1) : height}
               prevClose={prevClose}
               dailySummary={selectedRow}
               onPriceHover={setLinkedPrice}

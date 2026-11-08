@@ -11,6 +11,7 @@ from app.market_time import CN_TZ
 from app.services import first_board_attention as attention
 from app.services import first_board_attention_data as inputs
 from app.services import kline_sync, minute_adjust
+from app.tickflow.capabilities import Cap, CapabilitySet
 from app.tickflow.repository import DataStore, KlineRepository
 
 SYMBOL = "000001.SZ"
@@ -185,8 +186,10 @@ def test_tickflow_minute_fetch_records_requested_adjustment_without_assuming_gri
     batch = Mock(return_value={SYMBOL: compact})
     monkeypatch.setattr(kline_sync, "_try_custom_minute", lambda *a, **kw: (None, True))
     monkeypatch.setattr(kline_sync, "get_client", lambda: SimpleNamespace(klines=SimpleNamespace(batch=batch)))
+    capset = CapabilitySet()
+    capset.grant(Cap.KLINE_MINUTE_BY_SYMBOL)
     for frame in (kline_sync.sync_minute_batch([SYMBOL], raw_basis=raw_basis),
-                  kline_sync.fetch_minute_single(SYMBOL, DAY.date(), capset=SimpleNamespace(has=lambda _: True), raw_basis=raw_basis)):
+                  kline_sync.fetch_minute_single(SYMBOL, DAY.date(), capset=capset, raw_basis=raw_basis)):
         assert frame["minute_price_basis"].to_list() == [declared]
         assert "minute_time_grid" not in frame.columns
     assert [call.kwargs["adjust"] for call in batch.call_args_list] == [requested, requested]
