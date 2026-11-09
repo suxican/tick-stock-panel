@@ -962,6 +962,27 @@ export interface MarketGamePsychology {
   limitations: string[]
 }
 
+/** zzshare 盘后短线情绪：比例与涨跌为小数制，分位为 0–100，生成时冻结。 */
+export interface MarketGameSentiment {
+  version: string
+  source: 'zzshare'
+  status: 'ready' | 'limited' | 'unavailable'
+  as_of: string | null
+  fetched_at: string | null
+  point_in_time: boolean
+  reason: string
+  sync: string | null
+  metrics: { id: string; label: string; unit: 'score' | 'count' | 'ratio' | 'return'; value: number | null; percentile: number | null; sample_size: number }[]
+  loss_gate: { score: number | null; level: 'none' | 'caution' | 'veto' | 'unavailable'; components: string[]; caution: number; veto: number }
+  cross_check: {
+    status: 'matched' | 'mismatched' | 'unavailable'; reason: string
+    local_limit_up: number | null; vendor_limit_up: number | null; local_limit_down: number | null; vendor_limit_down: number | null
+  }
+  history: { date: string; loss_gate: number | null; earn_effect: number | null; lose_effect: number | null }[]
+  revisions: number
+  limitations: string[]
+}
+
 /** 海外涨跌幅为小数制；行情时间与实际取得时间分别记录。 */
 export interface MarketGameOverseasContext {
   version: '1.0.0'
@@ -993,6 +1014,7 @@ export interface MarketGameReport extends MarketGameSummary {
   input_version: string
   rule_version: string
   psychology?: MarketGamePsychology | null
+  sentiment?: MarketGameSentiment | null
   overseas?: MarketGameOverseasContext | null
   ecology?: MarketGameEcology | null
   feedback_hypothesis?: MarketGameFeedbackHypothesis | null

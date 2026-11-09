@@ -10,6 +10,7 @@ from app.market_time import CN_TZ
 from app.services.market_game_ecology_models import FeedbackHypothesis, MarketEcology
 from app.services.market_game_execution_models import ExecutionPolicy
 from app.services.market_game_overseas_models import OverseasContext
+from app.services.market_game_sentiment_models import SentimentContext
 
 Ratio = Annotated[float, Field(ge=0, le=1)]
 
@@ -245,6 +246,7 @@ class GameReport(Contract):
     ecology: MarketEcology | None = None
     feedback_hypothesis: FeedbackHypothesis | None = None
     execution_policy: ExecutionPolicy | None = None
+    sentiment: SentimentContext | None = None
 
     @model_validator(mode="after")
     def check_allocation(self):

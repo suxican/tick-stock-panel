@@ -35,7 +35,11 @@ class ResearchRateLimitError(ResearchError):
     pass
 
 
-def _fetch(kind: ResearchKind, day: date, code: str | None, plate_type: PlateType | None) -> list:
+RangeKind = Literal["sentiment_daily", "effect_daily", "market_sentiment"]
+
+
+def _fetch(kind: str, day: date, code: str | None, plate_type: PlateType | None,
+           start: date | None = None) -> list:
     try:
         provider = custom_sources.get_provider("zzshare")
     except ValueError as exc:
@@ -46,7 +50,9 @@ def _fetch(kind: ResearchKind, day: date, code: str | None, plate_type: PlateTyp
     opts = {"code": code} if code else {}
     if plate_type is not None:
         opts["plate_type"] = int(plate_type)
-    if kind == "market_sentiment":
+    if start is not None:
+        opts["start"] = start.isoformat()
+    elif kind == "market_sentiment":
         opts["start"] = (day - timedelta(days=29)).isoformat()
     if kind in ("plates_rank", "ths_hot_top", "lhb_stock_history"):
         opts["limit"] = 100
@@ -62,6 +68,19 @@ def _fetch(kind: ResearchKind, day: date, code: str | None, plate_type: PlateTyp
     if not isinstance(rows, list):
         raise ResearchError("ZZShare 返回的数据格式异常")
     return rows
+
+
+def fetch_range(kind: RangeKind, start: date, end: date) -> list:
+    """Uncached daily ranges for callers that keep their own archive.
+
+    These kinds are not part of ``ResearchKind``, so the public research route
+    and the radar page cache never expose or mix them.
+    """
+    if kind not in ("sentiment_daily", "effect_daily", "market_sentiment"):
+        raise ValueError("未知区间数据集")
+    if start > end:
+        raise ValueError("起始日期不得晚于结束日期")
+    return _fetch(kind, end, None, None, start=start)
 
 
 class ResearchReader:

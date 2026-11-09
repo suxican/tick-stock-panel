@@ -35,7 +35,7 @@ export function PsychologyPanel({ psychology }: { psychology?: MarketGamePsychol
   const hasHistory = psychology.history.some(row => psychology.dimensions.some(dimension => row[dimension.id] != null))
   return <>
     <section aria-label="情绪多维刻度" className={panel}>
-      <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="flex items-center gap-1 text-sm font-semibold">情绪多维刻度<InfoTip title="情绪刻度说明">
+      <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="flex items-center gap-1 text-sm font-semibold">行为代理画像<InfoTip title="情绪刻度说明">
         <p>分数表示该维度的强度，不是胜率。恐慌或获利了结压力越高，并不代表机会越大；这些指标无法识别真实散户身份。</p>
         {psychology.limitations.length > 0 && facts(psychology.limitations)}
       </InfoTip></h2><span className="text-xs text-secondary">市场行为代理 · 0–100 分</span></div>

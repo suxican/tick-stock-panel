@@ -125,6 +125,62 @@ def _sentiment(get: _GET, day: str, start: str) -> list[dict]:
     return sorted(result, key=lambda r: r["trade_date"])
 
 
+# Vendor-defined daily counts with a clear meaning. Ambiguous fields such as
+# uplimit_n_num, lb_h_num, second_lb_num and fb_num are deliberately not exposed.
+_SENTIMENT_COUNTS = {
+    "up_num": "up_count", "down_num": "down_count", "uplimit_num": "limit_up",
+    "downlimit_num": "limit_down", "zb_num": "broken_limit", "gt5_num": "gt5_count",
+    "lt5_num": "lt5_count", "max_lb_num": "max_boards", "lb_2_num": "lb2_count",
+    "lb_3_num": "lb3_count", "mian_num": "mian_count", "damian_num": "damian_count",
+    "tiandi_num": "tiandi_count", "ditian_num": "ditian_count", "bigleg_num": "bigleg_count",
+}
+_NULLABLE_COUNTS = {"tiandi_num", "ditian_num"}
+
+
+def _count(value: object, *, nullable: bool = False) -> int | None:
+    if value is None and nullable:
+        return None
+    if type(value) is not int or value < 0:
+        raise ValueError("计数字段无效")
+    return value
+
+
+def _sentiment_daily(get: _GET, day: str, start: str) -> list[dict]:
+    raw = _rows(get("/v3/sentiment/data", {"date1": start.replace("-", ""), "date2": day.replace("-", "")}))
+    result, seen = [], set()
+    for r in raw:
+        d = _day(r["date1"])
+        if not start <= d <= day or d in seen:
+            raise ValueError("情绪聚合日期越界或重复")
+        seen.add(d)
+        row = {"trade_date": d}
+        for source, target in _SENTIMENT_COUNTS.items():
+            row[target] = _count(r.get(source) if source in _NULLABLE_COUNTS else r[source],
+                                 nullable=source in _NULLABLE_COUNTS)
+        result.append(row)
+    return sorted(result, key=lambda r: r["trade_date"])
+
+
+def _effect_daily(get: _GET, day: str, start: str) -> list[dict]:
+    # The endpoint returns every session from `date` through the latest one.
+    raw = _rows(get("/v3/api/sentiment/market/hot/day", {"date": start.replace("-", "")}))
+    result, seen = [], set()
+    for r in raw:
+        d = _day(r["date"])
+        if d < start or d in seen:
+            raise ValueError("赚亏效应日期越界或重复")
+        seen.add(d)
+        if d > day:
+            continue
+        earn, lose = _number(r["earn_effect"]), _number(r["lose_effect"])
+        if earn is None or lose is None or earn < 0 or lose < 0:
+            raise ValueError("赚亏效应数值无效")
+        result.append({"trade_date": d, "earn_effect": earn, "lose_effect": lose,
+                       "max_boards": _count(r["lb_high"]), "limit_up": _count(r["zt_num"]),
+                       "limit_down": _count(r["dt_num"])})
+    return sorted(result, key=lambda r: r["trade_date"])
+
+
 def _trend(get: _GET, day: str, model: int) -> list[dict]:
     data = get(f"/v3/api/sentiment/trend/{model}", {"date1": day})
     if not isinstance(data, list):
@@ -213,6 +269,10 @@ def fetch_research(get: _GET, kind: str, day: str, *, code: str | None, plate_ty
             return _plate_rows(get, kind, day, plate_type, code, limit)
         if kind == "market_sentiment":
             return _sentiment(get, day, start or day)
+        if kind == "sentiment_daily":
+            return _sentiment_daily(get, day, start or day)
+        if kind == "effect_daily":
+            return _effect_daily(get, day, start or day)
         if kind == "sentiment_trend":
             return _trend(get, day, model)
         if kind == "ths_hot_top":

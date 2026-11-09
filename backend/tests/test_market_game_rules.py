@@ -111,3 +111,46 @@ def test_mainline_score_orders_ladder_strength_before_day_return():
 def test_unknown_ladder_is_not_filled_as_first_board():
     sectors, _ = market_game._sectors([_stock(i, limit_up=True, boards=None) for i in range(4)], 0)
     assert sectors[0]["mainline_score"] is None
+
+
+def _sentiment(level, score):
+    return {"status": "ready", "as_of": "2026-11-06", "fetched_at": "2026-11-06T17:00:00+08:00",
+            "point_in_time": True, "reason": "盘后情绪与亏钱效应门可用", "metrics": [],
+            "loss_gate": {"score": score, "level": level}}
+
+
+def test_loss_gate_veto_blocks_and_caution_halves_new_exposure():
+    snapshot = _snapshot()
+    normal = market_game.analyze_snapshot(snapshot)
+    assert normal["allocation"]["total_cap"] == pytest.approx(0.4)
+    assert any("亏钱效应门未生效" in text for text in normal["limitations"])
+    snapshot["sentiment"] = _sentiment("veto", 86.0)
+    blocked = market_game.analyze_snapshot(snapshot)
+    assert blocked["allocation"]["total_cap"] == 0 and not blocked["candidates"]
+    assert any("亏钱效应" in text for text in blocked["market_state"]["risk_vetoes"])
+    assert "亏钱效应处于历史高位" in blocked["allocation"]["reason"]
+    assert blocked["market_state"]["phase"] == normal["market_state"]["phase"]
+    snapshot["sentiment"] = _sentiment("caution", 70.0)
+    halved = market_game.analyze_snapshot(snapshot)
+    assert halved["allocation"]["total_cap"] == pytest.approx(0.2)
+    assert not halved["market_state"]["risk_vetoes"]
+    assert any("减半" in text for text in halved["limitations"])
+    assert any("亏钱效应门综合分位 70" in fact for fact in halved["hypotheses"][0]["facts"])
+    snapshot["sentiment"] = _sentiment("veto", None)  # an unscored gate never vetoes
+    assert market_game.analyze_snapshot(snapshot)["allocation"]["total_cap"] == pytest.approx(0.4)
+
+
+def test_crowded_exit_alone_is_a_prompt_not_a_retreat_or_zero_cap():
+    previous = _metrics(breadth_up=0.25, median_return=-0.02, limit_down=20, seal_rate=0.8,
+                        previous_limit_premium=-0.005)
+    current = _metrics(breadth_up=0.8, median_return=0.02, limit_down=5, seal_rate=0.55,
+                       previous_limit_premium=0.01, amount_ratio=1.3)
+    state, matches = market_game._market_state(current, previous)
+    assert matches["crowded_exit"] and matches["panic_repair"]
+    assert state["phase"] == "修复" and state["emotion"] == "分歧"
+    assert not state["risk_vetoes"]
+    snapshot = {**_snapshot(), "metrics": current, "previous": previous}
+    report = market_game.analyze_snapshot(snapshot)
+    assert report["allocation"]["total_cap"] == pytest.approx(0.2)
+    assert "一致兑现" not in report["allocation"]["reason"]
+    assert next(h for h in report["hypotheses"] if h["id"] == "crowded_exit")["status"] == "matched"

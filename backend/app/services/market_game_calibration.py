@@ -10,6 +10,7 @@ import polars as pl
 
 from app.services.index_const import CORE_INDEX_SYMBOLS
 from app.services.market_game import RULE_VERSION, _market_state, _metrics, _number
+from app.services.market_game_sentiment import SentimentArchive, gate_series
 from app.services.regime_builder import load_regime_history
 
 
@@ -35,6 +36,9 @@ def winner_premium(daily: pl.DataFrame, days: list[date]) -> dict:
         .mean().alias('previous_limit_premium'),
         pl.col('_return').count().alias('return_count'),
         pl.col('_return').filter(pl.col('_return') > 0).count().alias('up_count'),
+        # Equal-weight session return; |r| > 35% exceeds every A-share limit
+        # outside IPO windows and is treated as a data error, not a return.
+        pl.col('_return').filter(pl.col('_return').abs() <= 0.35).mean().alias('ew_return'),
     )
     return {row.pop('date'): row for row in frame.to_dicts()}
 
@@ -103,24 +107,46 @@ def prepare_history(regime: pl.DataFrame, *, premiums: dict | None = None,
             'previous_limit_premium': supplement.get('previous_limit_premium'),
             **indices.get(day, {}),
         })
-        rows.append({'date': day.isoformat(), **metrics})
+        rows.append({'date': day.isoformat(), **metrics, 'ew_return': _number(supplement.get('ew_return'))})
         amounts.append(amount)
     return rows
 
 
+def _quantile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = q * (len(ordered) - 1)
+    low = math.floor(position)
+    high = min(low + 1, len(ordered) - 1)
+    return ordered[low] + (ordered[high] - ordered[low]) * (position - low)
+
+
 def _summary(values: list[float]) -> dict:
     return {'n': len(values), 'mean': sum(values) / len(values) if values else None,
-            'positive_rate': sum(value > 0 for value in values) / len(values) if values else None}
+            'positive_rate': sum(value > 0 for value in values) / len(values) if values else None,
+            'p05': _quantile(values, .05), 'p10': _quantile(values, .10)}
+
+
+# Outcome name -> (row field, horizon). Medians keep the original proxy; equal
+# weight and next-day limit premium measure what short-term relay trades face.
+_OUTCOMES = {
+    'forward_1': ('median_return', 1), 'forward_3': ('median_return', 3),
+    'ew_1': ('ew_return', 1), 'ew_3': ('ew_return', 3),
+    'premium_1': ('previous_limit_premium', 1),
+}
 
 
 def calibrate_history(regime: pl.DataFrame, *, premiums: dict | None = None,
                       indices: dict | None = None, start: date | None = None,
-                      end: date | None = None) -> dict:
+                      end: date | None = None, sentiment: dict | None = None,
+                      split: date | None = None) -> dict:
     if start and end and start > end:
         raise ValueError('起始日期不得晚于结束日期')
     if end and not regime.is_empty():
         regime = regime.filter(pl.col('date') <= end)
     rows = prepare_history(regime, premiums=premiums, indices=indices)
+    gates = gate_series(sentiment) if sentiment else {}
     observations, coverage = [], Counter()
     group_days: dict[str, list[dict]] = {'baseline': []}
     for index, current in enumerate(rows):
@@ -129,13 +155,14 @@ def calibrate_history(regime: pl.DataFrame, *, premiums: dict | None = None,
             continue
         coverage.update(key for key, value in current.items() if key != 'date' and value is not None)
         outcomes = {}
-        for horizon in (1, 3):
+        for name, (field, horizon) in _OUTCOMES.items():
             following = rows[index + 1:index + horizon + 1]
-            valid = len(following) == horizon and all(r['median_return'] is not None for r in following)
-            outcomes[f'forward_{horizon}'] = (
-                math.prod(1 + r['median_return'] for r in following) - 1 if valid else None
-            )
+            valid = len(following) == horizon and all(r.get(field) is not None for r in following)
+            outcomes[name] = math.prod(1 + r[field] for r in following) - 1 if valid else None
+        gate_level = gates.get(current['date'], (None, 'unavailable'))[1] if sentiment else None
         keys = ['baseline', 'phase:' + state['phase']]
+        if gate_level is not None:
+            keys.append('gate:' + gate_level)
         keys.extend('mode:' + key for key in ('panic_repair', 'trend_pullback', 'crowded_exit') if matches[key])
         keys.extend('risk:' + key for key in ('short_index_risk', 'loss_veto') if matches[key])
         previous = rows[index - 1] if index else {}
@@ -148,13 +175,17 @@ def calibrate_history(regime: pl.DataFrame, *, premiums: dict | None = None,
         if complete:
             keys.append('complete_inputs')
             keys.extend('complete_mode:' + key for key in ('panic_repair', 'trend_pullback') if matches[key])
+        # Mirrors 1.3.0: crowding is a prompt; a loss-effect veto blocks entry.
         entry_observable = (complete and (matches['panic_repair'] or matches['trend_pullback'])
-                            and not state['risk_vetoes'] and not matches['crowded_exit']
+                            and not state['risk_vetoes'] and gate_level != 'veto'
                             and state['phase'] not in {'退潮', '冰点'})
         if entry_observable:
             keys.append('entry_observable')
+        if split is not None:
+            suffix = '@train' if current['date'] < split.isoformat() else '@test'
+            keys.extend([key + suffix for key in keys])
         observation = {'date': current['date'], 'phase': state['phase'],
-                       'matches': matches, 'complete_inputs': complete,
+                       'matches': matches, 'complete_inputs': complete, 'gate': gate_level,
                        'entry_observable': entry_observable, **outcomes}
         observations.append(observation)
         for key in keys:
@@ -162,8 +193,7 @@ def calibrate_history(regime: pl.DataFrame, *, premiums: dict | None = None,
     groups = []
     for key, members in group_days.items():
         group = {'group': key, 'days': len(members)}
-        for horizon in (1, 3):
-            name = f'forward_{horizon}'
+        for name in _OUTCOMES:
             group[name] = _summary([row[name] for row in members if row[name] is not None])
         groups.append(group)
     return {
@@ -183,20 +213,30 @@ def calibrate_history(regime: pl.DataFrame, *, premiums: dict | None = None,
             'mode组只表示形态命中；complete_mode需完整输入，entry_observable另排除风险否决，不表示存在合格个股。',
             '完整输入要求当日全部规则指标及前日比较字段有效；指数统计要求核心四指数齐全，少于快照的部分指数研究样本。',
             '广度采用环境历史的上涨数与成交额/平均成交额推导样本数；溢价采用本地日线存储梯队，可能与环境历史的排除ST设置不同。',
+            'ew为次日全市场等权涨幅（剔除单日绝对涨跌超过35%的记录）；premium_1为次日昨日涨停股等权收盘涨幅，封板买不进，属于不可成交代理。',
+            'gate组来自本地zzshare情绪归档的逐日回放，只与更早交易日比较分位；供应商历史可能事后修订，未获时点认证。',
+            'split只按日期把各组拆成train/test两段，用于检查方向是否一致，不做阈值拟合。',
         ],
+        'split': split.isoformat() if split else None,
+        'sentiment_days': len(sentiment or {}),
     }
 
 
-def run_local_calibration(data_dir: Path, *, start: date, end: date | None = None) -> dict:
+def run_local_calibration(data_dir: Path, *, start: date, end: date | None = None,
+                          split: date | None = None) -> dict:
     """Explicit offline batch; bounded projections of existing normalized stores."""
     regime = load_regime_history(data_dir)
+    try:
+        sentiment = SentimentArchive(data_dir).rows() or None
+    except ValueError:
+        sentiment = None
     if regime.is_empty():
-        return calibrate_history(regime, start=start, end=end)
+        return calibrate_history(regime, start=start, end=end, sentiment=sentiment, split=split)
     if end:
         regime = regime.filter(pl.col('date') <= end)
     days = regime.sort('date')['date'].to_list()
     if not days:
-        return calibrate_history(regime, start=start, end=end)
+        return calibrate_history(regime, start=start, end=end, sentiment=sentiment, split=split)
 
     def read(directory: str, columns: list[str]) -> pl.DataFrame:
         paths = list((data_dir / directory).glob('**/*.parquet'))
@@ -210,4 +250,5 @@ def run_local_calibration(data_dir: Path, *, start: date, end: date | None = Non
     daily = read('kline_daily_enriched', ['date', 'symbol', 'close', 'consecutive_limit_ups'])
     index_daily = read('kline_index_daily', ['date', 'symbol', 'close'])
     return calibrate_history(regime, premiums=winner_premium(daily, days),
-                             indices=index_metrics(index_daily, days), start=start, end=end)
+                             indices=index_metrics(index_daily, days), start=start, end=end,
+                             sentiment=sentiment, split=split)

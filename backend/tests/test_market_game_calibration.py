@@ -127,3 +127,41 @@ def test_offline_readers_accept_old_schema_and_preserve_sources(tmp_path):
     assert report['status'] == 'ready'
     assert report['coverage']['previous_limit_premium'] == 0
     assert (root / 'part.parquet').read_bytes() == before
+
+
+def test_new_outcomes_quantiles_gate_groups_and_split():
+    frame = history(80)
+    days = frame['date'].to_list()
+    premiums = {day: {'previous_limit_premium': .02, 'ew_return': .001 * (i % 3)} for i, day in enumerate(days)}
+    entry = lambda level: {  # noqa: E731
+        'sentiment': {'up_count': 60, 'down_count': 40, 'lt5_count': level, 'mian_count': level,
+                      'damian_count': 0, 'limit_up': 20, 'limit_down': 2},
+        'effect': {'lose_effect': level, 'earn_effect': 50},
+    }
+    sentiment = {day.isoformat(): entry(i % 10) for i, day in enumerate(days[:-1])}
+    sentiment[days[-1].isoformat()] = entry(30)
+    result = calibrate_history(frame, premiums=premiums, sentiment=sentiment, split=days[40])
+    groups = {row['group']: row for row in result['groups']}
+    # After the 60-session warmup, levels 8/9 rank at ~85/95 and the spike at 100.
+    assert groups['gate:veto']['days'] == 4 and groups['gate:veto@test']['days'] == 4
+    assert groups['gate:unavailable']['days'] == 60  # fewer than 60 earlier sessions
+    assert groups['baseline@train']['days'] == 40 and groups['baseline@test']['days'] == 40
+    baseline = groups['baseline']
+    assert baseline['premium_1']['n'] == 79 and baseline['premium_1']['mean'] == pytest.approx(.02)
+    assert baseline['ew_1']['n'] == 79 and baseline['ew_3']['n'] == 77
+    assert baseline['forward_1']['p10'] == pytest.approx(.01)
+    assert result['observations'][-1]['gate'] == 'veto'
+    assert result['split'] == days[40].isoformat() and result['sentiment_days'] == 80
+    plain = calibrate_history(frame)
+    assert not any(row['group'].startswith('gate:') for row in plain['groups'])
+    assert plain['observations'][0]['gate'] is None
+
+
+def test_winner_premium_reports_equal_weight_return_without_extreme_rows():
+    days = history(2)['date'].to_list()
+    daily = pl.DataFrame({
+        'date': [days[0], days[1], days[0], days[1], days[0], days[1]],
+        'symbol': ['A', 'A', 'B', 'B', 'C', 'C'], 'close': [10., 11., 10., 9., 10., 20.],
+        'consecutive_limit_ups': [0, 0, 0, 0, 0, 0],
+    })
+    assert winner_premium(daily, days)[days[1]]['ew_return'] == pytest.approx(0)

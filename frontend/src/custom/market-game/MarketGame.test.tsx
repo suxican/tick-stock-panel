@@ -411,3 +411,50 @@ it('keeps the generation toolbar available after loading a report and allows man
   expect(conclusion.open).toBe(false)
   expect(conclusion.textContent).toContain('计划 plan-one：')
 })
+
+function sentiment(level: 'veto' | 'caution' | 'none', score: number | null): NonNullable<MarketGameReport['sentiment']> {
+  return {
+    version: 'sentiment-v1', source: 'zzshare', status: 'ready', as_of: '2026-09-30', fetched_at: '2026-09-30T17:00:00+08:00',
+    point_in_time: true, reason: '盘后情绪与亏钱效应门可用', sync: '已增量同步 zzshare 盘后情绪',
+    metrics: [
+      { id: 'earn_effect', label: '赚钱效应', unit: 'score', value: 50, percentile: 40, sample_size: 252 },
+      { id: 'lose_effect', label: '亏钱效应', unit: 'score', value: 14, percentile: 88, sample_size: 252 },
+      { id: 'loss_count', label: '面+大面+天地板', unit: 'count', value: 4, percentile: 70, sample_size: 252 },
+      { id: 'drop5_share', label: '跌超5%家数占比', unit: 'ratio', value: .0425, percentile: 65, sample_size: 252 },
+    ],
+    loss_gate: { score, level, components: ['loss_count', 'lose_effect', 'drop5_share'], caution: 60, veto: 80 },
+    cross_check: { status: 'matched', reason: '本地涨跌停家数与 zzshare 盘后统计在容差内一致', local_limit_up: 55, vendor_limit_up: 53, local_limit_down: 2, vendor_limit_down: 1 },
+    history: [{ date: '2026-09-29', loss_gate: 50, earn_effect: 60, lose_effect: 5 }, { date: '2026-09-30', loss_gate: score, earn_effect: 50, lose_effect: 14 }],
+    revisions: 0, limitations: ['赚钱/亏钱效应为供应商模型'],
+  }
+}
+
+it('shows one frozen sentiment line on the overview and full metrics on the psychology tab', async () => {
+  calls.analyze.mockResolvedValue({ ...report(), sentiment: sentiment('veto', 81) })
+  await render()
+  await click('生成盘后计划')
+  const strip = host.querySelector('[aria-label="短线情绪"]')!
+  expect(strip.textContent).toContain('亏钱效应')
+  expect(strip.textContent).toContain('分位 88')
+  expect(strip.textContent).toContain('亏钱门 81 分位：暂停新增')
+  expect(strip.textContent).not.toContain('跌超5%家数占比')  // secondary metrics stay off the overview
+  await click('情绪与心理')
+  const panel = host.querySelector('section[aria-label="短线情绪"]')!
+  expect(panel.textContent).toContain('81 分位 · 暂停新增')
+  expect(panel.textContent).toContain('4.25%')
+  expect(panel.querySelector('[data-chart]')?.textContent).toContain('亏钱门分位')
+})
+
+it('keeps legacy reports readable and states unavailable vendor sentiment plainly', async () => {
+  await render()
+  await click('生成盘后计划')
+  expect(host.querySelector('[aria-label="短线情绪"]')).toBeNull()
+  await click('情绪与心理')
+  expect(host.textContent).toContain('短线情绪未记录')
+  const unavailable = { ...sentiment('none', null), status: 'unavailable' as const, reason: 'zzshare 情绪归档未覆盖行情日期', metrics: [], history: [],
+    loss_gate: { score: null, level: 'unavailable' as const, components: [], caution: 60, veto: 80 } }
+  calls.analyze.mockResolvedValue({ ...report('plan-two'), sentiment: unavailable })
+  await click('博弈总览')
+  await click('生成盘后计划')
+  expect(host.querySelector('[aria-label="短线情绪"]')?.textContent).toContain('暂不可用：zzshare 情绪归档未覆盖行情日期')
+})

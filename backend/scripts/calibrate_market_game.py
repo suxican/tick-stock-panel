@@ -15,11 +15,13 @@ def main() -> None:
     parser.add_argument('--data-dir', type=Path, default=settings.data_dir)
     parser.add_argument('--start', type=date.fromisoformat, default=date(2020, 1, 1))
     parser.add_argument('--end', type=date.fromisoformat)
+    parser.add_argument('--split', type=date.fromisoformat,
+                        help='按该日期把各组拆成 train/test 两段，只用于检查方向一致性')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():
         parser.error('输出文件已存在，请使用新文件名')
-    report = run_local_calibration(args.data_dir, start=args.start, end=args.end)
+    report = run_local_calibration(args.data_dir, start=args.start, end=args.end, split=args.split)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('x', encoding='utf-8') as handle:
         json.dump(report, handle, ensure_ascii=False, indent=2, allow_nan=False)

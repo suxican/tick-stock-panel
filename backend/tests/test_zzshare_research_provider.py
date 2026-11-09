@@ -1,3 +1,5 @@
+from datetime import date
+
 import httpx
 import pytest
 
@@ -137,3 +139,89 @@ def test_invalid_request_does_not_reach_upstream(monkeypatch, kind, kwargs):
     with pytest.raises(ValueError):
         p.research(kind, D, **kwargs)
     assert not calls
+
+
+def _sentiment_row(day="2026-11-02", **updates):
+    row = {"date1": day, "up_num": 4553, "down_num": 762, "uplimit_num": 122, "uplimit_n_num": 117,
+           "downlimit_num": 8, "zb_num": 30, "fb_num": 2, "gt5_num": 611, "lt5_num": 42,
+           "max_lb_num": 6, "lb_2_num": 6, "lb_3_num": 3, "lb_h_num": 2, "second_lb_num": 4,
+           "mian_num": 3, "damian_num": 0, "tiandi_num": None, "ditian_num": 1, "bigleg_num": 32,
+           "max_lb_stocks": "001219", "max_lb_stock_names": "样本", "id": 2873}
+    return {**row, **updates}
+
+
+def test_sentiment_daily_maps_clear_counts_and_hides_ambiguous_fields(monkeypatch):
+    p, calls = source(monkeypatch, {"code": 20000, "data": [_sentiment_row("2026-11-03"), _sentiment_row()]})
+    rows = p.research("sentiment_daily", D, start="2026-11-02")
+    assert calls[0] == ("/v3/sentiment/data", {"date1": "20261102", "date2": "20261103"})
+    assert [r["trade_date"] for r in rows] == ["2026-11-02", "2026-11-03"]
+    assert rows[0]["limit_up"] == 122 and rows[0]["broken_limit"] == 30 and rows[0]["lt5_count"] == 42
+    assert rows[0]["mian_count"] == 3 and rows[0]["tiandi_count"] is None
+    assert not {"uplimit_n_num", "lb_h_num", "second_lb_num", "fb_num", "fb_count"} & set(rows[0])
+
+
+@pytest.mark.parametrize("bad", [
+    {"date1": "2026-11-04"}, {"up_num": -1}, {"mian_num": 1.5}, {"damian_num": None}, {"uplimit_num": True},
+])
+def test_sentiment_daily_rejects_out_of_range_or_invalid_counts(monkeypatch, bad):
+    p, _ = source(monkeypatch, {"code": 20000, "data": [_sentiment_row(**bad)]})
+    with pytest.raises(zz.ZzshareError):
+        p.research("sentiment_daily", D, start="2026-11-01")
+
+
+def test_sentiment_daily_rejects_duplicate_sessions(monkeypatch):
+    p, _ = source(monkeypatch, {"code": 20000, "data": [_sentiment_row(), _sentiment_row()]})
+    with pytest.raises(zz.ZzshareError):
+        p.research("sentiment_daily", D, start="2026-11-01")
+
+
+def test_effect_daily_filters_later_sessions_and_keeps_raw_outliers(monkeypatch):
+    rows = [{"date": "2026-11-02", "earn_effect": 87, "lose_effect": 923, "lb_high": 6, "zt_num": 125,
+             "dt_num": 6, "id": 1}, {"date": "2026-11-04", "earn_effect": 97, "lose_effect": 7,
+                                     "lb_high": 3, "zt_num": 118, "dt_num": 7, "id": 2}]
+    p, calls = source(monkeypatch, {"code": 20000, "data": rows})
+    got = p.research("effect_daily", D, start="2026-11-02")
+    assert calls[0] == ("/v3/api/sentiment/market/hot/day", {"date": "20261102"})
+    assert got == [{"trade_date": "2026-11-02", "earn_effect": 87, "lose_effect": 923,
+                    "max_boards": 6, "limit_up": 125, "limit_down": 6}]
+    rows[0]["date"] = "2026-11-01"
+    with pytest.raises(zz.ZzshareError):
+        p.research("effect_daily", D, start="2026-11-02")
+    rows[0].update(date="2026-11-02", lose_effect=-1)
+    with pytest.raises(zz.ZzshareError):
+        p.research("effect_daily", D, start="2026-11-02")
+
+
+def test_range_kinds_stay_off_the_public_research_route():
+    from typing import get_args
+
+    from app.services import zzshare_research
+
+    assert not {"sentiment_daily", "effect_daily"} & set(get_args(zzshare_research.ResearchKind))
+    with pytest.raises(ValueError):
+        zzshare_research.fetch_range("plates_rank", date(2026, 11, 1), date(2026, 11, 2))
+    with pytest.raises(ValueError):
+        zzshare_research.fetch_range("sentiment_daily", date(2026, 11, 3), date(2026, 11, 2))
+
+
+def test_fetch_range_passes_explicit_start_through_the_registered_plugin(monkeypatch):
+    from app.services import zzshare_research
+
+    seen = []
+
+    class Plugin:
+        def research(self, kind, day, **opts):
+            seen.append((kind, day, opts))
+            return [{"trade_date": day}]
+
+    monkeypatch.setattr(zzshare_research.custom_sources, "get_provider", lambda name: Plugin())
+    rows = zzshare_research.fetch_range("effect_daily", date(2019, 1, 1), date(2026, 11, 9))
+    assert rows == [{"trade_date": "2026-11-09"}]
+    assert seen == [("effect_daily", "2026-11-09", {"start": "2019-01-01"})]
+
+    def missing(name):
+        raise ValueError("not loaded")
+
+    monkeypatch.setattr(zzshare_research.custom_sources, "get_provider", missing)
+    with pytest.raises(zzshare_research.ResearchUnavailableError):
+        zzshare_research.fetch_range("sentiment_daily", date(2026, 11, 1), date(2026, 11, 9))

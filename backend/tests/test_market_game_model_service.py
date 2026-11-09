@@ -24,7 +24,11 @@ def service(tmp_path, monkeypatch):
     def forbidden_quotes():
         pytest.fail("core report generation must not collect optional overseas quotes")
     monkeypatch.setattr("app.services.market_game_overseas.collect_overseas_quotes", forbidden_quotes)
-    value = MarketGameService(SimpleNamespace(store=SimpleNamespace(data_dir=tmp_path)), data_dir=tmp_path)
+    def offline_sentiment(*args):
+        raise RuntimeError("offline test: no vendor sentiment")
+
+    value = MarketGameService(SimpleNamespace(store=SimpleNamespace(data_dir=tmp_path)), data_dir=tmp_path,
+                              sentiment_fetch=offline_sentiment)
     def forbidden_archives(**kwargs):
         pytest.fail("empty candidate reports must not scan ecology archives")
     monkeypatch.setattr(value.store, "ecology_snapshots", forbidden_archives)
@@ -38,6 +42,9 @@ def test_new_report_freezes_model_policy_but_does_not_change_allocation(tmp_path
     assert report["feedback_hypothesis"]["entry_authorized"] is False
     assert report["execution_policy"]["costs"]["account_equity"] == 1_000_000
     assert report["allocation"]["max"] == 0 and report["candidates"] == []
+    assert report["sentiment"]["status"] == "unavailable"
+    assert "暂不可用" in report["sentiment"]["sync"]
+    assert not value.sentiment_archive.path.exists()  # a failed sync never writes
     assert value.get_report(report["id"]) == report
     assert value.store.snapshot(report["id"])["input_version"] == report["input_version"]
 

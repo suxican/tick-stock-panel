@@ -5,10 +5,10 @@ import asyncio
 import hashlib
 import json
 import threading
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from app.market_time import cn_today
+from app.market_time import cn_now, cn_today
 from app.services.market_game_capital_service import CapitalBusyError, CapitalObservationService
 from app.services.market_game_ecology import analyze_ecology
 from app.services.market_game_evaluation import evaluate_observations
@@ -18,6 +18,13 @@ from app.services.market_game_model_service import MarketGameModelService, Model
 from app.services.market_game_models import GameReport, RiskConfig
 from app.services.market_game_plan import candidate_conditions, plan_validity
 from app.services.market_game_reports import MarketGameReportStore
+from app.services.market_game_sentiment import (
+    SAME_DAY_READY,
+    SentimentArchive,
+    apply_cross_check,
+    build_sentiment_context,
+    sync_with_budget,
+)
 
 
 class AnalysisBusyError(RuntimeError):
@@ -25,9 +32,12 @@ class AnalysisBusyError(RuntimeError):
 
 
 class MarketGameService:
-    def __init__(self, repo, *, data_dir: Path) -> None:
+    def __init__(self, repo, *, data_dir: Path, sentiment_fetch=None) -> None:
         self.repo = repo
         self.store = MarketGameReportStore(data_dir)
+        self.sentiment_archive = SentimentArchive(data_dir)
+        # Injected in tests; the default uses the zzshare plugin and degrades if absent.
+        self._sentiment_fetch = sentiment_fetch
         self._generation_guard = threading.Lock()
         self._generating = False
         self.capital_observations = CapitalObservationService(repo, self.store, data_dir)
@@ -46,8 +56,27 @@ class MarketGameService:
                 raise AnalysisBusyError("已有分析正在生成, 请稍后重试")
             self._generating = True
         try:
+            sync_reason = None
+            if as_of is None:
+                # Sync before the snapshot cutoff so fetched values are known at cutoff.
+                now = cn_now()
+                target = now.date() if now.time() >= SAME_DAY_READY else now.date() - timedelta(days=1)
+                sync_reason = sync_with_budget(self.sentiment_archive, target, fetch=self._sentiment_fetch)["reason"]
             snapshot = build_snapshot(self.repo, as_of)
+            try:
+                archive = self.sentiment_archive.load()
+            except ValueError as exc:
+                archive = {"rows": {}, "revisions": []}
+                sync_reason = str(exc)
+            sentiment = build_sentiment_context(
+                archive["rows"], as_of=snapshot["as_of"], cutoff=snapshot["cutoff"],
+                local_metrics=snapshot.get("metrics"), latest_mode=as_of is None,
+                sync_reason=sync_reason, revisions=archive["revisions"],
+            )
+            snapshot = apply_cross_check(snapshot, sentiment)
+            snapshot["sentiment"] = sentiment
             output = analyze_snapshot(snapshot, config)
+            output["sentiment"] = sentiment
             # Optional external observations remain available through explicit
             # capital refreshes; core plan generation needs only local signals.
             output["overseas"] = None
@@ -72,6 +101,12 @@ class MarketGameService:
                 "snapshot": snapshot["input_version"], "archives": snapshot["model_archive_versions"],
                 "ecology": output["ecology"], "feedback": output["feedback_hypothesis"],
                 "execution_policy": output["execution_policy"], "risk": config,
+                "sentiment": {
+                    "status": sentiment["status"], "as_of": sentiment["as_of"],
+                    "fetched_at": sentiment["fetched_at"], "loss_gate": sentiment["loss_gate"],
+                    "cross_check": sentiment["cross_check"]["status"],
+                    "quality": snapshot["quality"],
+                },
             }
             snapshot["input_version"] = hashlib.sha256(json.dumps(
                 model_inputs, ensure_ascii=False, sort_keys=True, allow_nan=False,

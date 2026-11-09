@@ -13,6 +13,7 @@ import { CapitalPanel } from './CapitalPanel'
 import { OverseasPanel } from './OverseasPanel'
 import { ModelPanel } from './ModelPanel'
 import { InfoTip } from './InfoTip'
+import { SentimentPanel, SentimentStrip } from './SentimentPanel'
 
 const button = 'inline-flex min-h-10 items-center justify-center gap-2 rounded-btn border border-border px-3 py-2 text-sm text-foreground transition-colors hover:bg-elevated focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50'
 const inputClass = 'min-h-10 rounded-btn border border-border bg-surface px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50'
@@ -223,6 +224,7 @@ function ReportBody({ report, view, onOpen }: { report: MarketGameReport; view: 
         {label === '周期' && (ladder || market.phase_basis) && <dd className="flex w-full items-center text-xs text-secondary">{ladder || '周期依据'}{market.phase_basis && <InfoTip title="周期依据" className="h-5 w-5"><p>{market.phase_basis}</p></InfoTip>}</dd>}
       </div>)}
     </dl>
+    {view === 'overview' && <SentimentStrip sentiment={report.sentiment} />}
 
     {view === 'overview' && <>
     <section aria-label="新增敞口与压力预算" className="rounded-card border border-border bg-surface/80 p-4">
@@ -261,6 +263,7 @@ function ReportBody({ report, view, onOpen }: { report: MarketGameReport; view: 
     </>}
 
     {view === 'psychology' && <>
+    <SentimentPanel key={`sentiment-${report.id}`} sentiment={report.sentiment} />
     <PsychologyPanel key={report.id} psychology={report.psychology} />
     <Section title="行为与博弈假设" tip={<p>把可观察事实、心理解释和另一种可能放在一起，避免把上涨或下跌自动解释为操纵。</p>}>
       <div className="divide-y divide-border">{report.hypotheses.map(hypothesis => <details key={hypothesis.id} open={hypothesis.status === 'matched'} className="py-1 first:pt-0">

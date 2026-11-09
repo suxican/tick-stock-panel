@@ -17,6 +17,7 @@ import polars as pl
 
 from app.services.market_game_models import RiskConfig
 from app.services.market_game_psychology import analyze_psychology
+from app.services.market_game_sentiment import sentiment_evidence, sentiment_facts
 from app.services.market_mainline import filter_mainline_members, score_mainline_frame
 from app.services.market_phase import (
     EBB_PROMO,
@@ -27,7 +28,7 @@ from app.services.market_phase import (
     RALLY_PROMO_ALT,
 )
 
-RULE_VERSION = "1.2.0"
+RULE_VERSION = "1.3.0"
 DEFAULT_RISK = RiskConfig().model_dump()
 MIN_REWARD_RISK = 1.0
 RESEARCH_COST_BUFFER = 0.003
@@ -131,7 +132,9 @@ def _market_state(current: dict, previous: dict) -> tuple[dict, dict]:
     )
     if breadth is None or median is None:
         phase, emotion = "待确认", "未知"
-    elif crowded_exit or ladder_contracting:
+    elif ladder_contracting:
+        # 1.3.0: crowding after heat is a review prompt, not a retreat label.
+        # Post-heat sessions were stronger than baseline in the 2019-2026 study.
         phase, emotion = "退潮", "转弱"
     elif repairing:
         phase, emotion = "修复", "修复"
@@ -150,6 +153,8 @@ def _market_state(current: dict, previous: dict) -> tuple[dict, dict]:
         phase, emotion = "主升", "分歧" if trend_pullback else "偏强"
     else:
         phase, emotion = "待确认", "中性"
+    if crowded_exit and phase not in {"退潮", "冰点"}:
+        emotion = "分歧"
     if phase in {"退潮", "冰点"}:
         panic_repair = trend_pullback = False
     if not comparable:
@@ -208,10 +213,11 @@ def _hypotheses(matches: dict, state: dict, facts: list[str]) -> list[dict]:
          ["板块强度及上涨广度保持，候选收复并守住触发参考区", "市场亏钱效应未扩散，开盘价格未超过触发上限"],
          ["板块由相对强势转为整体走弱", "个股破坏失效参考价，或市场跌停扩散"]),
         ("crowded_exit", "一致追涨后的兑现风险", matches["heat"],
-         "高热度叠加封板或溢价转弱，可能意味着追涨需求与退出供给开始失衡；暂停新增风险。",
+         "高热度叠加封板或溢价转弱，可能意味着追涨需求与退出供给开始失衡；提示复核追高与已有仓位的退出条件。"
+         "样本内研究显示放量普涨后的次日惯性仍在，单独出现时不暂停新增。",
          "热度也可能得到持续增量承接；仅凭高涨幅或放量，不能确认见顶或主力出货。",
          ["高热之后的负溢价或封板弱化持续", "复核已有仓位的原退出条件，不追入高开加速股票"],
-         ["板块扩散、封板和次日溢价恢复，撤销兑现风险假设", "新的有效快照重新满足其他模式，才重新分配风险"]),
+         ["板块扩散、封板和次日溢价恢复，撤销兑现风险假设", "亏钱效应门同时偏高时，才与之共同限制新增风险"]),
     )
     return [{
         "id": key, "title": title,
@@ -485,6 +491,12 @@ def analyze_snapshot(snapshot: dict, risk: dict | None = None) -> dict:
     if current["breadth_up"] is None or current["median_return"] is None:
         quality = "unavailable"
     state, matches = _market_state(current, previous)
+    sentiment = snapshot.get("sentiment") if isinstance(snapshot.get("sentiment"), dict) else None
+    gate = (sentiment or {}).get("loss_gate") or {}
+    gate_score = _number(gate.get("score"), 0, 100)
+    gate_level = gate.get("level") if gate_score is not None else "unavailable"
+    if gate_level == "veto":
+        state["risk_vetoes"].append(f"亏钱效应处于历史高位（综合分位 {gate_score:.0f}），暂停新增仓位")
     mode = "panic_repair" if matches["panic_repair"] else ("trend_pullback" if matches["trend_pullback"] else None)
     trend_cap = 0.4 * min(1, max(0, current["index_ret20"] or 0) / 0.04)
     cap = min(config["total_cap"], 0.2 if mode == "panic_repair" else trend_cap) if mode else 0.0
@@ -493,8 +505,9 @@ def analyze_snapshot(snapshot: dict, risk: dict | None = None) -> dict:
         cap = min(cap, 0.1)
     if quality == "limited":
         cap = min(cap, 0.1)
-    if (quality == "unavailable" or state["risk_vetoes"] or matches["crowded_exit"]
-            or state["phase"] in {"退潮", "冰点"}):
+    if gate_level == "caution":
+        cap = math.floor(cap * 0.5 * 1e6) / 1e6
+    if quality == "unavailable" or state["risk_vetoes"] or state["phase"] in {"退潮", "冰点"}:
         cap = 0.0
     stocks = _stocks(snapshot)
     all_sectors, members = _sectors(stocks, current["median_return"], snapshot.get("mainline_filter"),
@@ -511,8 +524,8 @@ def analyze_snapshot(snapshot: dict, risk: dict | None = None) -> dict:
         "数据不足，暂停生成新增仓位" if quality == "unavailable" else
         "短期指数显著转弱，风险否决优先于中期趋势，暂停新增仓位" if matches["short_index_risk"] else
         "昨日涨停股负溢价超过1%，风险否决成立，暂停新增仓位" if matches["loss_veto"] else
+        "亏钱效应处于历史高位，风险否决成立，暂停新增仓位" if gate_level == "veto" else
         "昨日强势股负反馈或退潮风险成立，封板率不能抵消，暂停新增仓位" if state["phase"] == "退潮" else
-        "一致兑现风险成立，暂停新增仓位并复核已有仓位退出条件" if matches["crowded_exit"] else
         "组合压力预算为零，暂停新增仓位" if config["portfolio_risk_budget"] == 0 else
         "仓位配置上限为零，暂停新增仓位" if any(config[key] == 0 for key in ("total_cap", "single_cap", "sector_cap")) else
         "没有同时满足模式、板块与交易资格的候选，新增仓位为零" if not candidates else
@@ -532,7 +545,13 @@ def analyze_snapshot(snapshot: dict, risk: dict | None = None) -> dict:
         "压力价只取已知5日高点；按触发上限和0.3%研究成本缓冲计算空间/结构损失比，至少1.0才观察，不代表预期收益",
         "趋势风险上限随指数20日正收益在0至4%区间线性增加至40%；全部数值待样本外验证",
         "组合压力损失为各候选仓位乘压力损失率的合计，另受独立预算限制；实际亏损仍可能超出",
+        "拥挤兑现只作复核提示，不单独暂停新增；亏钱效应门≥80分位暂停、60–80分位减半，阈值为样本内研究值",
     ])
+    if gate_level == "caution":
+        limitations.append(f"亏钱效应偏高（综合分位 {gate_score:.0f}），本期新增上限减半")
+    elif gate_level == "unavailable":
+        reason_text = (sentiment or {}).get("reason") or "未取得外部情绪数据"
+        limitations.append(f"亏钱效应门未生效：{reason_text}")
     if short_index_missing:
         limitations.append("指数当日或5日收益缺失，短期风险无法完整核验，新增敞口上限降为10%")
     if quality == "limited":
@@ -553,9 +572,9 @@ def analyze_snapshot(snapshot: dict, risk: dict | None = None) -> dict:
             "portfolio_risk_budget": config["portfolio_risk_budget"],
             "estimated_stress_loss": round(stress_loss, 9),
         },
-        "hypotheses": _hypotheses(matches, state, _facts(current, previous)),
+        "hypotheses": _hypotheses(matches, state, _facts(current, previous) + sentiment_facts(sentiment)),
         "scenarios": _scenarios(maximum), "sectors": sectors, "candidates": candidates,
-        "evidence": copy.deepcopy(snapshot.get("evidence") or []),
+        "evidence": copy.deepcopy(snapshot.get("evidence") or []) + sentiment_evidence(sentiment),
         "psychology": analyze_psychology(snapshot),
         "limitations": list(dict.fromkeys(limitations)), "rule_version": RULE_VERSION,
     }
