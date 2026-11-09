@@ -458,3 +458,15 @@ it('keeps legacy reports readable and states unavailable vendor sentiment plainl
   await click('生成盘后计划')
   expect(host.querySelector('[aria-label="短线情绪"]')?.textContent).toContain('暂不可用：zzshare 情绪归档未覆盖行情日期')
 })
+
+it('labels 1.4.0 candidates as an observation list and the cap as the market gate', async () => {
+  const saved = report()
+  calls.analyze.mockResolvedValue({ ...saved, rule_version: '1.4.0', allocation: { ...saved.allocation, max: 0 },
+    candidates: saved.candidates.map(item => ({ ...item, max_position: 0 })) })
+  await render()
+  await click('生成盘后计划')
+  expect(host.textContent).toContain('候选观察名单')
+  expect(host.textContent).not.toContain('短线趋势回踩候选')
+  expect(host.textContent).toContain('市场闸门上限')
+  expect(host.textContent).toContain('不分配')
+})

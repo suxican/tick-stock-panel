@@ -373,6 +373,63 @@ def _aggregate(frame: pl.DataFrame, indices: dict, days: list[date], denominator
     return rows
 
 
+def sector_member_counts(sectors: dict[str, list[str]]) -> dict[str, int]:
+    """Full mapped membership per group, keyed by bare stock code."""
+    members: dict[str, set[str]] = {}
+    for symbol, names in sectors.items():
+        for name in names:
+            members.setdefault(name, set()).add(symbol.split(".")[0])
+    return {name: len(codes) for name, codes in sorted(members.items())}
+
+
+def stock_rows(current: pl.DataFrame, sectors: dict[str, list[str]], target: date,
+               base_reasons: list[str]) -> list[dict]:
+    """Rule inputs for one session on the target day's raw price scale.
+
+    Shared by live snapshots and the offline replay so both apply the same
+    per-stock eligibility; snapshot-level reasons arrive via ``base_reasons``.
+    """
+    stocks = []
+    for row in current.sort("symbol").to_dicts() if not current.is_empty() else []:
+        symbol = row["symbol"]
+        names = sectors.get(symbol) or sectors.get(symbol.split(".")[0]) or []
+        scale = row["raw_close"] / row["close"]
+        span = row["raw_high"] - row["raw_low"]
+        is_st = "ST" in str(row.get("name") or "").upper()
+        listing_days = (target - row["listing_date"]).days + 1 if row.get("listing_date") else None
+        reasons = list(base_reasons)
+        if not names:
+            reasons.append("缺少当前板块映射")
+        if not row.get("name") or listing_days is None or listing_days < 60:
+            reasons.append("名称或上市历史不足")
+        if is_st or "退" in str(row.get("name") or ""):
+            reasons.append("风险警示或退市标记")
+        if row["history_days"] < 21:
+            reasons.append("连续有效历史少于21个观测交易日")
+        if row.get("signal_limit_up") is None or row.get("signal_limit_down") is None:
+            reasons.append("涨跌停状态无法确认")
+        if span <= 0:
+            reasons.append("一字价格无法确认可成交性")
+        if row.get("status", "").casefold() in {"delisted", "suspended", "inactive"}:
+            reasons.append("交易状态不允许")
+        stocks.append({
+            "symbol": symbol, "name": row.get("name") or symbol, "ref_close": row["raw_close"],
+            "raw_low": row["raw_low"], "ma5": row["ma5"] * scale if row.get("ma5") else None,
+            "ma20": row["ma20"] * scale if row.get("ma20") else None,
+            "ret5": row.get("momentum_5d"), "ret20": row.get("momentum_20d"),
+            "change_pct": row.get("change_pct"), "amount": row["amount"], "amount_ratio": row.get("amount_ratio"),
+            "atr_pct": row["atr_14"] / row["close"] if row.get("atr_14") is not None else None,
+            "close_location": (row["raw_close"] - row["raw_low"]) / span if span > 0 else None,
+            "drawdown5": row.get("drawdown5"), "limit_up": row.get("signal_limit_up"),
+            "boards": row.get("boards") if row.get("signal_limit_up") is not None else None,
+            "limit_down": row.get("signal_limit_down"), "one_price": span <= 0,
+            "listing_days": listing_days, "history_days": row["history_days"], "is_st": is_st,
+            "sector": names[0] if names else None, "sectors": names,
+            "eligible": not reasons, "exclusion_reasons": reasons,
+        })
+    return stocks
+
+
 def build_snapshot(repo, as_of: date | None = None) -> dict:
     """Read at most 280 sessions, with no network, refresh, or writes.
 
@@ -437,10 +494,6 @@ def build_snapshot(repo, as_of: date | None = None) -> dict:
 
     mainline_filter = get_mainline_filter_config()
     mainline_filter["blacklist"] = sorted(set(mainline_filter["blacklist"]))
-    sector_members: dict[str, set[str]] = {}
-    for symbol, names in sectors.items():
-        for name in names:
-            sector_members.setdefault(name, set()).add(symbol.split(".")[0])
     indices = _indices(repo, days, cutoff)
     coverage_frames = [source.select("symbol", "date") for source in (raw, frame)
                        if {"symbol", "date"} <= set(source.columns)]
@@ -507,52 +560,16 @@ def build_snapshot(repo, as_of: date | None = None) -> dict:
         limitations.append("核心指数日线不可用, 指数趋势指标缺失。")
     elif indices.get(target, {}).get("_index_count", 0) < len(CORE_INDEX_SYMBOLS):
         limitations.append("核心指数覆盖不足四只, 指数指标仅代表有数据的样本。")
-    stocks = []
-    for row in current.sort("symbol").to_dicts() if not current.is_empty() else []:
-        symbol = row["symbol"]
-        names = sectors.get(symbol) or sectors.get(symbol.split(".")[0]) or []
-        scale = row["raw_close"] / row["close"]
-        span = row["raw_high"] - row["raw_low"]
-        is_st = "ST" in str(row.get("name") or "").upper()
-        listing_days = (target - row["listing_date"]).days + 1 if row.get("listing_date") else None
-        reasons = []
-        if as_of:
-            reasons.append("历史交易资格未核验")
-        if quality == "unavailable":
-            reasons.append("市场数据不可用或过期")
-        if not calendar["verified"] or not calendar["future_verified"]:
-            reasons.append("独立日历及未来观察窗口未核验")
-        if not generation_verified:
-            reasons.append("复权数据发布代次未核验")
-        if not names:
-            reasons.append("缺少当前板块映射")
-        if not row.get("name") or listing_days is None or listing_days < 60:
-            reasons.append("名称或上市历史不足")
-        if is_st or "退" in str(row.get("name") or ""):
-            reasons.append("风险警示或退市标记")
-        if row["history_days"] < 21:
-            reasons.append("连续有效历史少于21个观测交易日")
-        if row.get("signal_limit_up") is None or row.get("signal_limit_down") is None:
-            reasons.append("涨跌停状态无法确认")
-        if span <= 0:
-            reasons.append("一字价格无法确认可成交性")
-        if row.get("status", "").casefold() in {"delisted", "suspended", "inactive"}:
-            reasons.append("交易状态不允许")
-        stocks.append({
-            "symbol": symbol, "name": row.get("name") or symbol, "ref_close": row["raw_close"],
-            "raw_low": row["raw_low"], "ma5": row["ma5"] * scale if row.get("ma5") else None,
-            "ma20": row["ma20"] * scale if row.get("ma20") else None,
-            "ret5": row.get("momentum_5d"), "ret20": row.get("momentum_20d"),
-            "change_pct": row.get("change_pct"), "amount": row["amount"], "amount_ratio": row.get("amount_ratio"),
-            "atr_pct": row["atr_14"] / row["close"] if row.get("atr_14") is not None else None,
-            "close_location": (row["raw_close"] - row["raw_low"]) / span if span > 0 else None,
-            "drawdown5": row.get("drawdown5"), "limit_up": row.get("signal_limit_up"),
-            "boards": row.get("boards") if row.get("signal_limit_up") is not None else None,
-            "limit_down": row.get("signal_limit_down"), "one_price": span <= 0,
-            "listing_days": listing_days, "history_days": row["history_days"], "is_st": is_st,
-            "sector": names[0] if names else None, "sectors": names,
-            "eligible": not reasons, "exclusion_reasons": reasons,
-        })
+    base_reasons = []
+    if as_of:
+        base_reasons.append("历史交易资格未核验")
+    if quality == "unavailable":
+        base_reasons.append("市场数据不可用或过期")
+    if not calendar["verified"] or not calendar["future_verified"]:
+        base_reasons.append("独立日历及未来观察窗口未核验")
+    if not generation_verified:
+        base_reasons.append("复权数据发布代次未核验")
+    stocks = stock_rows(current, sectors, target, base_reasons)
     metrics = next((row for row in history if row["date"] == target.isoformat()), {})
     previous = next((row for row in reversed(history) if row["date"] < target.isoformat()), {})
     result = _clean({
@@ -561,7 +578,7 @@ def build_snapshot(repo, as_of: date | None = None) -> dict:
         "data_generation": {"before": generation_before[1], "after": generation_after[1], "verified": generation_verified},
         "metadata_scope": "historical_unverified" if as_of else "current_observation",
         "mainline_filter": mainline_filter,
-        "sector_member_counts": {name: len(members) for name, members in sorted(sector_members.items())},
+        "sector_member_counts": sector_member_counts(sectors),
         "coverage": coverage, "history_days": len(days),
         "metrics": {key: metrics.get(key) for key in _METRICS},
         "previous": {key: previous.get(key) for key in _METRICS}, "history": history,

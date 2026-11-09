@@ -154,3 +154,17 @@ def test_crowded_exit_alone_is_a_prompt_not_a_retreat_or_zero_cap():
     assert report["allocation"]["total_cap"] == pytest.approx(0.2)
     assert "一致兑现" not in report["allocation"]["reason"]
     assert next(h for h in report["hypotheses"] if h["id"] == "crowded_exit")["status"] == "matched"
+
+
+def test_candidates_are_an_observation_list_without_new_exposure():
+    report = market_game.analyze_snapshot(_snapshot())
+    assert report["candidates"] and report["rule_version"] == "1.4.0"
+    assert all(row["max_position"] == 0 for row in report["candidates"])
+    assert all(market_game.OBSERVATION_NOTE in row["evidence"] for row in report["candidates"])
+    assert report["allocation"]["max"] == 0 and report["allocation"]["estimated_stress_loss"] == 0
+    assert report["allocation"]["total_cap"] == pytest.approx(0.4)  # the market gate stays visible
+    assert "观察名单" in report["allocation"]["reason"]
+    assert all(row["max_position"] == 0 for row in report["scenarios"])
+    from app.services.market_game_models import GameReport
+
+    GameReport.model_validate({**report, "cutoff": "2026-11-06T16:00:00+08:00", "input_version": "t"})

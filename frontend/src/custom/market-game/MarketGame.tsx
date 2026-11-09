@@ -120,7 +120,12 @@ function ReportWindow({ report }: { report: MarketGameReport }) {
   </div>
 }
 
-function Candidate({ candidate, onOpen }: { candidate: MarketGameCandidate; onOpen: () => void }) {
+function isObservationRule(version: string) {
+  const match = /^(\d+)\.(\d+)\./.exec(version)
+  return !!match && (Number(match[1]) > 1 || (Number(match[1]) === 1 && Number(match[2]) >= 4))
+}
+
+function Candidate({ candidate, onOpen, observation }: { candidate: MarketGameCandidate; onOpen: () => void; observation: boolean }) {
   const structured = !!candidate.conditions?.length
   const sizing = [
     ['压力情景跌幅', pct(candidate.stress_loss_pct)],
@@ -141,7 +146,7 @@ function Candidate({ candidate, onOpen }: { candidate: MarketGameCandidate; onOp
       <div><dt className="text-secondary">参考收盘价</dt><dd className="mt-1 font-mono">{price(candidate.reference_price)}</dd></div>
       <div><dt className="text-secondary">确认参考区间</dt><dd className="mt-1 font-mono">{price(candidate.trigger_low)} – {price(candidate.trigger_high)}</dd></div>
       <div><dt className="text-secondary">失效参考价</dt><dd className="mt-1 font-mono">{price(candidate.invalidation_price)}</dd></div>
-      <div><dt className="text-secondary">单股新增上限</dt><dd className="mt-1 font-mono">{pct(candidate.max_position)}</dd></div>
+      <div><dt className="text-secondary">单股新增上限</dt><dd className="mt-1 font-mono">{observation ? '不分配' : pct(candidate.max_position)}</dd></div>
     </dl>
     <details className="mt-2 text-sm">
       <summary className="min-h-10 cursor-pointer py-2 font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">查看依据、触发与退出</summary>
@@ -200,6 +205,8 @@ function EvidenceDetails({ report }: { report: MarketGameReport }) {
 
 function ReportBody({ report, view, onOpen }: { report: MarketGameReport; view: View; onOpen: (candidate: MarketGameCandidate) => void }) {
   const { allocation, market_state: market } = report
+  // 1.4.0 起候选未通过个股层回放验证，只作观察；旧报告保持原口径。
+  const observation = isObservationRule(report.rule_version)
   const vetoes = market.risk_vetoes ?? []
   // 后端原因链中风险否决优先于其他原因：存在否决时 allocation.reason 与否决列表重复，仅数据不可用时仍需单独说明。
   const showReason = !vetoes.length || report.quality === 'unavailable'
@@ -235,7 +242,7 @@ function ReportBody({ report, view, onOpen }: { report: MarketGameReport; view: 
       </InfoTip></h2>
       <div className="mt-2 flex flex-wrap items-end gap-x-8 gap-y-3">
         <div><p className="font-mono text-2xl font-semibold">{pct(allocation.min)} – {pct(allocation.max)}</p><p className="mt-1 text-xs text-secondary">占账户总资产，未扣除已有持仓</p></div>
-        <dl className="flex flex-wrap gap-x-6 gap-y-2 text-xs">{([['模型新增上限', allocation.total_cap], ['估算压力损失', allocation.estimated_stress_loss]] as const).map(([label, value]) => <div key={label}><dt className="text-secondary">{label}</dt><dd className="mt-1 font-mono text-sm">{pct(value)}</dd></div>)}</dl>
+        <dl className="flex flex-wrap gap-x-6 gap-y-2 text-xs">{([[observation ? '市场闸门上限' : '模型新增上限', allocation.total_cap], ['估算压力损失', allocation.estimated_stress_loss]] as const).map(([label, value]) => <div key={label}><dt className="text-secondary">{label}</dt><dd className="mt-1 font-mono text-sm">{pct(value)}</dd></div>)}</dl>
       </div>
       {vetoes.length > 0 && <section aria-label="新增风险限制" className="mt-3 border-t border-border pt-3 text-sm">
         <h3 className="mb-1 font-semibold text-amber-700 dark:text-warning">暂停新增仓位</h3>
@@ -243,8 +250,8 @@ function ReportBody({ report, view, onOpen }: { report: MarketGameReport; view: 
       </section>}
       {showReason && <p className="mt-3 max-w-prose text-xs leading-relaxed text-secondary">{allocation.reason}</p>}
     </section>
-    <Section title="短线趋势回踩候选" tip={<p>价格为报告生成时的参考值，须复核可交易性。个股详情展示当前数据，不是本报告时点的历史回放。</p>}>
-      {report.candidates.length ? <div className="divide-y divide-border">{report.candidates.map(candidate => <Candidate key={candidate.symbol} candidate={candidate} onOpen={() => onOpen(candidate)} />)}</div> : <p className="text-sm text-secondary">本计划没有可列出的候选。</p>}
+    <Section title={observation ? '候选观察名单' : '短线趋势回踩候选'} tip={<>{observation && <p>选股规则在 2020–2026 个股层回放中 3 日超额为负，名单只供观察，不分配仓位；市场闸门上限供其他打法参考。</p>}<p>价格为报告生成时的参考值，须复核可交易性。个股详情展示当前数据，不是本报告时点的历史回放。</p></>}>
+      {report.candidates.length ? <div className="divide-y divide-border">{report.candidates.map(candidate => <Candidate key={candidate.symbol} candidate={candidate} observation={observation} onOpen={() => onOpen(candidate)} />)}</div> : <p className="text-sm text-secondary">本计划没有可列出的候选。</p>}
     </Section>
     <Section title="板块观察">
       {report.sectors.length ? <div className="overflow-x-auto"><table className="w-full min-w-[480px] text-left text-sm">

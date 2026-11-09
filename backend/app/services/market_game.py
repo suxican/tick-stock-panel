@@ -28,7 +28,12 @@ from app.services.market_phase import (
     RALLY_PROMO_ALT,
 )
 
-RULE_VERSION = "1.3.0"
+RULE_VERSION = "1.4.0"
+# 1.4.0: the 2020-2026 stock-level replay (market_game_replay) found negative
+# 3-day excess returns for every mode, period and nearly every year. Candidates
+# stay listed as an observation list; the market gate cap remains the output.
+CANDIDATES_OBSERVATION_ONLY = True
+OBSERVATION_NOTE = "观察名单：选股规则在2020–2026个股层回放中3日超额为负，不分配新增仓位"
 DEFAULT_RISK = RiskConfig().model_dump()
 MIN_REWARD_RISK = 1.0
 RESEARCH_COST_BUFFER = 0.003
@@ -518,6 +523,10 @@ def analyze_snapshot(snapshot: dict, risk: dict | None = None) -> dict:
     # Reassign an overlapping membership to a retained sector before allocating.
     pool = _candidate_pool(stocks, sectors, mode, config) if cap > 0 else []
     candidates = _allocate(pool, risk_groups, cap, config)
+    if CANDIDATES_OBSERVATION_ONLY:
+        for row in candidates:
+            row["max_position"] = 0.0
+            row["evidence"].append(OBSERVATION_NOTE)
     maximum = round(sum(row["max_position"] for row in candidates), 6)
     stress_loss = sum(row["max_position"] * row["stress_loss_pct"] for row in candidates)
     reason = (
@@ -529,6 +538,8 @@ def analyze_snapshot(snapshot: dict, risk: dict | None = None) -> dict:
         "组合压力预算为零，暂停新增仓位" if config["portfolio_risk_budget"] == 0 else
         "仓位配置上限为零，暂停新增仓位" if any(config[key] == 0 for key in ("total_cap", "single_cap", "sector_cap")) else
         "没有同时满足模式、板块与交易资格的候选，新增仓位为零" if not candidates else
+        "候选仅作观察名单：选股规则未通过个股层回放验证，不分配新增仓位；市场闸门上限供其他打法参考"
+        if CANDIDATES_OBSERVATION_ONLY else
         "仓位下限为零；仅在下一交易日全部确认条件满足后，按单股、板块和压力损失预算分配"
     )
     limitations = list(snapshot.get("limitations") or [])
@@ -545,6 +556,7 @@ def analyze_snapshot(snapshot: dict, risk: dict | None = None) -> dict:
         "压力价只取已知5日高点；按触发上限和0.3%研究成本缓冲计算空间/结构损失比，至少1.0才观察，不代表预期收益",
         "趋势风险上限随指数20日正收益在0至4%区间线性增加至40%；全部数值待样本外验证",
         "组合压力损失为各候选仓位乘压力损失率的合计，另受独立预算限制；实际亏损仍可能超出",
+        "候选为观察名单，不分配仓位；模型上限只表示市场闸门允许的新增敞口，不针对名单内个股",
         "拥挤兑现只作复核提示，不单独暂停新增；亏钱效应门≥80分位暂停、60–80分位减半，阈值为样本内研究值",
     ])
     if gate_level == "caution":
