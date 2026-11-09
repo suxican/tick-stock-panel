@@ -220,7 +220,7 @@ function CandidateRow({ row, current, day, focused, canOrder, globalReasons, exp
       <td className={cn('px-3 py-2.5 tabular-nums', priceColorClass(row.price ? row.change_pct : null))}>{fmtPrice(row.price)}</td>
       <td className={cn('px-3 py-2.5 tabular-nums', priceColorClass(row.change_pct))}>{fmtPct(row.change_pct)}</td>
       <td className="px-3 py-2.5 tabular-nums">{pct(row.distance_to_limit_pct)}</td>
-      <td className="px-3 py-2.5"><PrioritySummary row={row} current={current} /></td>
+      <td className="min-w-40 px-3 py-2.5"><PrioritySummary row={row} current={current} /></td>
       <td className="px-3 py-2.5"><AttentionSummary context={row.attention_context} snapshotCurrent={current} /></td>
       <td className="min-w-40 max-w-52 px-3 py-2.5 leading-snug"><Conclusion row={row} current={current} stockReasons={stockReasons} globalOnly={globalOnly} /></td>
       <td className="whitespace-nowrap px-3 py-2.5">{row.can_buy ? <>

@@ -1,0 +1,15 @@
+/* Keep small financial figures readable on light surfaces without changing other pages. */
+html:not(.dark) .radar-page {
+  --accent: 221 83% 45%;
+  --bull: 0 72% 45%;
+  --bear: 158 79% 27%;
+  --warning: 28 85% 32%;
+  --danger: 0 72% 45%;
+}
+
+.radar-page summary,
+.radar-page button,
+.radar-page select,
+.radar-page input {
+  outline-offset: 3px;
+}

@@ -26,7 +26,7 @@ vi.mock('@tanstack/react-virtual', () => ({
 }))
 const draw = vi.hoisted(() => ({ chart: vi.fn(), points: vi.fn() }))
 vi.mock('lightweight-charts', () => ({
-  LineStyle: { Dashed: 2 }, createChart: draw.chart,
+  LineStyle: { Dashed: 2 }, LineSeries: {}, createChart: draw.chart,
 }))
 vi.mock('@/components/DatePicker', () => ({
   DatePicker: ({ onChange }: { onChange: (value: string) => void }) => <button onClick={() => onChange('2025-02-05')}>选取历史日</button>,
@@ -59,7 +59,7 @@ function official(date: string, cutoff?: string) {
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   vi.resetAllMocks()
-  draw.chart.mockReturnValue({ addLineSeries: () => ({ createPriceLine: vi.fn(), setData: draw.points }),
+  draw.chart.mockReturnValue({ addSeries: () => ({ createPriceLine: vi.fn(), setData: draw.points }),
     applyOptions: vi.fn(), remove: vi.fn(), timeScale: () => ({ fitContent: vi.fn() }) })
   calls.themes.mockImplementation(async date => model(date))
   calls.home.mockImplementation(async (date, cutoff) => official(date, cutoff))
@@ -97,9 +97,9 @@ it('保留个股插槽并注册独立入口，模型与供应商热榜分开且�
   expect(host.textContent).toContain('官方第一席')
   expect(host.textContent).not.toContain('候选内排名第一')
   expect(calls.themes).not.toHaveBeenCalled()
-  await click('供应商板块榜')
+  await click('供应商热榜')
   expect(host.textContent).toContain('供应商热榜第一')
-  await click('本地板块强度榜')
+  await click('本地强度')
   expect(calls.sync).not.toHaveBeenCalled()
   await click('计算题材排名')
   expect(calls.sync).toHaveBeenCalledWith(observed)
@@ -117,7 +117,7 @@ it('页签按需加载，龙虎榜按所选个股独立查询席位与历史', a
       : kind === 'ths_hot_top' ? [{ rank: 1, stock_name: '热门样本', stock_code: '000001', change_pct: 5.55 }] : [] }))
   await render()
   await click('选取历史日')
-  await click('供应商板块榜')
+  await click('供应商热榜')
   await click('行业')
   expect(calls.research).toHaveBeenLastCalledWith('plates_rank', observed, undefined, 14)
   await click('当前板块目录')
@@ -128,7 +128,7 @@ it('页签按需加载，龙虎榜按所选个股独立查询席位与历史', a
   await click('个股热榜')
   expect(host.textContent).toContain('+5.55%')
   expect(host.textContent).toContain('使用缓存')
-  await click('盘后龙虎榜')
+  await click('龙虎榜')
   expect(calls.research.mock.calls.map(([kind]) => kind)).not.toContain('lhb_detail')
   await click('席位')
   expect(calls.research).toHaveBeenLastCalledWith('lhb_detail', observed, '600000')
@@ -147,7 +147,7 @@ it('今日盘中已有已完成排名时，停留五分钟才重算；历史页�
   calls.status.mockResolvedValue({ is_trading_hours: true })
   calls.themes.mockImplementation(async date => model(date, true))
   await render()
-  await click('本地板块强度榜')
+  await click('本地强度')
   expect(host.textContent).toContain('盘中每 5 分钟重算')
   await act(async () => vi.advanceTimersByTimeAsync(299000))
   expect(calls.sync).not.toHaveBeenCalled()
@@ -161,7 +161,7 @@ it('今日盘中已有已完成排名时，停留五分钟才重算；历史页�
 it('错日和失败均不绘制旧榜单，仍可切换视图', async () => {
   calls.research.mockResolvedValue({ kind: 'plates_rank', date: '2001-01-01', rows: [{ plate_name: '过期榜单' }] })
   await render()
-  await click('供应商板块榜')
+  await click('供应商热榜')
   expect(host.textContent).toContain('数据与所选日期不一致')
   expect(host.textContent).not.toContain('过期榜单')
   calls.research.mockRejectedValue(new Error('行情服务不可用'))
@@ -182,6 +182,42 @@ it('官网席位保留官方顺序，含来源分、核心股、覆盖与历史�
   expect(host.textContent).toContain('10/11')
   await click('官网核心样本')
   expect(host.querySelector('[data-stock]')?.textContent).toBe('000001.SZ · ' + observed)
+})
+
+it('核心股先展示两只，展开后仍能按所选日打开其余标的且保留缺失值', async () => {
+  calls.home.mockImplementation(async date => {
+    const result = official(date)
+    const coreStocks = [...result.rows[0].core_stocks,
+      { symbol: '600000.SH', name: '第二只核心股', role: '来源角色二', change_pct: 2, price_yuan: null, core_score: 80 },
+      { symbol: '600001.SH', name: '第三只核心股', role: '来源角色三', change_pct: null, price_yuan: null, core_score: null },
+    ]
+    return { ...result, rows: result.rows.map((row, index) => index === 0 ? { ...row, core_stocks: coreStocks } : row) }
+  })
+  await render(); await click('选取历史日')
+  const card = host.querySelector('ol[aria-label="官网精选题材"] > li')!
+  const outsideDetails = [...card.querySelectorAll('button')].filter(button => !button.closest('details'))
+  expect(outsideDetails.map(button => button.textContent)).toEqual(['官网核心样本', '第二只核心股'])
+  const details = card.querySelector('details')!
+  expect(details.open).toBe(false)
+  await act(async () => details.querySelector('summary')!.click())
+  expect(details.open).toBe(true)
+  const extra = [...details.querySelectorAll('li')].find(li => li.textContent?.includes('第三只核心股'))!
+  expect(extra.textContent).toContain('来源角色三')
+  expect(extra.textContent).toContain('价格 — · 核心分 —')
+  await click('第三只核心股')
+  expect(host.querySelector('[data-stock]')?.textContent).toBe('600001.SH · ' + observed)
+})
+
+it.each(['stale', 'unavailable'])('折叠数据详情不会隐藏 %s 状态', async state => {
+  calls.home.mockImplementation(async date => ({ ...official(date),
+    stale: state === 'stale', state: state === 'unavailable' ? 'unavailable' : 'ready',
+    message: state === 'unavailable' ? '来源暂不可用，请稍后重试。' : '',
+  }))
+  await render()
+  const message = [...host.querySelectorAll('[role=status]')].find(el => el.textContent?.includes(state === 'stale' ? '沿用此前记录' : '来源暂不可用'))
+  expect(message).toBeDefined()
+  expect(message!.closest('details')).toBeNull()
+  expect([...host.querySelectorAll('details')].every(details => !details.open)).toBe(true)
 })
 
 async function selectPoint(value: string) {
@@ -256,7 +292,7 @@ it('本地前三与全部入围名称按日期和板块代码打开同一成分�
   calls.intraday.mockImplementation(async (_plate: string, date: string) => ({ date, status: 'empty', points: [] }))
   await render()
   await click('选取历史日')
-  await click('本地板块强度榜')
+  await click('本地强度')
   const names = [...host.querySelectorAll('button')].filter(b => b.textContent === '候选内排名第一')
   expect(names).toHaveLength(2)
   expect(calls.members).not.toHaveBeenCalled()
@@ -289,7 +325,7 @@ it('成员搜索、排序、等权分钟标签及个股跳转使用所选日，�
       points: [{ time: '09:31', sector: .001, market: -.001 }, { time: '09:32', sector: .002, market: 0 }] })
     client.setQueryData(QK.marketSnapshot, { as_of: '2026-11-04', rows: [{ symbol: '600000.SH', name: '次日错误名称', close: 99 }] })
     await render()
-    await click('选取历史日'); await click('本地板块强度榜'); await click('候选内排名第一')
+    await click('选取历史日'); await click('本地强度'); await click('候选内排名第一')
     await act(async () => { await vi.dynamicImportSettled() }); await settle()
     const dialog = host.querySelector<HTMLElement>('[role=dialog]')!
     const memberRows = () => [...dialog.querySelectorAll<HTMLButtonElement>('button[data-index]')]
@@ -323,7 +359,7 @@ it('成员返回其它日期时提示错误并跳过分时请求', async () => {
   calls.themes.mockImplementation(async date => model(date, true))
   calls.members.mockResolvedValue({ plate_code: 'A1', date: '2025-02-06', total: 1, rows: [{ symbol: '000001.SZ', name: '非所选日成员' }] })
   await render()
-  await click('选取历史日'); await click('本地板块强度榜'); await click('候选内排名第一')
+  await click('选取历史日'); await click('本地强度'); await click('候选内排名第一')
   await act(async () => { await vi.dynamicImportSettled() }); await settle()
   const dialog = host.querySelector('[role=dialog]')!
   expect(dialog.textContent).toContain('成分数据与所选题材或交易日不符')

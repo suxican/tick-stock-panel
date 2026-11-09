@@ -14,7 +14,7 @@ const badgeClass = 'inline-flex shrink-0 items-center whitespace-nowrap border p
 const neutralBadgeClass = 'border-border bg-elevated text-secondary'
 /*
  * 颜色只表达一类含义：红绿留给涨跌数值；蓝色表示正向信号或可操作；
- * 琥珀表示接近或触及涨停价（描边→实心逐级加强）；分类与数据状态一律用灰色。
+ * 琥珀表示接近或触及涨停价（描边→实心逐级加强）；常规数据状态用灰色。
  */
 export const positiveBadgeClass = 'border-accent/40 bg-accent/10 text-blue-700 dark:text-blue-300'
 const stateColors: Record<FirstBoardState, string> = {
@@ -30,11 +30,11 @@ const eventColors: Record<string, string> = {
   buy_candidate: positiveBadgeClass,
   exit_candidate: 'border-accent/50 bg-transparent text-blue-700 dark:text-blue-300',
 }
-// 形态只是分类，用中性描边；圆角与状态徽章区分。
+// 形态使用独立的分类色，圆角与状态徽章区分。
 const patternColors: Record<FirstBoardEvent['pattern'], string> = {
-  platform: 'border-border text-secondary',
-  trend: 'border-border text-secondary',
-  oversold: 'border-border text-secondary',
+  platform: 'border-violet-500/40 bg-violet-500/10 text-violet-800 dark:text-violet-300',
+  trend: 'border-cyan-500/40 bg-cyan-500/10 text-cyan-800 dark:text-cyan-300',
+  oversold: 'border-pink-500/40 bg-pink-500/10 text-pink-800 dark:text-pink-300',
   exit: neutralBadgeClass,
 }
 

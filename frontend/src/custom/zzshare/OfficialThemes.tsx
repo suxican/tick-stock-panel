@@ -7,7 +7,8 @@ import { cnDateFromUtc, cnDateTimeFromUtc, priceColorClass } from '@/lib/format'
 import type { OpenStock } from './ThemeRadar'
 
 type Seat = ZzshareHomeResult['rows'][number]
-const control = 'rounded-btn border border-border bg-base px-2 py-1.5 text-xs text-foreground focus-visible:outline-accent'
+const control = 'min-h-9 rounded-btn border border-border bg-surface px-2.5 py-1.5 text-sm text-foreground hover:bg-elevated focus-visible:outline-accent'
+const stockLink = 'text-sm font-medium text-foreground underline decoration-border underline-offset-4 hover:text-accent hover:decoration-accent focus-visible:outline-accent'
 
 function number(value: number | null | undefined, digits = 0) {
   return value == null || !Number.isFinite(value) ? '—' : value.toLocaleString('zh-CN', { maximumFractionDigits: digits })
@@ -34,42 +35,55 @@ function topicName(name: string) {
 }
 
 function SeatCard({ row, day, open }: { row: Seat; day: string; open: OpenStock }) {
+  function stocks(items: Seat['core_stocks'], detailed = false) {
+    return <ul className="divide-y divide-border/50">{items.map((stock, i) => <li key={(stock.symbol || stock.name) + i} className="py-2">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        {stock.symbol ? <button type="button" className={stockLink} onClick={() => open(stock.symbol!, stock.name, day)}>{stock.name}</button>
+          : <span className="text-sm font-medium">{stock.name}</span>}
+        {stock.role && <span className="text-xs text-secondary">{stock.role}</span>}
+        <span className={'ml-auto font-mono text-sm tabular-nums ' + priceColorClass(stock.change_pct)}>{percent(stock.change_pct)}</span>
+      </div>
+      {detailed && <p className="mt-1 text-xs text-secondary">价格 {stock.price_yuan == null ? '—' : stock.price_yuan.toFixed(2) + ' 元'} · 核心分 {number(stock.core_score, 2)}</p>}
+    </li>)}</ul>
+  }
   return <li className="flex min-w-0 flex-col rounded-lg border border-border bg-surface p-4">
-    <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs text-secondary">
-      <span>官网第 <strong className="font-mono text-xl font-semibold text-foreground">{row.rank}</strong> 席</span>
+    <div className="flex items-baseline justify-between gap-3">
+      <h3 title={row.name} className="min-w-0 flex-1 break-words text-lg font-semibold text-foreground">{topicName(row.name)}</h3>
+      <span className="shrink-0 text-xs text-secondary">第 <b className="font-mono text-sm text-foreground">{row.rank}</b> 席</span>
+    </div>
+    <div className="mt-1 flex flex-wrap items-baseline justify-between gap-2 text-xs text-secondary">
       <span>{row.scope === 'strategy' ? '策略池' : row.scope === 'all' ? '全池' : '范围未提供'}</span>
+      <span>综合分 <b className="font-mono text-sm font-medium text-foreground">{number(row.score, 2)}</b></span>
     </div>
-    <div className="mt-2 flex flex-wrap items-baseline justify-between gap-2">
-      <h3 title={row.name} className="break-words text-lg font-semibold text-foreground">{topicName(row.name)}</h3>
-      <span className="whitespace-nowrap text-xs text-secondary">综合分 <b className="text-base tabular-nums text-foreground">{number(row.score, 2)}</b></span>
-    </div>
-    <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-xs text-secondary">
-      <span>{movement(row)}</span><span>{streak(row)}</span>
-      {row.mainline_tag && <span className="text-accent">{row.mainline_tag}</span>}
-    </div>
-    <dl className="my-3 grid grid-cols-2 gap-x-3 gap-y-1.5 border-y border-border/60 py-3 text-xs">
-      <div><dt className="inline text-secondary">平均涨幅 </dt><dd className={'inline tabular-nums ' + priceColorClass(row.avg_change_pct)}>{percent(row.avg_change_pct)}</dd></div>
-      <div><dt className="inline text-secondary">有效/成分 </dt><dd className="inline tabular-nums">{number(row.valid_count)}/{number(row.member_count)}</dd></div>
-      <div><dt className="inline text-secondary">上涨 </dt><dd className="inline tabular-nums">{number(row.rising_count)} 只{row.rising_pct != null && `（${number(row.rising_pct, 1)}%）`}</dd></div>
-      <div><dt className="inline text-secondary">强势 </dt><dd className="inline tabular-nums">{number(row.strong_count)} 只</dd></div>
-      <div><dt className="inline text-secondary">涨停 / 跌停 </dt><dd className="inline tabular-nums">{number(row.limit_up_count)} / {number(row.limit_down_count)}</dd></div>
-      <div><dt className="inline text-secondary">持续性分 </dt><dd className="inline tabular-nums">{number(row.continuity_score, 2)}</dd></div>
+    <p className="mt-2 flex flex-wrap gap-x-2 gap-y-1 text-xs text-secondary">
+      <span className={row.new_entry ? 'text-accent' : ''}>{movement(row)}</span>
+      {!(row.new_entry && row.streak === 1) && <span>· {streak(row)}</span>}
+      {row.mainline_tag && <span title="来源提供的题材标签">· {row.mainline_tag}</span>}
+    </p>
+    <dl className="my-3 grid grid-cols-[1.2fr_1fr_.8fr] gap-2 border-y border-border/60 py-3">
+      <div><dt className="text-xs text-secondary">平均涨幅</dt><dd className={'mt-1 font-mono text-xl font-semibold tabular-nums ' + priceColorClass(row.avg_change_pct)}>{percent(row.avg_change_pct)}</dd></div>
+      <div><dt className="text-xs text-secondary">上涨比例</dt><dd className="mt-1 font-mono text-lg tabular-nums">{row.rising_pct == null ? '—' : number(row.rising_pct, 1) + '%'}</dd></div>
+      <div><dt className="text-xs text-secondary">涨停</dt><dd className="mt-1 font-mono text-lg tabular-nums">{number(row.limit_up_count)}<span className="ml-1 font-sans text-xs text-secondary">只</span></dd></div>
     </dl>
+    {((row.valid_count == null || row.member_count == null || row.valid_count < row.member_count) || (row.limit_down_count ?? 0) > 0) &&
+      <p className="mb-2 text-xs text-warning">
+        {row.valid_count == null || row.member_count == null ? '行情覆盖未提供' : row.valid_count < row.member_count ? `行情不完整 ${row.valid_count}/${row.member_count}` : ''}
+        {(row.limit_down_count ?? 0) > 0 && <span className="ml-2">跌停 {row.limit_down_count} 只</span>}
+      </p>}
     <h4 className="text-xs font-medium text-secondary">官网核心股</h4>
-    {row.core_stocks.length === 0 ? <p className="mt-1 text-xs text-secondary">来源暂未提供核心股。</p>
-      : <ul className="mt-1 divide-y divide-border/40">{row.core_stocks.map((stock, i) =>
-        <li key={(stock.symbol || stock.name) + i} className="py-1.5 text-xs">
-          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-            {stock.symbol ? <button type="button" className="text-sm font-medium text-accent hover:underline"
-              onClick={() => open(stock.symbol!, stock.name, day)}>{stock.name}</button> : <span className="text-sm font-medium">{stock.name}</span>}
-            {stock.role && <span className="text-secondary">{stock.role}</span>}
-            <span className={'ml-auto tabular-nums ' + priceColorClass(stock.change_pct)}>{percent(stock.change_pct)}</span>
-          </div>
-          <div className="mt-1 flex flex-wrap gap-x-3 text-secondary">
-            <span>价格 {stock.price_yuan == null ? '—' : stock.price_yuan.toFixed(2) + ' 元'}</span>
-            <span>核心分 {number(stock.core_score, 2)}</span>
-          </div>
-        </li>)}</ul>}
+    {row.core_stocks.length === 0 ? <p className="py-2 text-sm text-secondary">来源暂未提供核心股。</p> : stocks(row.core_stocks.slice(0, 2))}
+    <details className="mt-auto border-t border-border/60 pt-2 text-xs text-secondary">
+      <summary className="w-fit cursor-pointer py-1 text-accent focus-visible:outline-accent">题材详情{row.core_stocks.length > 2 ? ` · 全部 ${row.core_stocks.length} 只核心股` : ''}</summary>
+      <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2">
+        <div><dt className="inline">有效/成分 </dt><dd className="inline tabular-nums text-foreground">{number(row.valid_count)}/{number(row.member_count)}</dd></div>
+        <div><dt className="inline">上涨 </dt><dd className="inline text-foreground">{number(row.rising_count)} 只</dd></div>
+        <div><dt className="inline">强势 </dt><dd className="inline text-foreground">{number(row.strong_count)} 只</dd></div>
+        <div><dt className="inline">跌停 </dt><dd className="inline text-foreground">{number(row.limit_down_count)} 只</dd></div>
+        <div><dt className="inline">持续性分 </dt><dd className="inline text-foreground">{number(row.continuity_score, 2)}</dd></div>
+      </dl>
+      {row.new_entry && row.streak === 1 && <p className="mt-2">{streak(row)}</p>}
+      {row.core_stocks.length > 0 && <div className="mt-3">{stocks(row.core_stocks, true)}</div>}
+    </details>
   </li>
 }
 
@@ -110,10 +124,12 @@ export function OfficialThemes({ day, live, open }: { day: string; live: boolean
   const points = latest.data?.date === day ? latest.data.points.filter(p => cnDateFromUtc(p) === day) : []
   const listLabel = day === today ? '当日最新榜' : '官方历史日榜'
   return <section aria-labelledby="official-rank-title" className="space-y-3">
-    <div className="flex flex-wrap items-start justify-between gap-3">
-      <div>
-        <h2 id="official-rank-title" className="text-lg font-semibold">官网强势题材</h2>
-        <p className="mt-1 text-xs leading-relaxed text-secondary">按自在量化首页的席位顺序展示。{result?.selection_rule === 'shared_strategy_top2_plus_all_top1' ? '策略池选前两席，再从全池补一席。' : '综合分与入选范围一起阅读。'}</p>
+    <h2 id="official-rank-title" className="sr-only">官网强势题材</h2>
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-secondary">
+        <span className="font-medium text-foreground">{replay ? '实录回看' : day !== today ? '官方历史日榜' : result?.mode === 'intraday' ? '盘中榜' : '官方日榜'}</span>
+        {result && <span>行情快照 {result.market_snapshot_at || '未提供'}（北京）</span>}
+        {replay && cutoff && <span>截至 {cnDateTimeFromUtc(cutoff)}（北京）</span>}
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <label className="flex items-center gap-1.5 text-xs text-secondary">查看时点
@@ -139,30 +155,32 @@ export function OfficialThemes({ day, live, open }: { day: string; live: boolean
       {mismatch ? '榜单的日期或观测时间与所选时点不符，请刷新。' : query.error?.message}
     </p>}
     {result && <>
-      <div className="space-y-1 text-xs leading-relaxed text-secondary">
-        <p className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      {result.stale && <p role="status" className="text-sm text-warning">来源更新失败，沿用此前记录</p>}
+      <details className="text-xs leading-relaxed text-secondary">
+        <summary className="w-fit cursor-pointer py-1 focus-visible:outline-accent">数据详情与入选规则</summary>
+        <p className="mt-2">按自在量化首页的席位顺序展示。{result.selection_rule === 'shared_strategy_top2_plus_all_top1' ? '策略池选前两席，再从全池补一席。' : '综合分与入选范围一起阅读。'}</p>
+        <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
           <a href="https://quant.zizizaizai.com/home" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-accent hover:underline">自在量化官网<ExternalLink aria-hidden className="h-3 w-3" /></a>
           <span>{day} · {replay ? '截至 ' + cnDateTimeFromUtc(cutoff).slice(11) : result.mode === 'intraday' ? '盘中榜' : '官方日榜'}</span>
-          {result.stale && <strong className="text-warning">来源更新失败，沿用此前记录</strong>}
           {result.state === 'ready' && <span>已返回 {result.rows.length}/3 席 · 策略池 {number(result.strategy_candidate_count)} 个 · 全部候选 {number(result.candidate_count)} 个</span>}
           {result.previous_date && <span>名次对照日 {result.previous_date}</span>}
         </p>
         <p className="flex flex-wrap gap-x-3">
-          <span>行情快照 {result.market_snapshot_at || '—'}</span>
           <span>源计算 {cnDateTimeFromUtc(result.source_at) || '—'}</span>
           <span>本地采集 {cnDateTimeFromUtc(result.fetched_at) || '—'}（北京）</span>
         </p>
-      </div>
+        <p>交易时段服务约每 5 分钟记录一次。时点回看使用截止时间前的本地实录。</p>
+      </details>
+      {!replay && day !== today && <p className="text-xs text-secondary">历史日榜可能包含来源事后更新的结果；查看当时已知信息请切换到时点实录。</p>}
       {result.message && <p role="status" className={'text-xs leading-relaxed ' + (result.state === 'unavailable' ? 'text-warning' : 'text-secondary')}>{result.message}</p>}
       {result.state === 'ready' && result.rows.length > 0
         ? <>
-          <ol aria-label="官网精选题材" className="grid gap-3 md:grid-cols-3">{result.rows.map(row => <SeatCard key={row.tid} row={row} day={result.date} open={open} />)}</ol>
+          <ol aria-label="官网精选题材" className="grid items-start gap-3 lg:grid-cols-2 xl:grid-cols-3">{result.rows.map(row => <SeatCard key={row.tid} row={row} day={result.date} open={open} />)}</ol>
           {replay && <p className="text-xs text-secondary">核心股的价格取自本次实录。点击股票名称可查看以该交易日为终点的完整日 K。</p>}
         </>
         : <p className="rounded-lg border border-border px-4 py-6 text-center text-sm text-secondary">
           {result.state === 'ready' ? '该期官网榜单未选出题材。' : result.state === 'unavailable' ? '官网榜单暂不可用。' : replay ? '截至该时点没有可用的本地实录。' : '该交易日暂无官网榜单。'}
         </p>}
     </>}
-    <p className="text-xs leading-relaxed text-secondary">交易时段服务约每 5 分钟记录一次。时点回看使用截止时间前的本地实录。历史日榜可能包含来源事后更新的结果。</p>
   </section>
 }
