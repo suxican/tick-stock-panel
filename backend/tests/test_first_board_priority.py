@@ -193,13 +193,21 @@ def test_opening_minutes_and_unverifiable_approach_time_stay_unknown():
 
 
 def test_twenty_percent_boards_use_their_own_proximity_threshold():
-    candidate = row() | {"symbol": "300001.SZ", "distance_to_limit_pct": .03}
+    candidate = row() | {"symbol": "300001.SZ", "change_pct": .164, "distance_to_limit_pct": .03}
     default = priority(candidate)["parts"]["stock"]["points"]
     wide = priority(candidate, rules=FirstBoardRules(approaching_distance_20cm=.06))["parts"]["stock"]["points"]
     # 接近度 7.5→11.25(四舍五入到一位小数), 量比与时段分不变。
     assert default == pytest.approx(25.) and wide == pytest.approx(28.8)
     main = row() | {"distance_to_limit_pct": .03}
     assert priority(main, rules=FirstBoardRules(approaching_distance_20cm=.06))["parts"]["stock"]["points"] == default
+
+
+def test_twenty_percent_boards_use_their_own_minimum_change():
+    wide = row() | {"symbol": "688001.SH", "change_pct": .12}
+    assert priority(wide)["score"] is None and priority(wide)["reason"] == "尚未达到最低涨幅"
+    assert priority(wide, rules=FirstBoardRules(min_change_pct_20cm=.12))["score"] is not None
+    main = row() | {"change_pct": .06}
+    assert priority(main, rules=FirstBoardRules(min_change_pct_20cm=.20))["score"] is not None
 
 
 @pytest.mark.parametrize(("clock", "expected"), [

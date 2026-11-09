@@ -238,7 +238,8 @@ def test_bridge_excludes_incomplete_today_and_future_rows(registered, monkeypatc
     assert not hits.filter(pl.col("date") > today).height
 
 
-@pytest.mark.parametrize("params", [{"min_change_pct": .05}, {"min_amount": 1}, {"unknown": 1}])
+@pytest.mark.parametrize("params", [{"min_change_pct": .05}, {"min_change_pct_20cm": .13},
+                                    {"min_amount": 1}, {"unknown": 1}])
 def test_daily_helper_rejects_parameters_that_cannot_affect_research(params):
     with pytest.raises(ValueError, match="不支持这些参数"):
         filter_daily_pattern_history(_history("platform"), params, "platform")

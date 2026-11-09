@@ -6290,6 +6290,8 @@ export interface FirstBoardRules {
   /** 20% 涨跌幅限制股票(创业板注册制后、科创板)的距涨停门槛。 */
   approaching_distance_20cm: number
   min_change_pct: number
+  /** 20% 涨跌幅限制股票的盘中最低涨幅；同样涨幅下距涨停更远。 */
+  min_change_pct_20cm: number
   /** enriched 百分数值: 2 表示 2%, 与 change_pct 的小数制不同。 */
   min_turnover_rate: number
   max_turnover_rate: number

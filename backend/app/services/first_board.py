@@ -55,6 +55,7 @@ from app.strategy.first_board import (
     build_candidates,
     evaluate_candidates,
     meets_min_change,
+    min_change_threshold,
     required_history_bars,
 )
 
@@ -810,7 +811,8 @@ class FirstBoardService:
             attention = self._attention(rows, fresh, now, live)
             visible_symbols = {r["symbol"] for r in rows if r["symbol"] in times
                                and r["change_pct"] is not None
-                               and meets_min_change(r["change_pct"], config.rules.min_change_pct)}
+                               and meets_min_change(r["change_pct"],
+                                                   min_change_threshold(config.rules, r["symbol"], as_of))}
             try:
                 radar = self._radar.snapshot(visible_symbols, now=now, enabled=live)
             except Exception:  # noqa: BLE001 - optional radar must not disable the original buy gate
@@ -954,7 +956,8 @@ class FirstBoardService:
                 # 最低涨幅约束盘中列表; 完整观察池继续推进失效/炸板事件并保留研究分母。
                 # 无法计算涨幅的行保留数据无效原因, 不获得买入权限。
                 visible_rows = [row for row in rows if row["change_pct"] is None
-                                or meets_min_change(row["change_pct"], config.rules.min_change_pct)]
+                                or meets_min_change(row["change_pct"],
+                                                    min_change_threshold(config.rules, row["symbol"], as_of))]
                 previous_sampling = self._snapshot.get("attention_sampling", {})
                 self._snapshot = {
                     "status": status, "message": message, "as_of": str(as_of), "observed_at": now.isoformat(),

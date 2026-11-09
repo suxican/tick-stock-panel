@@ -9,7 +9,12 @@ import math
 from datetime import datetime
 
 from app.market_time import CN_TZ
-from app.strategy.first_board import FirstBoardRules, approaching_distance, meets_min_change
+from app.strategy.first_board import (
+    FirstBoardRules,
+    approaching_distance,
+    meets_min_change,
+    min_change_threshold,
+)
 
 RULE_VERSION = "priority-v2"
 # 归档与回放仍需识别旧版评分; 新版本追加在末尾, 顺序即新旧顺序。
@@ -195,7 +200,8 @@ def candidate_priority(row: dict, *, rules: FirstBoardRules, radar: dict | None,
         result.update(status="blocked", reason="原有行情、环境、行业或风险门槛未通过")
         return result
     change = row.get("change_pct")
-    if not _finite(change) or not meets_min_change(change, rules.min_change_pct):
+    threshold = min_change_threshold(rules, str(row.get("symbol") or ""), now.date())
+    if not _finite(change) or not meets_min_change(change, threshold):
         result["reason"] = "尚未达到最低涨幅"
         return result
     stock = _stock(row, rules, now)

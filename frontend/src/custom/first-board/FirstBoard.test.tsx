@@ -32,7 +32,7 @@ function config(): FirstBoardConfig {
     exit_profit_pct: null, exit_hold_limit_up: false, feedback_gate: false, feedback_min_mean_change: 0, feedback_min_up_ratio: .5,
     rules: { universe: 'main_board_non_st', lookback_days: 10, enabled_patterns: ['platform', 'trend', 'oversold'], min_history_days: 60,
       platform_window: 20, platform_max_range: .18, platform_near_high: .08, trend_window: 20, trend_min_return: .03,
-      trend_max_return: .4, oversold_window: 60, oversold_min_drawdown: .25, approaching_distance: .03, approaching_distance_20cm: .03, min_change_pct: .05,
+      trend_max_return: .4, oversold_window: 60, oversold_min_drawdown: .25, approaching_distance: .03, approaching_distance_20cm: .03, min_change_pct: .05, min_change_pct_20cm: .13,
       min_turnover_rate: 2, max_turnover_rate: 30, min_amount: 50_000_000 } }
 }
 function snapshot(): FirstBoardSnapshot {
@@ -990,7 +990,7 @@ it('keeps legacy universe explicit and saves expanded scope with a 20 percent th
   expect(select.value).toBe('main_board_non_st')
   expect([...host.querySelectorAll('li')].some(item => item.textContent?.includes('沪深主板（非 ST）'))).toBe(true)
   await act(async () => { select.value = 'hs_a_non_st'; select.dispatchEvent(new Event('change', { bubbles: true })) })
-  await numberInput('盘中最低涨幅', '20')
+  await numberInput('10% 涨跌幅股票盘中最低涨幅', '20')
   await click('保存为新版本')
   const saved = calls.firstBoardSaveConfig.mock.calls[0][0]
   expect(saved.rules.universe).toBe('hs_a_non_st')
@@ -1051,7 +1051,7 @@ it('explains disabled and empty monitor states', async () => {
 })
 it('converts displayed percentages and 万元 to exact backend units before saving', async () => {
   await render('rules')
-  await numberInput('盘中最低涨幅', '6')
+  await numberInput('10% 涨跌幅股票盘中最低涨幅', '6')
   await numberInput('最低成交额', '6000')
   await click('保存为新版本')
   const saved = calls.firstBoardSaveConfig.mock.calls[0][0]
@@ -1069,6 +1069,7 @@ it('saves the 20% threshold, feedback gate and optional exits in backend units',
   await render('rules')
   expect(host.textContent).not.toContain('昨日首板今日平均涨幅下限')
   await numberInput('20% 涨跌幅股票距涨停价最多', '5')
+  await numberInput('20% 涨跌幅股票盘中最低涨幅', '12')
   await toggle('要求昨日首板反馈达标')
   expect(host.textContent).toContain('样本少于 10 只')
   await numberInput('昨日首板今日平均涨幅下限', '-1')
@@ -1077,7 +1078,7 @@ it('saves the 20% threshold, feedback gate and optional exits in backend units',
   await toggle('涨停时暂缓定时与盈利退出')
   await click('保存为新版本')
   const saved = calls.firstBoardSaveConfig.mock.calls[0][0]
-  expect(saved.rules).toMatchObject({ approaching_distance: .03, approaching_distance_20cm: .05 })
+  expect(saved.rules).toMatchObject({ approaching_distance: .03, approaching_distance_20cm: .05, min_change_pct: .05, min_change_pct_20cm: .12 })
   expect(saved).toMatchObject({ feedback_gate: true, feedback_min_mean_change: -.01, feedback_min_up_ratio: .6, exit_profit_pct: .05, exit_hold_limit_up: true })
 })
 it('clears an existing take-profit exit and hides feedback thresholds once the gate is off', async () => {

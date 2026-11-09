@@ -115,6 +115,20 @@ def test_snapshot_minimum_change_includes_exact_boundary_despite_float_rounding(
     assert service.snapshot()["rows"][0]["change_pct"] == pytest.approx(.05)
 
 
+@pytest.mark.parametrize(("price", "expected_count"), [(11.0, 0), (11.29, 0), (11.3, 1), (11.6, 1)])
+def test_snapshot_minimum_change_uses_twenty_percent_threshold(service, monkeypatch, price, expected_count):
+    prepare = service._prepare
+
+    def prepare_chinext(*args):
+        prepare(*args)
+        service._candidates = service._candidates.with_columns(symbol=pl.lit("300001.SZ"))
+
+    monkeypatch.setattr(service, "_prepare", prepare_chinext)
+    service.process_snapshot(quotes(symbol="300001.SZ", raw_close=price, close=price, raw_high=price,
+                                    limit_up_price=11.995), NOW.date(), now=NOW)
+    assert service.snapshot()["coverage"]["candidate_count"] == expected_count
+
+
 def test_minimum_change_config_refresh_and_restart(service, monkeypatch):
     service.process_snapshot(quotes(), NOW.date(), now=NOW)
     config = service.get_config()

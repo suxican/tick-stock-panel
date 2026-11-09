@@ -51,6 +51,7 @@ class FirstBoardRules(BaseModel):
     approaching_distance: float = Field(default=0.03, ge=0, le=0.10)
     approaching_distance_20cm: float = Field(default=0.03, ge=0, le=0.20)
     min_change_pct: float = Field(default=0.05, ge=0, le=0.20)
+    min_change_pct_20cm: float = Field(default=0.13, ge=0, le=0.20)
     min_turnover_rate: float = Field(default=2.0, ge=0, le=100)
     max_turnover_rate: float = Field(default=30.0, gt=0, le=100)
     min_amount: float = Field(default=50_000_000.0, ge=0, le=1e12)
@@ -302,10 +303,20 @@ def first_board_limit_pct(symbol: str, trade_date: date) -> float:
     return price_limit_pct(symbol, trade_date)
 
 
+def _twenty_percent_board(symbol: str, trade_date: date) -> bool:
+    return first_board_limit_pct(symbol, trade_date) > MAIN_BOARD_LIMIT + 1e-9
+
+
 def approaching_distance(rules: FirstBoardRules, symbol: str, trade_date: date) -> float:
     """临近涨停门槛按当日涨跌幅制度取值, 20% 限价板块单独设置。"""
-    wide = first_board_limit_pct(symbol, trade_date) > MAIN_BOARD_LIMIT + 1e-9
+    wide = _twenty_percent_board(symbol, trade_date)
     return rules.approaching_distance_20cm if wide else rules.approaching_distance
+
+
+def min_change_threshold(rules: FirstBoardRules, symbol: str, trade_date: date) -> float:
+    """盘中最低涨幅按当日涨跌幅制度取值: 同样 5% 涨幅, 20% 板块距涨停远得多。"""
+    wide = _twenty_percent_board(symbol, trade_date)
+    return rules.min_change_pct_20cm if wide else rules.min_change_pct
 
 
 def first_board_limit_price(symbol: str, trade_date: date, previous: float | None, *,
@@ -433,7 +444,7 @@ def evaluate_candidates(
             reasons = []
             if adjusted <= candidate["breakout_price"]:
                 reasons.append("尚未突破历史形态参考高点")
-            if not meets_min_change(change, rules.min_change_pct):
+            if not meets_min_change(change, min_change_threshold(rules, symbol, as_of)):
                 reasons.append("涨幅未达到实验门槛")
             if distance > approaching_distance(rules, symbol, as_of):
                 reasons.append("距离涨停仍超过实验门槛")
@@ -460,6 +471,7 @@ def pattern_strategy_meta(pattern: Pattern) -> dict:
         "oversold_window": "超跌观察窗口", "oversold_min_drawdown": "超跌最小回撤(比例)",
         "approaching_distance": "距涨停上限(比例)",
         "approaching_distance_20cm": "20%涨跌幅板块距涨停上限(比例)", "min_change_pct": "最低涨幅(比例)",
+        "min_change_pct_20cm": "20%涨跌幅板块最低涨幅(比例)",
         "min_turnover_rate": "最低换手率(%)", "max_turnover_rate": "最高换手率(%)",
         "min_amount": "最低成交额(元)",
     }

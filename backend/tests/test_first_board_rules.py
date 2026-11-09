@@ -119,6 +119,27 @@ def test_historical_chinext_before_reform_uses_main_board_distance():
     assert evaluate_candidates(candidates("300001.SZ"), rows, rules, as_of=day, historical=True)[0]["state"] == "watch"
 
 
+@pytest.mark.parametrize("symbol", ["300001.SZ", "688001.SH"])
+def test_twenty_percent_boards_use_separate_minimum_change(symbol):
+    # 涨幅 10%: 满足 10% 板块门槛, 但距 20% 涨停仍远。
+    rows = pl.DataFrame([quote(symbol=symbol, raw_close=11.0, close=5.5, raw_high=11.0, limit_up_price=11.995)])
+    loose = FirstBoardRules(approaching_distance_20cm=.10)
+    row = evaluate_candidates(candidates(symbol), rows, loose, as_of=DAY)[0]
+    assert row["state"] == "watch" and row["reasons"] == ["涨幅未达到实验门槛"]
+    lowered = loose.model_copy(update={"min_change_pct_20cm": .10})
+    assert evaluate_candidates(candidates(symbol), rows, lowered, as_of=DAY)[0]["state"] == "approaching"
+
+
+def test_ten_percent_boards_ignore_twenty_percent_minimum_change():
+    strict = FirstBoardRules(min_change_pct_20cm=.20)
+    assert evaluate_candidates(candidates(), pl.DataFrame([quote()]), strict, as_of=DAY)[0]["state"] == "approaching"
+    day = date(2020, 8, 21)
+    legacy = quote(symbol="300001.SZ", date=day, raw_close=10.6, close=5.3, raw_high=10.6, limit_up_price=10.995)
+    rules = FirstBoardRules(approaching_distance=.04)
+    row = evaluate_candidates(candidates("300001.SZ"), pl.DataFrame([legacy]), rules, as_of=day, historical=True)[0]
+    assert row["state"] == "approaching"
+
+
 @pytest.mark.parametrize("updates", [
     {"date": DAY - timedelta(days=1)}, {"symbol": "830001.BJ"}, {"name": "*ST测试"},
     {"raw_close": None}, {"close": None}, {"raw_high": 10.0}, {"raw_high": 11.5},
