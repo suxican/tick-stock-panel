@@ -824,7 +824,8 @@ class FirstBoardService:
             peer_sectors = evaluate_sector_peers(fresh, self._sectors, {row["symbol"] for row in rows})
             attention = self._attention(rows, fresh, now, live)
             try:
-                roles = classify_roles(fresh, self._attention_data.groups, self._float_shares,
+                # 盯盘时只用新鲜报价; 非盯盘时段沿用页面展示的最近行情标注角色, 此时不会触发买入或事件。
+                roles = classify_roles(fresh if live else current, self._attention_data.groups, self._float_shares,
                                        {row["symbol"] for row in rows}, core_top_n=config.core_top_n)
             except Exception:  # noqa: BLE001 - 角色未知时按待确认阻断, 不放行
                 logger.warning("首板龙头/中军判定失败", exc_info=True)

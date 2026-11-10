@@ -219,7 +219,7 @@ function CandidateRow({ row, current, day, focused, canOrder, globalReasons, exp
     <tr data-candidate-row className={cn('border-t border-border align-top transition-colors hover:bg-elevated/40', highlight && 'bg-accent/5')}>
       <td className={cn('py-2.5 pl-3 pr-3', highlight && 'shadow-[inset_3px_0_0_0_hsl(var(--accent))]')}>
         <div className="flex items-start gap-1">
-          <button className="text-left font-medium hover:underline focus-visible:outline focus-visible:outline-accent" onClick={() => onOpen(row.symbol, row.name)}>{row.name}{board && <span className={`ml-1 shrink-0 inline-flex items-center justify-center w-[18px] h-[18px] rounded text-[9px] font-bold leading-none border ${board.color}`}>{board.label}</span>}</button>
+          <button className="whitespace-nowrap text-left font-medium hover:underline focus-visible:outline focus-visible:outline-accent" onClick={() => onOpen(row.symbol, row.name)}>{row.name}{board && <span className={`ml-1 shrink-0 inline-flex items-center justify-center w-[18px] h-[18px] rounded text-[9px] font-bold leading-none border ${board.color}`}>{board.label}</span>}</button>
           <RoleTags row={row} />
           <button type="button" aria-pressed={focused} aria-label={`${focused ? '取消关注' : '特别关注'} ${row.name} ${row.symbol}`} title={focused ? '取消关注' : '特别关注并优先显示'}
             className={cn('-my-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded focus-visible:outline focus-visible:outline-accent', focused ? 'text-accent' : 'text-muted hover:text-foreground')}

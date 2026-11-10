@@ -753,3 +753,16 @@ def test_alerted_stock_that_loses_leadership_stays_visible_and_blocked(service, 
     assert row["can_buy"] is False
     assert any("不属于所选角色" in reason for reason in row["blocked_reasons"])
     assert [event["event_type"] for event in published] == ["buy_candidate", "approaching"]
+
+def test_closed_session_labels_roles_from_latest_displayed_quotes(service, monkeypatch):
+    _role_service(service, monkeypatch, None)
+    closed = NOW.replace(hour=18)
+    monkeypatch.setattr(fb, "_now", lambda: closed)
+    last = closed.replace(hour=15)  # 收盘后报价已超过有效时间
+    frame = pl.concat([quotes(now=last), *[quotes(now=last, symbol=symbol, change_pct=.0, amount=1e9)
+                                             for symbol in ROLE_PEERS]])
+    service.process_snapshot(frame, closed.date(), now=closed)
+    row = service.snapshot()["rows"][0]
+    assert row["can_buy"] is False
+    assert row["stock_role"]["leader"] is True
+    assert service.events(closed.date()) == []
