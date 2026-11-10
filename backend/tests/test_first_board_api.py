@@ -75,7 +75,7 @@ def test_snapshot_filters_minimum_change_and_applies_saved_revision(client, monk
     assert snapshot["revision"] == saved["revision"]
     assert {row["symbol"] for row in snapshot["rows"]} == {"600002.SH", "600003.SH"}
     assert snapshot["coverage"] == {
-        "candidate_count": 2, "symbol_count": 2, "quote_count": 4, "fresh_count": 4,
+        "candidate_count": 2, "symbol_count": 2, "quote_count": 4, "fresh_count": 4, "role_hidden_count": 0,
     }
 
     response = client.put("/api/first-board/config", json={
@@ -94,7 +94,7 @@ def test_snapshot_filters_minimum_change_and_applies_saved_revision(client, monk
     assert refreshed["revision"] == revision
     assert [row["symbol"] for row in refreshed["rows"]] == ["600003.SH"]
     assert refreshed["coverage"] == {
-        "candidate_count": 1, "symbol_count": 1, "quote_count": 4, "fresh_count": 4,
+        "candidate_count": 1, "symbol_count": 1, "quote_count": 4, "fresh_count": 4, "role_hidden_count": 0,
     }
 
 

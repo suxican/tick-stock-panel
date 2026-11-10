@@ -6342,6 +6342,27 @@ export interface FirstBoardConfig {
   feedback_gate: boolean
   feedback_min_mean_change: number
   feedback_min_up_ratio: number
+  /** null 表示观察全部个股；否则只观察命中任一所选角色的个股。旧后端缺省。 */
+  stock_roles?: FirstBoardStockRole[] | null
+  /** 中军：板块内流通市值或成交额排名前 N。 */
+  core_top_n?: number
+}
+export type FirstBoardStockRole = 'leader' | 'core'
+export interface FirstBoardRoleMatch {
+  id: string
+  kind: 'industry' | 'concept'
+  name: string
+  change_rank: number | null
+  cap_rank: number | null
+  amount_rank: number | null
+  roles: FirstBoardStockRole[]
+}
+/** leader/core 为 null 表示板块行情或股本覆盖不足，角色待确认。 */
+export interface FirstBoardRole {
+  leader: boolean | null
+  core: boolean | null
+  matches: FirstBoardRoleMatch[]
+  reason: string
 }
 export interface FirstBoardAttentionGroup {
   id: string
@@ -6432,6 +6453,7 @@ export interface FirstBoardCandidate {
   sector: string | null
   sector_confirmation?: { reason?: string; confirmed?: boolean; member_count?: number; count?: number; coverage?: number }
   attention_context?: FirstBoardAttention
+  stock_role?: FirstBoardRole
   priority_score?: FirstBoardPriority
   last_priority?: { score: number; known_max: number; as_of: string; status: string; version: string; source?: 'event' } | null
   suggested_amount: number | null
@@ -6566,7 +6588,8 @@ export interface FirstBoardSnapshot {
   attention_sampling?: FirstBoardAttentionSampling
   yesterday_feedback?: FirstBoardFeedback
   environment: { date?: string | null; state?: string | null; label?: string; allowed: boolean; reason?: string }
-  coverage: { candidate_count: number; symbol_count: number; quote_count: number; fresh_count: number }
+  /** role_hidden_count：因不属于所选角色而未列出的股票数，旧后端缺省。 */
+  coverage: { candidate_count: number; symbol_count: number; quote_count: number; fresh_count: number; role_hidden_count?: number }
   limitations: string[]
   paper: { initialized: boolean; account_id?: string; holdings?: PaperHolding[]; stats?: { rounds: number; win_rate: number | null; realized_pnl?: number | null; profit_loss_ratio?: number | null; avg_holding_days?: number | null }; note?: string }
 }

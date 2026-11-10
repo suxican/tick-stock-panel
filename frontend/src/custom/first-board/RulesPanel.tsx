@@ -1,6 +1,6 @@
 import type { FormEvent } from 'react'
-import type { FirstBoardConfig, FirstBoardRules, PaperAccountSummary } from '@/lib/api'
-import { buttonClass, ErrorNotice, inputClass, marketStates, Notice, panelClass, patternLabels, stamp, universeLabels } from './shared'
+import type { FirstBoardConfig, FirstBoardRules, FirstBoardStockRole, PaperAccountSummary } from '@/lib/api'
+import { buttonClass, ErrorNotice, inputClass, marketStates, Notice, panelClass, patternLabels, roleLabels, stamp, universeLabels } from './shared'
 
 type NumericRule = Exclude<keyof FirstBoardRules, 'universe' | 'enabled_patterns'>
 type Field = { key: NumericRule; label: string; min: number; max: number; step?: number; scale?: number }
@@ -38,6 +38,16 @@ export function validateDraft(config: FirstBoardConfig): string | null {
   if (config.max_stock_weight > config.total_exposure) return '单股仓位上限不能高于总仓位上限。'
   if (config.max_stock_weight > config.max_sector_weight) return '单股仓位上限不能高于同行业仓位上限。'
   return null
+}
+
+/** 取消最后一个角色时回到「全部」，草稿不会出现空选择。 */
+export function toggleRole(roles: FirstBoardStockRole[] | null | undefined, role: FirstBoardStockRole, checked: boolean): FirstBoardStockRole[] | null {
+  const next = checked ? [...(roles ?? []).filter(value => value !== role), role] : (roles ?? []).filter(value => value !== role)
+  return next.length ? (Object.keys(roleLabels) as FirstBoardStockRole[]).filter(value => next.includes(value)) : null
+}
+
+function roleSummary(roles: FirstBoardStockRole[] | null | undefined) {
+  return roles?.length ? roles.map(role => roleLabels[role]).join('/') : '全部个股'
 }
 
 export function RulesPanel({ config, draft, onDraft, onSave, versions, accounts, saving, error, reload }: {
@@ -78,6 +88,14 @@ export function RulesPanel({ config, draft, onDraft, onSave, versions, accounts,
         </div>}
         <fieldset className="space-y-2"><legend className="mb-2 text-xs text-secondary">允许提示买入的市场环境</legend><div className="flex flex-wrap gap-x-5 gap-y-2 text-sm">{marketStates.map(item => <label key={item.value} className="flex items-center gap-2"><input type="checkbox" checked={draft.allowed_market_states.includes(item.value)} onChange={e => onDraft({ ...draft, allowed_market_states: e.target.checked ? [...draft.allowed_market_states, item.value] : draft.allowed_market_states.filter(value => value !== item.value) })} />{item.label}</label>)}</div></fieldset>
         <fieldset className="space-y-2"><legend className="mb-2 text-xs text-secondary">启用形态</legend><div className="flex flex-wrap gap-x-5 gap-y-2 text-sm">{(Object.keys(patternLabels) as (keyof typeof patternLabels)[]).map(pattern => <label key={pattern} className="flex items-center gap-2"><input type="checkbox" checked={draft.rules.enabled_patterns.includes(pattern)} onChange={e => onDraft({ ...draft, rules: { ...draft.rules, enabled_patterns: e.target.checked ? [...draft.rules.enabled_patterns, pattern] : draft.rules.enabled_patterns.filter(value => value !== pattern) } })} />{patternLabels[pattern]}</label>)}</div></fieldset>
+        <fieldset className="space-y-2"><legend className="mb-2 text-xs text-secondary">观察个股角色</legend>
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
+            <label className="flex items-center gap-2"><input type="checkbox" checked={!draft.stock_roles?.length} onChange={e => onDraft({ ...draft, stock_roles: e.target.checked ? null : ['leader', 'core'] })} />全部</label>
+            {(Object.keys(roleLabels) as FirstBoardStockRole[]).map(role => <label key={role} className="flex items-center gap-2"><input type="checkbox" checked={!!draft.stock_roles?.includes(role)} onChange={e => onDraft({ ...draft, stock_roles: toggleRole(draft.stock_roles, role, e.target.checked) })} />{roleLabels[role]}</label>)}
+            {draft.stock_roles?.includes('core') && <label className="flex items-center gap-2 whitespace-nowrap text-xs text-secondary"><span>中军取前</span><input className={`${inputClass} w-20`} type="number" required min={1} max={10} step={1} value={draft.core_top_n ?? 3} onChange={e => { if (Number.isFinite(e.target.valueAsNumber)) onDraft({ ...draft, core_top_n: e.target.valueAsNumber }) }} /><span>名</span></label>}
+          </div>
+          {!!draft.stock_roles?.length && <p className="max-w-prose text-xs leading-relaxed text-secondary">按当前行业与概念归属盘中判定，任一板块命中即算：龙头为板块当日涨幅第一，中军为流通市值或成交额进入前 {draft.core_top_n ?? 3}。不属于所选角色的个股不列出、不提示；历史验证不包含此过滤。</p>}
+        </fieldset>
       </fieldset>
       <fieldset disabled={saving} className={`${panelClass} space-y-4`}><h2 className="text-sm font-semibold">筛选与确认参数</h2>{groups.map((group, index) => <details key={group.title} open={index === 0} className="border-t border-border pt-3"><summary className="cursor-pointer text-sm font-medium focus-visible:outline focus-visible:outline-accent">{group.title}</summary><div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">{group.fields.map(field => <label key={field.key} className="space-y-1.5 text-xs text-secondary"><span>{field.label}</span><input className={inputClass} type="number" required min={field.min} max={field.max} step={field.step ?? 1} value={Number((draft.rules[field.key] * (field.scale ?? 1)).toFixed(6))} onChange={e => rule(field.key, e.target.valueAsNumber / (field.scale ?? 1))} /></label>)}</div></details>)}</fieldset>
       <fieldset disabled={saving} className={`${panelClass} space-y-4`}>
@@ -100,6 +118,6 @@ export function RulesPanel({ config, draft, onDraft, onSave, versions, accounts,
       {invalid && <Notice error>{invalid}</Notice>}
       <div className="flex flex-wrap items-center gap-3"><button type="submit" className={`${buttonClass} border-accent/50 text-foreground`} disabled={saving || !!invalid || !dirty || config.revision !== draft.revision}>{saving ? '正在保存…' : '保存为新版本'}</button><button type="button" className={buttonClass} disabled={saving || !dirty} onClick={() => onDraft(config)}>放弃草稿</button><span aria-live="polite" className="text-xs text-secondary">{dirty ? '有未保存的修改' : '已与当前版本同步'}</span></div>
     </form>
-    <section className={panelClass}><h2 className="mb-3 text-sm font-semibold">历史版本</h2>{versions.length ? <ul className="divide-y divide-border">{versions.map(version => <li key={version.revision} className="flex flex-wrap items-center justify-between gap-3 py-3"><div className="text-xs"><span className="font-medium">版本 {version.revision}</span><span className="ml-3 text-secondary">{stamp(version.updated_at)} · {universeLabels[version.rules.universe]} · {version.rules.enabled_patterns.map(pattern => patternLabels[pattern]).join(' / ') || '未启用形态'} · {version.rules.lookback_days} 日无收盘涨停</span></div><button className={buttonClass} disabled={saving} onClick={() => onDraft({ ...draft, rules: version.rules })}>载入规则到草稿</button></li>)}</ul> : <p className="text-sm text-secondary">首次保存后，规则版本会显示在这里。</p>}</section>
+    <section className={panelClass}><h2 className="mb-3 text-sm font-semibold">历史版本</h2>{versions.length ? <ul className="divide-y divide-border">{versions.map(version => <li key={version.revision} className="flex flex-wrap items-center justify-between gap-3 py-3"><div className="text-xs"><span className="font-medium">版本 {version.revision}</span><span className="ml-3 text-secondary">{stamp(version.updated_at)} · {universeLabels[version.rules.universe]} · {version.rules.enabled_patterns.map(pattern => patternLabels[pattern]).join(' / ') || '未启用形态'} · {version.rules.lookback_days} 日无收盘涨停 · {roleSummary(version.stock_roles)}</span></div><button className={buttonClass} disabled={saving} onClick={() => onDraft({ ...draft, rules: version.rules })}>载入规则到草稿</button></li>)}</ul> : <p className="text-sm text-secondary">首次保存后，规则版本会显示在这里。</p>}</section>
   </div>
 }

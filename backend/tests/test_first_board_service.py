@@ -664,3 +664,92 @@ def test_live_exit_and_order_use_first_board_batch_cost(service, monkeypatch, ma
         assert exits[0]["evidence"]["qty"] == 200
         order = service.place_order(exits[0]["id"], "sell", now=NOW)
         assert order["qty"] == 200 and order["status"] == "pending"
+
+
+ROLE_PEERS = [f"60000{i}.SH" for i in range(1, 6)]
+
+
+def _role_service(service, monkeypatch, roles):
+    service.save_config({**service.get_config(), "stock_roles": roles, "core_top_n": 1})
+    original = service._prepare
+
+    def prepare(*args):
+        original(*args)
+        service._attention_data._membership = (
+            [{"id": "g1", "kind": "concept", "name": "概念A", "source_id": "s", "field": "f",
+              "members": [SYMBOL, *ROLE_PEERS]}], "v1", None)
+        service._float_shares = {}
+
+    monkeypatch.setattr(service, "_prepare", prepare)
+
+
+def _role_quotes(top_peer_change):
+    return pl.concat([quotes(), *[quotes(symbol=symbol, change_pct=change, amount=1e9)
+                                  for symbol, change in zip(ROLE_PEERS, [top_peer_change, 0., 0., 0., 0.], strict=True)]])
+
+
+def test_config_without_role_fields_observes_all_and_rejects_empty_roles(service):
+    legacy = {key: value for key, value in service.get_config().items() if key not in {"stock_roles", "core_top_n"}}
+    assert fb.FirstBoardConfig.model_validate(legacy).stock_roles is None
+    with pytest.raises(ValueError):
+        fb.FirstBoardConfig.model_validate({**legacy, "stock_roles": []})
+    with pytest.raises(ValueError):
+        fb.FirstBoardConfig.model_validate({**legacy, "stock_roles": ["leader", "leader"]})
+
+
+def test_all_roles_keep_existing_behaviour_but_label_the_role(service, monkeypatch):
+    _role_service(service, monkeypatch, None)
+    service.process_snapshot(_role_quotes(.09), NOW.date(), now=NOW)
+    snapshot = service.snapshot()
+    row = snapshot["rows"][0]
+    assert row["can_buy"] is True
+    assert row["stock_role"]["leader"] is False
+    assert snapshot["coverage"]["role_hidden_count"] == 0
+
+
+def test_leader_filter_allows_sector_leader(service, monkeypatch):
+    published = []
+    service._publish = published.extend
+    _role_service(service, monkeypatch, ["leader"])
+    service.process_snapshot(_role_quotes(.01), NOW.date(), now=NOW)
+    row = service.snapshot()["rows"][0]
+    assert row["can_buy"] is True and row["stock_role"]["leader"] is True
+    assert row["evidence"]["stock_role"]["matches"][0]["name"] == "概念A"
+    assert len(published) == 1
+
+
+def test_non_leader_is_hidden_without_events(service, monkeypatch):
+    published = []
+    service._publish = published.extend
+    _role_service(service, monkeypatch, ["leader"])
+    service.process_snapshot(_role_quotes(.09), NOW.date(), now=NOW)
+    snapshot = service.snapshot()
+    assert snapshot["rows"] == []
+    assert snapshot["coverage"]["role_hidden_count"] == 1
+    assert published == [] and service.events(NOW.date()) == []
+
+
+def test_core_or_leader_any_selected_role_matches(service, monkeypatch):
+    _role_service(service, monkeypatch, ["leader", "core"])
+    # 非龙头, 但成交额 (8000 万 vs 同行 10 亿) 也不在前 1, 缺流通股本 → 中军待确认, 保留并阻断。
+    service.process_snapshot(_role_quotes(.09), NOW.date(), now=NOW)
+    row = service.snapshot()["rows"][0]
+    assert row["can_buy"] is False
+    assert any("待确认" in reason for reason in row["blocked_reasons"])
+    service._float_shares = dict.fromkeys(ROLE_PEERS, 1e6) | {SYMBOL: 1e9}
+    monkeypatch.setattr(service, "_prepare", lambda *_: None)
+    service.process_snapshot(_role_quotes(.09), NOW.date(), now=NOW)
+    row = service.snapshot()["rows"][0]
+    assert row["can_buy"] is True and row["stock_role"]["core"] is True
+
+
+def test_alerted_stock_that_loses_leadership_stays_visible_and_blocked(service, monkeypatch):
+    published = []
+    service._publish = published.extend
+    _role_service(service, monkeypatch, ["leader"])
+    service.process_snapshot(_role_quotes(.01), NOW.date(), now=NOW)
+    service.process_snapshot(_role_quotes(.09), NOW.date(), now=NOW)
+    row = service.snapshot()["rows"][0]
+    assert row["can_buy"] is False
+    assert any("不属于所选角色" in reason for reason in row["blocked_reasons"])
+    assert [event["event_type"] for event in published] == ["buy_candidate", "approaching"]

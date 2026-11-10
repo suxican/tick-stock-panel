@@ -1093,6 +1093,38 @@ it('clears an existing take-profit exit and hides feedback thresholds once the g
   await click('保存为新版本')
   expect(calls.firstBoardSaveConfig.mock.calls[0][0]).toMatchObject({ exit_profit_pct: null, feedback_gate: false, feedback_min_mean_change: .01 })
 })
+async function toggleExact(label: string) {
+  const input = [...host.querySelectorAll('label')].find(item => item.textContent?.trim() === label)!.querySelector('input')!
+  await act(async () => input.click())
+  await settle()
+}
+it('saves the observed stock roles and returns to all when the last role is cleared', async () => {
+  await render('rules')
+  expect(host.textContent).not.toContain('中军取前')
+  await toggleExact('龙头')
+  await toggleExact('中军')
+  await numberInput('中军取前', '5')
+  expect(host.textContent).toContain('历史验证不包含此过滤')
+  await click('保存为新版本')
+  expect(calls.firstBoardSaveConfig.mock.calls[0][0]).toMatchObject({ stock_roles: ['leader', 'core'], core_top_n: 5 })
+})
+it('treats clearing every role as observing all stocks', async () => {
+  calls.firstBoardConfig.mockResolvedValue({ ...config(), stock_roles: ['core'], core_top_n: 3 })
+  await render('rules')
+  await toggleExact('中军')
+  expect(host.textContent).not.toContain('中军取前')
+  await click('保存为新版本')
+  expect(calls.firstBoardSaveConfig.mock.calls[0][0]).toMatchObject({ stock_roles: null })
+})
+it('labels matched roles and reports stocks hidden by the role filter', async () => {
+  const base = snapshot()
+  calls.firstBoardSnapshot.mockResolvedValue({ ...base, coverage: { ...base.coverage, role_hidden_count: 2 },
+    rows: base.rows.map(row => ({ ...row, stock_role: { leader: true, core: null, reason: '', matches: [{ id: 'g', kind: 'concept', name: '概念A', change_rank: 1, cap_rank: null, amount_rank: null, roles: ['leader'] }] } })) })
+  await render()
+  expect(host.textContent).toContain('非所选角色未列出 2 只')
+  const tag = [...host.querySelectorAll('span')].find(item => item.textContent === '龙头')!
+  expect(tag.title).toBe('龙头：概念A')
+})
 it('polls the snapshot every 5 seconds only for live monitoring or same-day signals', async () => {
   const intervals = () => client.getQueryCache().find({ queryKey: QK.firstBoardSnapshot })?.observers.map(item => item.options.refetchInterval)
   await render('rules')

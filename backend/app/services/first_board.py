@@ -46,6 +46,7 @@ from app.services.first_board_priority import (
     expire_priority,
 )
 from app.services.first_board_radar import FirstBoardRadar
+from app.services.first_board_role import classify_roles, float_shares_map, role_gate
 from app.services.first_board_technical import FirstBoardTechnical
 from app.services.fs_utils import atomic_write_text
 from app.services.index_const import CORE_INDEX_SYMBOLS
@@ -131,6 +132,9 @@ class FirstBoardConfig(BaseModel):
     feedback_gate: bool = False
     feedback_min_mean_change: float = Field(default=0., ge=-.2, le=.2)
     feedback_min_up_ratio: float = Field(default=.5, ge=0, le=1)
+    # None 表示观察全部个股; 角色按当前板块归属盘中判定, 不属于可回测的 FirstBoardRules。
+    stock_roles: list[Literal["leader", "core"]] | None = None
+    core_top_n: int = Field(default=3, ge=1, le=10)
 
     @model_validator(mode="after")
     def validate_rules(self) -> Self:
@@ -147,6 +151,9 @@ class FirstBoardConfig(BaseModel):
             paper.validate_account_id(self.paper_account_id)
         if len(set(self.allowed_market_states)) != len(self.allowed_market_states):
             raise ValueError("市场环境不能重复")
+        if self.stock_roles is not None and (not self.stock_roles
+                                             or len(set(self.stock_roles)) != len(self.stock_roles)):
+            raise ValueError("观察角色至少选择一项且不能重复")
         return self
 
 
@@ -205,6 +212,7 @@ class FirstBoardService:
         self._prepared_at = 0.0
         self._candidates = pl.DataFrame()
         self._sectors: dict[str, str] = {}
+        self._float_shares: dict[str, float] = {}
         self._environment: dict = {}
         self._latest_prices: dict[str, float] = {}
         self._latest_quote_times: dict[str, str] = {}
@@ -442,7 +450,13 @@ class FirstBoardService:
                                             reference=reference if validation["allowed"] else None)
         sectors = load_sector_members(self.repo)
         self._attention_data.prepare(universe=config.rules.universe)
+        try:
+            float_shares = float_shares_map(self.repo.get_instruments())
+        except Exception:  # noqa: BLE001 - 缺股本只让中军市值排名待确认
+            logger.warning("首板流通股本读取失败, 中军市值排名待确认", exc_info=True)
+            float_shares = {}
         self._candidates, self._environment, self._sectors = candidates, environment, sectors
+        self._float_shares = float_shares
         self._prepared_key, self._prepared_at = key, time.monotonic()
 
     def _validate_history_sessions(self, history: pl.DataFrame, candidates: pl.DataFrame,
@@ -809,6 +823,13 @@ class FirstBoardService:
             rows = evaluate_candidates(self._candidates, current, config.rules, as_of=as_of)
             peer_sectors = evaluate_sector_peers(fresh, self._sectors, {row["symbol"] for row in rows})
             attention = self._attention(rows, fresh, now, live)
+            try:
+                roles = classify_roles(fresh, self._attention_data.groups, self._float_shares,
+                                       {row["symbol"] for row in rows}, core_top_n=config.core_top_n)
+            except Exception:  # noqa: BLE001 - 角色未知时按待确认阻断, 不放行
+                logger.warning("首板龙头/中军判定失败", exc_info=True)
+                roles = {}
+            role_hidden: set[tuple[str, str]] = set()
             visible_symbols = {r["symbol"] for r in rows if r["symbol"] in times
                                and r["change_pct"] is not None
                                and meets_min_change(r["change_pct"],
@@ -861,6 +882,15 @@ class FirstBoardService:
                         row["evidence"]["feedback_gate"] = feedback_gate
                         if not feedback_gate["allowed"]:
                             blocked.append(feedback_gate["reason"])
+                    role = roles.get(symbol) or {"leader": None, "core": None, "matches": [],
+                                                 "reason": "龙头/中军判定暂不可用"}
+                    row["stock_role"] = role
+                    row["evidence"]["stock_role"] = role
+                    _, excluded, role_reason = role_gate(role, config.stock_roles)
+                    if role_reason:
+                        blocked.append(role_reason)
+                    if excluded:
+                        role_hidden.add((symbol, row["pattern"]))
                     sector = peer_sectors.get(symbol, {})
                     row["sector_confirmation"] = sector
                     row["evidence"]["environment"] = environment
@@ -907,7 +937,11 @@ class FirstBoardService:
                     key = f"{config.revision}:{symbol}:{row['pattern']}"
                     prior = state["last"].get(key)
                     # 首次观察池不刷屏; 重启复用 last。过期行情不推进业务状态。
-                    recordable = live and symbol in times
+                    # 确定不属于所选角色且从未记录过的个股不进入事件、通知与列表;
+                    # 已记录过的继续显示并跟踪状态变化, 避免已提示的个股无声消失。
+                    if identity in role_hidden and prior is not None:
+                        role_hidden.discard(identity)
+                    recordable = live and symbol in times and identity not in role_hidden
                     if recordable and event_type != (prior or {}).get("state"):
                         state["last"][key] = {"state": event_type, "event_id": None}
                         if event_type != "watch" or prior:
@@ -958,6 +992,10 @@ class FirstBoardService:
                 visible_rows = [row for row in rows if row["change_pct"] is None
                                 or meets_min_change(row["change_pct"],
                                                     min_change_threshold(config.rules, row["symbol"], as_of))]
+                role_hidden_symbols = {row["symbol"] for row in visible_rows
+                                       if (row["symbol"], row["pattern"]) in role_hidden}
+                visible_rows = [row for row in visible_rows if (row["symbol"], row["pattern"]) not in role_hidden]
+                role_hidden_symbols -= {row["symbol"] for row in visible_rows}
                 previous_sampling = self._snapshot.get("attention_sampling", {})
                 self._snapshot = {
                     "status": status, "message": message, "as_of": str(as_of), "observed_at": now.isoformat(),
@@ -969,7 +1007,8 @@ class FirstBoardService:
                     "yesterday_feedback": feedback,
                     "coverage": {"candidate_count": len(visible_rows),
                                  "symbol_count": len({row["symbol"] for row in visible_rows}),
-                                 "quote_count": current.height, "fresh_count": fresh.height},
+                                 "quote_count": current.height, "fresh_count": fresh.height,
+                                 "role_hidden_count": len(role_hidden_symbols)},
                     "limitations": list(_LIMITATIONS),
                     "paper": portfolio_snapshot(self.repo.store.data_dir, config.paper_account_id, prices),
                 }

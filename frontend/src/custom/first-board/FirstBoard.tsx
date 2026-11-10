@@ -139,7 +139,7 @@ export function FirstBoard() {
             <OpeningDistribution feedback={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} />
           </YesterdayFeedback>}
           <CandidateTable view={view} loading={snapshot.isLoading} current={attentionCurrent} day={data?.as_of ?? ''} marks={stockMarks}
-            globalReasons={data?.global_blocked_reasons ?? noReasons} canOrder={liveUsable && !order.isPending} onOpen={openStock} onBuy={(eventId, amount) => order.mutate({ event_id: eventId, side: 'buy', amount })} />
+            globalReasons={data?.global_blocked_reasons ?? noReasons} roleHidden={data?.coverage.role_hidden_count} canOrder={liveUsable && !order.isPending} onOpen={openStock} onBuy={(eventId, amount) => order.mutate({ event_id: eventId, side: 'buy', amount })} />
           <ErrorNotice error={order.error} />
           {data?.paper && <PaperAccount paper={data.paper} onOpen={openStock} />}
           {!!data?.limitations.length && <details className="text-xs text-secondary"><summary className="cursor-pointer">当前实现的边界</summary><ul className="ml-4 mt-2 list-disc space-y-2 leading-relaxed">{data.limitations.map(item => <li key={item}>{item}</li>)}</ul></details>}

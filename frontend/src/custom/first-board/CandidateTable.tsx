@@ -10,7 +10,7 @@ import { useTableSort } from '@/components/stock-table/useTableSort'
 import { AttentionCell, AttentionSummary, attentionPriority, matchesAttention, type AttentionFilter } from './AttentionCell'
 import { TechnicalEvidence } from './TechnicalEvidence'
 import { PriorityCell, PrioritySummary, currentPriority, matchesPriority, priorityFilters, strongBoards, type PriorityFilter } from './PriorityCell'
-import { ErrorNotice, inputClass, LoadingRows, money, panelClass, PatternBadge, patternLabels, pct, stamp, StateBadge, stateLabels } from './shared'
+import { ErrorNotice, inputClass, LoadingRows, money, panelClass, PatternBadge, patternLabels, pct, roleLabels, stamp, StateBadge, stateLabels } from './shared'
 
 const candidateColumns: ColumnConfig[] = [
   ['symbol', '股票 / 行业'], ['pattern', '形态'], ['state', '状态'], ['price', '现价'], ['change_pct', '涨幅'],
@@ -193,6 +193,17 @@ function CandidateEvidence({ row, current, day, stockReasons }: { row: FirstBoar
   </div>
 }
 
+/** 只标出已命中的角色；待确认和未命中的原因在结论与依据中说明。 */
+export function RoleTags({ row }: { row: FirstBoardCandidate }) {
+  const role = row.stock_role
+  if (!role) return null
+  const hits = (Object.keys(roleLabels) as (keyof typeof roleLabels)[]).filter(name => role[name] === true)
+  return <>{hits.map(name => {
+    const boards = role.matches.filter(match => match.roles.includes(name)).map(match => match.name)
+    return <span key={name} title={`${roleLabels[name]}：${boards.join('、')}`} className="ml-1 inline-flex shrink-0 items-center rounded border border-accent/40 px-1 text-[10px] leading-4 text-accent">{roleLabels[name]}</span>
+  })}</>
+}
+
 function CandidateRow({ row, current, day, focused, canOrder, globalReasons, expanded, onToggle, onFocus, onOpen, onBuy }: {
   row: FirstBoardCandidate; current: boolean; day: string; focused: boolean; canOrder: boolean; globalReasons: Set<string>
   expanded: boolean; onToggle: () => void
@@ -209,6 +220,7 @@ function CandidateRow({ row, current, day, focused, canOrder, globalReasons, exp
       <td className={cn('py-2.5 pl-3 pr-3', highlight && 'shadow-[inset_3px_0_0_0_hsl(var(--accent))]')}>
         <div className="flex items-start gap-1">
           <button className="text-left font-medium hover:underline focus-visible:outline focus-visible:outline-accent" onClick={() => onOpen(row.symbol, row.name)}>{row.name}{board && <span className={`ml-1 shrink-0 inline-flex items-center justify-center w-[18px] h-[18px] rounded text-[9px] font-bold leading-none border ${board.color}`}>{board.label}</span>}</button>
+          <RoleTags row={row} />
           <button type="button" aria-pressed={focused} aria-label={`${focused ? '取消关注' : '特别关注'} ${row.name} ${row.symbol}`} title={focused ? '取消关注' : '特别关注并优先显示'}
             className={cn('-my-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded focus-visible:outline focus-visible:outline-accent', focused ? 'text-accent' : 'text-muted hover:text-foreground')}
             onClick={() => onFocus(row.symbol)}><Star className="h-3.5 w-3.5" fill={focused ? 'currentColor' : 'none'} aria-hidden="true" /></button>
@@ -240,9 +252,9 @@ function CandidateRow({ row, current, day, focused, canOrder, globalReasons, exp
   </>
 }
 
-export function CandidateTable({ view, loading, current, day, marks, globalReasons, canOrder, onOpen, onBuy }: {
+export function CandidateTable({ view, loading, current, day, marks, globalReasons, roleHidden = 0, canOrder, onOpen, onBuy }: {
   view: CandidateView; loading: boolean; current: boolean; day: string; marks: ReturnType<typeof useStockMarks>
-  globalReasons: string[]
+  globalReasons: string[]; roleHidden?: number
   canOrder: boolean; onOpen: (symbol: string, name: string) => void; onBuy: (eventId: string, amount: number) => void
 }) {
   const viewport = useRef<HTMLDivElement>(null)
@@ -259,7 +271,7 @@ export function CandidateTable({ view, loading, current, day, marks, globalReaso
   })
   const { rows } = view
   return <section className={panelClass}>
-    <div className="mb-3 flex flex-wrap items-start justify-between gap-3"><h2 className="pt-1.5 text-sm font-semibold">今日候选 <span className="font-normal text-secondary">{rows.length} 条</span></h2><CandidateFilters view={view} /></div>
+    <div className="mb-3 flex flex-wrap items-start justify-between gap-3"><h2 className="pt-1.5 text-sm font-semibold">今日候选 <span className="font-normal text-secondary">{rows.length} 条{roleHidden > 0 && ` · 非所选角色未列出 ${roleHidden} 只`}</span></h2><CandidateFilters view={view} /></div>
     <ErrorNotice error={marks.error} retry={marks.retry} />
     <div ref={viewport} role="region" aria-label="今日候选列表" tabIndex={0} className="h-[560px] max-h-[70vh] overflow-auto overscroll-contain scrollbar-gutter-stable focus-visible:outline focus-visible:outline-accent">
       {loading ? <LoadingRows /> : rows.length ? <table aria-label="首板实时候选" className="w-full min-w-[1040px] text-left text-xs">
