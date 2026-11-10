@@ -21,9 +21,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import AsyncIterator, Sequence
-from typing import Any
-
-from openai import AsyncOpenAI
+from typing import TYPE_CHECKING, Any
 
 from app import secrets_store
 from app.config import settings
@@ -37,6 +35,9 @@ from app.services.ai_provider import (
     normalize_openai_base_url,
     prepare_tool_messages,
 )
+
+if TYPE_CHECKING:
+    from openai import AsyncOpenAI
 
 # 部分推理型模型把整段预算花在 reasoning_content 上, 以 200 + length 结束。
 _LENGTH_FINISH_REASONS = {"length", "max_tokens", "max_output_tokens"}
@@ -71,6 +72,9 @@ def _retry_kwargs(exc: Exception, kwargs: dict[str, Any]) -> dict[str, Any] | No
 
 
 def _client(timeout: float) -> AsyncOpenAI:
+    # 延迟导入: openai SDK 导入约 0.8s, 只有助手对话才用到, 不拖慢后端启动。
+    from openai import AsyncOpenAI
+
     ai_key = secrets_store.get_ai_key()
     if not ai_key:
         raise RuntimeError("AI API Key 未配置, 请在设置页配置")

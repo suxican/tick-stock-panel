@@ -23,6 +23,11 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',   // dev.sh / dev.ps1 会用 CLI --host 覆盖
     port: 3011,
+    // 启动即预编译入口及其静态依赖: 否则首次打开页面时 150+ 个模块
+    // 才按需逐个编译, 冷启动首屏要多等数秒。
+    warmup: {
+      clientFiles: ['./src/main.tsx'],
+    },
     proxy: {
       // dev 时 /api 转发到与启动脚本相同的 FastAPI 地址
       '/api': {

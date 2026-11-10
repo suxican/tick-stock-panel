@@ -19,6 +19,7 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from itertools import pairwise
 from datetime import time as dt_time
@@ -44,6 +45,9 @@ from app.services.minute_adjust import apply_minute_adjustment, minute_basis_is_
 from app.startup_diagnostics import startup_phase
 
 logger = logging.getLogger(__name__)
+
+# 启动建视图的并发度: 大表 (日K/enriched/指数/ETF) 恰好 6 张, 其余均为小目录。
+_VIEW_REGISTRATION_WORKERS = 6
 
 # GH #480: 后台 warmup 因世代漂移被丢弃时的有界重建上限。compute 窗口长达
 # 数十秒, 启动期与 quote 实时刷新的 commit 撞车后若不重建, 历史缓存长期
@@ -220,15 +224,27 @@ class DataStore:
             f"""CREATE OR REPLACE VIEW depth5 AS
                 SELECT * FROM read_parquet('{d}/depth5/**/*.parquet', union_by_name=true)""",
         ]
-        for sql in statements:
+        def _create(sql: str) -> None:
+            # 每个视图用独立 cursor: union_by_name 建视图时要读全部分区的
+            # parquet footer (日K/指数各 ~2000 个文件), 耗时几乎全是文件 I/O;
+            # 各视图互不依赖, 并发创建让 I/O 重叠 (实测 3.3s → 1.3s)。
+            cur = self.db.cursor()
             try:
                 with startup_phase(logger, f"DuckDB view {sql.split()[4]}"):
-                    self.db.execute(sql)
-            except Exception as e:  # noqa: BLE001
+                    cur.execute(sql)
+            except Exception:  # noqa: BLE001
                 # 空数据目录(首次启动)或权限问题时 DuckDB 会抛 IOException;
                 # 跨版本/平台也可能抛 CatalogException 等。空目录缺视图不影响启动
                 # (后续同步写入数据后会重新刷新视图),这里一律降级为 debug 日志。
                 logger.debug("view registration skipped (no parquet yet): %s", sql[:60])
+            finally:
+                cur.close()
+
+        with ThreadPoolExecutor(
+            max_workers=_VIEW_REGISTRATION_WORKERS, thread_name_prefix="duckdb-views",
+        ) as pool:
+            list(pool.map(_create, statements))
+        # 合并视图引用上面的基础视图, 必须在其全部建好之后。
         with startup_phase(logger, "unified DuckDB views"):
             self._register_unified_views()
 
@@ -310,13 +326,24 @@ class DataStore:
             "kline_minute_all": minute_parts,
             "instruments_all": inst_parts,
         }
-        for name, parts in unions.items():
-            if not parts:
-                continue
+        def _create(item: tuple[str, list[str]]) -> None:
+            name, parts = item
+            # 建合并视图会重新绑定其引用的基础视图 (再读一遍全部 footer),
+            # 各合并视图互不依赖, 独立 cursor 并发创建让 I/O 重叠。
+            cur = db.cursor()
             try:
-                db.execute(f"CREATE OR REPLACE VIEW {name} AS " + " UNION ALL BY NAME ".join(parts))
+                cur.execute(f"CREATE OR REPLACE VIEW {name} AS " + " UNION ALL BY NAME ".join(parts))
             except Exception as e:  # noqa: BLE001
                 logger.debug("unified view %s skipped: %s", name, e)
+            finally:
+                cur.close()
+
+        pending = [(name, parts) for name, parts in unions.items() if parts]
+        if pending:
+            with ThreadPoolExecutor(
+                max_workers=len(pending), thread_name_prefix="duckdb-unified-views",
+            ) as pool:
+                list(pool.map(_create, pending))
 
 
 def _read_concurrency_env() -> int:
