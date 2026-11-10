@@ -234,7 +234,11 @@ echo
   # 比 --frozen 更彻底: 不校验 lockfile, 避免镜像源 403/网络抖动导致后端起不来。
   # python -m uvicorn: 强制用 venv 的解释器和 uvicorn 模块, 防止 PATH 里
   # 其他 Python(如 /usr/local/bin/uvicorn) 抢先, 导致用错误版本启动后端。
+  # --timeout-graceful-shutdown: 前端 SSE 长连接 (/api/intraday/stream 等) 永不
+  # 自行结束, 不设上限时 reload 会卡在 "Waiting for connections to close",
+  # 新进程迟迟起不来; 超时后强制断开, 前端 EventSource 自动重连。
   uv run --no-sync python -m uvicorn app.main:app ${UVICORN_ENV_ARGS[@]+"${UVICORN_ENV_ARGS[@]}"} --reload \
+    --timeout-graceful-shutdown 3 \
     --host "$BACKEND_HOST" --port "$BACKEND_PORT" 2>&1 \
     | prefix_awk "$(printf "${BLUE}[backend ]${NC} ")"
 ) &

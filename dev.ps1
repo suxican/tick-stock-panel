@@ -257,6 +257,10 @@ function Quote-Arg($value) {
 $BackendArgs = @('-m', 'uvicorn', 'app.main:app')
 if (Test-Path $EnvFile) { $BackendArgs += @('--env-file', (Quote-Arg $EnvFile)) }
 if (-not $NoReload) { $BackendArgs += '--reload' }
+# 前端 SSE 长连接 (/api/intraday/stream 等) 永不自行结束; 不设上限时 reload/退出
+# 会卡在 "Waiting for connections to close", 新进程迟迟起不来。超时强制断开,
+# 前端 EventSource 自动重连。
+$BackendArgs += @('--timeout-graceful-shutdown', '3')
 $BackendArgs += @('--host', $BindAddress, '--port', [string]$BackendPort)
 
 $env:BACKEND_HOST = $BindAddress
