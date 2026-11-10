@@ -769,6 +769,65 @@ export interface RegimeCoverage {
   latest_date: string | null
 }
 
+// ── 资讯分析·催化验证 ──
+/** 涨跌幅字段均为小数制 (0.0366 表示 3.66%)。 */
+export interface NewsCatalystStock {
+  symbol: string
+  name: string
+  change_pct: number | null
+  amount: number | null
+}
+
+export interface NewsCatalystItem extends NewsCatalystStock {
+  /** 上游异动标签: 涨停 / 大涨 / 大跌 / 跌停。 */
+  tag: string | null
+  tag_code: string | null
+  keywords: string[]
+  content: string
+  /** 最后一次异动与解读首次发布的北京时间。 */
+  anomaly_at: string
+  published_at: string | null
+  /** 本地日线的收盘涨停; 无行情为 null。 */
+  limit_up: boolean | null
+  next_change_pct: number | null
+}
+
+export interface NewsCatalystGroup {
+  keyword: string
+  symbols: string[]
+  stock_count: number
+  /** 有本地行情时为收盘涨停数, 否则为上游涨停标签数 (见 quote_state)。 */
+  limit_up_count: number
+  quote_count: number
+  avg_change_pct: number | null
+  batch: boolean
+  leader: NewsCatalystStock | null
+  anchor: NewsCatalystStock | null
+  seen_dates: string[]
+  /** null: 回看窗口不完整, 无法断言首次出现。 */
+  fresh: boolean | null
+  first_published_at: string | null
+  next_day: { date: string; quote_count: number; avg_change_pct: number; rising_count: number; limit_up_count: number } | null
+}
+
+export type NewsCatalystsResult =
+  | { state: 'source_unavailable'; requested_date: string; trade_date: string }
+  | { state: 'no_data'; requested_date: string; trade_date: string; message: string }
+  | {
+    state: 'ok'
+    requested_date: string
+    trade_date: string
+    fetched_at: string
+    live: boolean
+    quote_state: 'ok' | 'unavailable'
+    quote_asof: string | null
+    next_date: string | null
+    lookback: { days: number; cached: number }
+    counts: { stocks: number; limit_up: number }
+    groups: NewsCatalystGroup[]
+    items: NewsCatalystItem[]
+  }
+
 // ── 市场阶段(情绪周期) 与 主线 ──
 export type MarketPhase = 'ice' | 'ignite' | 'rally' | 'climax' | 'ebb' | 'repair'
 
@@ -5328,6 +5387,10 @@ export const api = {
   // ===== 大盘复盘 =====
   reviewReportsList: () =>
     request<{ reports: AiReviewReport[] }>('/api/market-recap/reports'),
+
+  /** 资讯分析·催化验证 (fuyao 专有; 首次查看会回补近 10 个交易日, 故放宽超时) */
+  newsCatalysts: (date: string) =>
+    request<NewsCatalystsResult>(`/api/news/catalysts?${new URLSearchParams({ date })}`, { quiet: true, timeoutMs: 60_000 }),
 
   /** 龙虎榜三榜 (fuyao 专有; 历史日按服务端缓存, 当日未发布自动回退上一期) */
   dragonTiger: (date?: string) =>

@@ -1149,6 +1149,14 @@ class FuyaoProvider:
         """
         return self._get_client().dragon_tiger_list(board_type, date)
 
+    def anomaly_analysis(self, begin_date: str, end_date: str) -> dict:
+        """日期范围异动解读 (资讯分析页的催化来源)。返回原始 data 容器。
+
+        非路由数据集, 不进 plugin.yaml datasets; 由 services.news_catalysts
+        统一做 A 股过滤、代码解析、按日缓存与盘面核对。
+        """
+        return self._get_client().anomaly_analysis(begin_date, end_date)
+
     def short_term_benchmark(self, date: str | None = None) -> dict:
         """短线风向标竞价基准 (复盘页卡片 + AI 复盘上下文)。返回原始 data 容器。
 

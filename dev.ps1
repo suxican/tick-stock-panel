@@ -133,6 +133,21 @@ function Free-Port($name, $port) {
         catch { $false }
     })
 
+    # 端口登记的进程已退出, 但它的子进程继承了监听 socket 并继续接收请求
+    # (uvicorn --reload 的父进程被单独结束后, multiprocessing 子进程的命令行里没有
+    # uvicorn, Stop-ExistingInstance 匹配不到)。不清掉的话新旧后端会同时监听同一端口,
+    # 请求全部落到旧进程上。只认「父进程正是那个已退出的端口持有者」的进程。
+    $dead = @($pids | Where-Object { $alive -notcontains $_ })
+    if ($dead.Count -gt 0) {
+        $orphans = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $dead -contains $_.ParentProcessId -and $_.ProcessId -ne $PID } |
+            ForEach-Object { [int]$_.ProcessId })
+        if ($orphans.Count -gt 0) {
+            Log-Warn "port ${port} (${name}) - 持有者已退出, 遗留子进程仍占用端口: $($orphans -join ', ')"
+            $alive = @($alive + $orphans | Sort-Object -Unique)
+        }
+    }
+
     if ($alive.Count -eq 0) {
         # All processes are dead but kernel still holds the socket (zombie endpoint).
         # On Windows this can linger for minutes, but uvicorn/vite can still bind

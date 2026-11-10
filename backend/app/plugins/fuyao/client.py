@@ -323,6 +323,18 @@ class FuyaoClient:
             params["date"] = date
         return self._get("/api/a-share/special-data/dragon-tiger-list", params)
 
+    def anomaly_analysis(self, begin_date: str, end_date: str) -> dict:
+        """日期范围异动解读 (全市场)。返回 data 原始容器: {items[], was_truncated}。
+
+        实测(2026-11): 全量按返回量受限而非天数(文档写 30 天), 5 天跨度约 5900 条
+        成功、更多则 code=5003, 由调用方分段并在失败时缩小范围;
+        items 混有美股/期货/港股/基金, 由调用方按 domain 过滤; 无代码字段,
+        代码只在 link_url 的 thsHqCode 参数里; 四个时间字段均为毫秒 epoch。
+        """
+        return self._get(
+            "/api/news/anomaly/analysis", {"begin_date": begin_date, "end_date": end_date}
+        )
+
     def short_term_benchmark(self, date: str | None = None) -> dict:
         """短线风向标竞价基准 (同花顺竞价筛选, 每日约 5~6 只)。
 
