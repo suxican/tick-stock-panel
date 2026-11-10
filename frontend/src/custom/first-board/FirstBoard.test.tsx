@@ -1125,6 +1125,50 @@ it('labels matched roles and reports stocks hidden by the role filter', async ()
   const tag = [...host.querySelectorAll('span')].find(item => item.textContent === '龙头')!
   expect(tag.title).toBe('龙头：概念A')
 })
+it('shows the reference-day sentiment phase and mainlines, and filters candidates by mainline', async () => {
+  const base = snapshot()
+  const item = { kind: 'concept' as const, name: '机器人', rank: 1, limit_up_count: 9, max_boards: 4 }
+  calls.firstBoardSnapshot.mockResolvedValue({ ...base,
+    environment: { ...base.environment, phase: 'rally', phase_label: '主升', ladder: { max_consecutive: 7, promo_rate: .312, seal_rate: null, first_board: 60, ge2_count: 18, limit_up: 90, limit_down: 2, broken_limit: 20 } },
+    mainlines: { date: '2026-09-29', status: 'ready', top_n: 5, items: [item, { ...item, kind: 'industry', name: '自动化设备', rank: 2 }] },
+    rows: [
+      candidate('主线股票', { symbol: '600001.SH', mainline: { hit: true, date: '2026-09-29', matches: [item], reason: '属于参考交易日主线：机器人' } }),
+      candidate('非主线股票', { symbol: '600002.SH', mainline: { hit: false, date: '2026-09-29', matches: [], reason: '不属于参考交易日概念或行业主线前 5' } }),
+      candidate('待确认股票', { symbol: '600003.SH', mainline: { hit: null, date: null, matches: [], reason: '主线数据暂不可用' } }),
+    ] })
+  await render()
+  const status = host.querySelector('section[aria-label="盯盘状态"]')!
+  // 缺失的封板率显示为占位符，不显示为 0%。
+  expect(status.textContent).toContain('情绪阶段：主升高度 7 板 · 晋级 31% · 封板 —')
+  expect(status.textContent).toContain('昨日主线：机器人')
+  const tags = [...host.querySelectorAll('span')].filter(node => node.textContent === '主线')
+  expect(tags).toHaveLength(1)
+  expect(tags[0].title).toBe('2026-09-29 主线：机器人（第 1）')
+  await toggleExact('只看主线')
+  expect(candidateNames()).toEqual(['主线股票'])
+})
+it('hides sentiment and mainline chips for snapshots from an older backend', async () => {
+  await render()
+  const status = host.querySelector('section[aria-label="盯盘状态"]')!
+  expect(status.textContent).not.toContain('情绪阶段')
+  expect(status.textContent).not.toContain('昨日主线')
+})
+it('saves the sentiment phase and mainline gates and returns to unrestricted when cleared', async () => {
+  await render('rules')
+  expect(host.textContent).not.toContain('历史验证不包含这两项过滤')
+  await toggleExact('不限阶段')
+  await toggleExact('只提示主线内个股')
+  expect(host.textContent).toContain('历史验证不包含这两项过滤')
+  await click('保存为新版本')
+  expect(calls.firstBoardSaveConfig.mock.calls[0][0]).toMatchObject({ allowed_market_phases: ['ignite', 'rally'], require_mainline: true })
+})
+it('treats clearing every sentiment phase as unrestricted', async () => {
+  calls.firstBoardConfig.mockResolvedValue({ ...config(), allowed_market_phases: ['rally'] })
+  await render('rules')
+  await toggleExact('主升')
+  await click('保存为新版本')
+  expect(calls.firstBoardSaveConfig.mock.calls[0][0]).toMatchObject({ allowed_market_phases: null })
+})
 it('polls the snapshot every 5 seconds only for live monitoring or same-day signals', async () => {
   const intervals = () => client.getQueryCache().find({ queryKey: QK.firstBoardSnapshot })?.observers.map(item => item.options.refetchInterval)
   await render('rules')

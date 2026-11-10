@@ -16,7 +16,7 @@ import polars as pl
 from app.market_time import CN_TZ
 from app.strategy.intraday_features import build_feature_frame
 
-RULE_VERSION = "attention-v1"
+RULE_VERSION = "attention-v2"
 _MINUTE_COLUMNS = {"symbol", "datetime", "open", "high", "low", "close", "volume", "amount"}
 
 
@@ -348,6 +348,16 @@ class AttentionEvaluator:
                 item = {key: value for key, value in sector.items() if not key.startswith("_")}
                 item.update(peer_stats.get(sector["id"], {}))
                 strong = item.get("peer_strong")
+                # The candidate's own limit-up move must not lift its group into
+                # "strong": judge only the peers. A group with fewer than five
+                # peers can never qualify, so it is a known negative, not unknown.
+                if strong is None and sector["member_count"] - 1 < 5:
+                    strong = False
+                item.update(strong=strong, reason=(
+                    "剔除本股后，排名、上涨广度和相对同来源分类覆盖股票的强度达到实验门槛" if strong
+                    else "剔除本股后成员不足5只，不参与强势判断" if strong is False and sector["member_count"] - 1 < 5
+                    else "剔除本股后，排名、上涨广度或相对同来源分类覆盖股票的强度未同时达标" if strong is False
+                    else "剔除本股后有效成员不足5只或行情覆盖不足80%"))
                 item.update(peer_persistent=False if strong is False else None, peer_reference_at=None)
                 if strong is True and membership_version:
                     key = (symbol, sector["id"])

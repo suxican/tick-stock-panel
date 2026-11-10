@@ -7,6 +7,11 @@ export const inputClass = 'min-h-9 w-full min-w-0 rounded-btn border border-bord
 export const panelClass = 'rounded-card border border-border bg-surface p-4'
 export const patternLabels = { platform: '平台突破', trend: '趋势加速', oversold: '超跌反弹' }
 export const roleLabels = { leader: '龙头', core: '中军' } as const
+export const roleClasses = {
+  leader: 'border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-300',
+  core: 'border-teal-500/40 bg-teal-500/10 text-teal-700 dark:text-teal-300',
+} as const
+export const phaseLabels = { ice: '冰点', ignite: '启动', rally: '主升', climax: '高潮', ebb: '退潮', repair: '修复' } as const
 export const universeLabels = { hs_a_non_st: '沪深主板、创业板、科创板（非 ST）', main_board_non_st: '沪深主板（非 ST）' }
 export const stateLabels: Record<FirstBoardState, string> = { watch: '观察中', approaching: '临近涨停', sealed: '涨停价观察', broken: '已开板', invalid: '已失效' }
 export const marketStates = [{ value: 'strong', label: '强势' }, { value: 'lean_strong', label: '偏强' }, { value: 'range', label: '震荡' }, { value: 'lean_weak', label: '偏弱' }, { value: 'weak', label: '弱势' }]

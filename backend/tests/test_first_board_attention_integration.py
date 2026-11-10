@@ -360,17 +360,17 @@ def test_research_disk_work_does_not_hold_the_snapshot_lock(rig):
 
 def test_real_catalog_adapter_and_evaluator_flow_into_immutable_samples(rig, monkeypatch):
     data_dir = rig.svc.repo.store.data_dir
-    hot = [SYMBOLS[0], SYMBOLS[1], "600001.SH", "600002.SH", "600003.SH"]
-    cold = [SYMBOLS[2], "600004.SH", "600005.SH", "600006.SH", "600007.SH"]
+    hot = [SYMBOLS[0], SYMBOLS[1], "600001.SH", "600002.SH", "600003.SH", "600008.SH"]
+    cold = [SYMBOLS[2], "600004.SH", "600005.SH", "600006.SH", "600007.SH", "600009.SH"]
     all_symbols = hot + cold
     config = ExtConfig(id="attention_members", label="板块成员", mode="snapshot", fields=[
         ExtField("symbol", "string", "代码"), ExtField("concept", "string", "概念"),
     ])
     ExtConfigStore(data_dir).upsert(config)
-    write_ext_parquet(pl.DataFrame({"symbol": all_symbols, "concept": ["科技"] * 5 + ["材料"] * 5}),
+    write_ext_parquet(pl.DataFrame({"symbol": all_symbols, "concept": ["科技"] * 6 + ["材料"] * 6}),
                       config, data_dir)
     rig.svc.repo.get_instruments = lambda: pl.DataFrame({
-        "symbol": all_symbols, "name": [f"普通股{index}" for index in range(10)],
+        "symbol": all_symbols, "name": [f"普通股{index}" for index in range(len(all_symbols))],
     })
     mark_minute_basis_raw(data_dir)
     minute_rows = []
@@ -417,7 +417,7 @@ def test_real_catalog_adapter_and_evaluator_flow_into_immutable_samples(rig, mon
     rows = {row["symbol"]: row for row in rig.svc.snapshot()["rows"]}
     strong = rows[SYMBOLS[0]]["attention_context"]
     assert strong["group"] == "S1F1" and strong["intraday_rising"] is True
-    assert strong["groups"][0]["member_count"] == 5
+    assert strong["groups"][0]["member_count"] == 6
     assert strong["groups"][0]["leader"]["symbol"] == "600001.SH"
     assert strong["intraday"]["as_of"] == NOW.replace(hour=9, minute=59, second=0).isoformat()
     assert SYMBOLS[2] not in rows

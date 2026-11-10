@@ -1,6 +1,13 @@
 import type { FormEvent } from 'react'
-import type { FirstBoardConfig, FirstBoardRules, FirstBoardStockRole, PaperAccountSummary } from '@/lib/api'
-import { buttonClass, ErrorNotice, inputClass, marketStates, Notice, panelClass, patternLabels, roleLabels, stamp, universeLabels } from './shared'
+import type { FirstBoardConfig, FirstBoardPhase, FirstBoardRules, FirstBoardStockRole, PaperAccountSummary } from '@/lib/api'
+import { buttonClass, ErrorNotice, inputClass, marketStates, Notice, panelClass, patternLabels, phaseLabels, roleLabels, stamp, universeLabels } from './shared'
+
+const phases = Object.keys(phaseLabels) as FirstBoardPhase[]
+// 全部取消时回到"不限"(null)，与后端"至少选择一项"的校验一致。
+function togglePhase(current: FirstBoardPhase[] | null | undefined, phase: FirstBoardPhase, checked: boolean) {
+  const next = phases.filter(item => item === phase ? checked : !!current?.includes(item))
+  return next.length ? next : null
+}
 
 type NumericRule = Exclude<keyof FirstBoardRules, 'universe' | 'enabled_patterns'>
 type Field = { key: NumericRule; label: string; min: number; max: number; step?: number; scale?: number }
@@ -77,6 +84,7 @@ export function RulesPanel({ config, draft, onDraft, onSave, versions, accounts,
           <label className="flex items-center gap-2"><input type="checkbox" checked={draft.notify} onChange={e => onDraft({ ...draft, notify: e.target.checked })} />发送信号通知</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={draft.require_sector_confirmation} onChange={e => onDraft({ ...draft, require_sector_confirmation: e.target.checked })} />要求行业联动确认</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={draft.feedback_gate} onChange={e => onDraft({ ...draft, feedback_gate: e.target.checked })} />要求昨日首板反馈达标</label>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={!!draft.require_mainline} onChange={e => onDraft({ ...draft, require_mainline: e.target.checked })} />只提示主线内个股</label>
         </div>
         <p className="max-w-prose text-xs leading-relaxed text-secondary">行业联动采用实验判据：至少 3 只有效成员、其中至少 2 只涨幅达 5%，行业平均涨幅至少 1%。它用于辅助确认，不能等同完整题材主线。</p>
         {draft.feedback_gate && <div className="space-y-3">
@@ -87,6 +95,13 @@ export function RulesPanel({ config, draft, onDraft, onSave, versions, accounts,
           </div>
         </div>}
         <fieldset className="space-y-2"><legend className="mb-2 text-xs text-secondary">允许提示买入的市场环境</legend><div className="flex flex-wrap gap-x-5 gap-y-2 text-sm">{marketStates.map(item => <label key={item.value} className="flex items-center gap-2"><input type="checkbox" checked={draft.allowed_market_states.includes(item.value)} onChange={e => onDraft({ ...draft, allowed_market_states: e.target.checked ? [...draft.allowed_market_states, item.value] : draft.allowed_market_states.filter(value => value !== item.value) })} />{item.label}</label>)}</div></fieldset>
+        <fieldset className="space-y-2"><legend className="mb-2 text-xs text-secondary">允许提示买入的情绪阶段</legend>
+          <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm">
+            <label className="flex items-center gap-2"><input type="checkbox" checked={!draft.allowed_market_phases?.length} onChange={e => onDraft({ ...draft, allowed_market_phases: e.target.checked ? null : ['ignite', 'rally'] })} />不限阶段</label>
+            {phases.map(phase => <label key={phase} className="flex items-center gap-2"><input type="checkbox" checked={!!draft.allowed_market_phases?.includes(phase)} onChange={e => onDraft({ ...draft, allowed_market_phases: togglePhase(draft.allowed_market_phases, phase, e.target.checked) })} />{phaseLabels[phase]}</label>)}
+          </div>
+          {(!!draft.allowed_market_phases?.length || draft.require_mainline) && <p className="max-w-prose text-xs leading-relaxed text-secondary">情绪阶段与主线取自上一完成交易日的连板梯队，口径同市场环境页；阶段未知或主线数据缺失时暂停提示。主线为概念、行业各自排名前 5，成分为当前快照。历史验证不包含这两项过滤。</p>}
+        </fieldset>
         <fieldset className="space-y-2"><legend className="mb-2 text-xs text-secondary">启用形态</legend><div className="flex flex-wrap gap-x-5 gap-y-2 text-sm">{(Object.keys(patternLabels) as (keyof typeof patternLabels)[]).map(pattern => <label key={pattern} className="flex items-center gap-2"><input type="checkbox" checked={draft.rules.enabled_patterns.includes(pattern)} onChange={e => onDraft({ ...draft, rules: { ...draft.rules, enabled_patterns: e.target.checked ? [...draft.rules.enabled_patterns, pattern] : draft.rules.enabled_patterns.filter(value => value !== pattern) } })} />{patternLabels[pattern]}</label>)}</div></fieldset>
         <fieldset className="space-y-2"><legend className="mb-2 text-xs text-secondary">观察个股角色</legend>
           <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">

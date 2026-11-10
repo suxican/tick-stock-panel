@@ -74,6 +74,24 @@ it('submits exact model costs and shows complete denominators with a traceable c
   expect(host.querySelector('table[aria-label="交易验证明细"]')?.parentElement?.className).toContain('overflow-x-auto')
   await click('模型样本'); expect(openStock).toHaveBeenCalledWith('600000.SH', '模型样本')
 })
+it('shows phase and mainline groups frozen at the signal and hides them for older reports', async () => {
+  const group = (signals: number, closed: number, net: number | null) => ({ signals, closed, no_fill: 0, unverifiable: signals - closed, open_position: 0, win_count: 0, net_return_mean: net, gross_return_mean: net, win_rate: null, net_pnl_sum: null })
+  calls.firstBoardTradeValidation.mockResolvedValue({ ...replay(), by_group: { unknown: group(5, 1, .012) },
+    by_phase: { rally: group(3, 1, .012), ebb: group(0, 0, null), unknown: group(2, 0, null) },
+    by_mainline: { hit: group(1, 1, .012), miss: group(0, 0, null), unknown: group(4, 0, null) } })
+  await render()
+  await click('运行交易验证')
+  const cells = (label: string) => [...host.querySelectorAll('table[aria-label="' + label + '"] tbody tr')].map(row => [...row.children].map(cell => cell.textContent))
+  // 没有信号的阶段不列出；没有闭环的分组收益保持未知，不显示为 0。
+  expect(cells('情绪阶段分组')).toEqual([['主升', '3', '1', '0', '2', '0', '1.20%'], ['阶段未知', '2', '0', '0', '2', '0', '—']])
+  expect(cells('主线归属分组')).toEqual([['主线内', '1', '1', '0', '0', '0', '1.20%'], ['主线未知', '4', '0', '0', '4', '0', '—']])
+  expect(host.textContent).toContain('被拦下的个股不会成为信号')
+  calls.firstBoardTradeValidation.mockResolvedValue({ ...replay(), by_group: { unknown: group(5, 1, .012) } })
+  await click('运行交易验证')
+  expect(host.querySelector('table[aria-label="交易验证分组"]')).not.toBeNull()
+  expect(host.querySelector('table[aria-label="情绪阶段分组"]')).toBeNull()
+  expect(host.textContent).not.toContain('被拦下的个股不会成为信号')
+})
 it('separates paper closed returns from partial realizations and preserves unknown states', async () => {
   calls.firstBoardTradeValidation.mockResolvedValue(paper())
   await render(); await click('模拟盘成交归因'); await click('运行交易验证')

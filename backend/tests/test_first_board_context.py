@@ -194,3 +194,80 @@ def test_unresolved_secondary_industry_does_not_shrink_primary_denominator(monke
     assert result["member_count"] == 3
     assert result["coverage"] == pytest.approx(2 / 3)
     assert result["confirmed"] is False
+
+
+LADDER = {"max_consecutive": 7, "first_board": 60, "ge2_count": 18, "promo_rate": .31,
+          "seal_rate": .8, "limit_up": 90, "limit_down": 2, "broken_limit": 20}
+
+
+def regime(phase="rally", **extra):
+    return pl.DataFrame({"date": [REFERENCE], "state": ["range"], "phase": [phase], **{
+        key: [value] for key, value in {**LADDER, **extra}.items()}})
+
+
+def test_environment_reports_phase_and_ladder_without_gating_by_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(context, "load_regime_history", lambda _: regime("ebb", promo_rate=None))
+    result = context.load_environment(tmp_path, as_of=TODAY, reference_date=REFERENCE, allowed_states=["range"])
+    assert result["allowed"] is True
+    assert (result["phase"], result["phase_label"]) == ("ebb", "退潮")
+    assert result["ladder"]["max_consecutive"] == 7 and result["ladder"]["seal_rate"] == .8
+    # 晋级池不足时环境表记 null, 不得变成 0。
+    assert result["ladder"]["promo_rate"] is None
+
+
+@pytest.mark.parametrize("phase,phases,allowed,reason", [
+    ("rally", ["ignite", "rally"], True, "符合"),
+    ("ebb", ["ignite", "rally"], False, "退潮"),
+    ("mystery", ["ignite", "rally"], False, "阶段未知"),
+    (None, ["ignite", "rally"], False, "阶段未知"),
+])
+def test_phase_gate_is_opt_in_and_fails_closed(tmp_path, monkeypatch, phase, phases, allowed, reason):
+    monkeypatch.setattr(context, "load_regime_history", lambda _: regime(phase))
+    result = context.load_environment(tmp_path, as_of=TODAY, reference_date=REFERENCE,
+                                      allowed_states=["range"], allowed_phases=phases)
+    assert result["allowed"] is allowed and reason in result["reason"]
+
+
+def test_phase_gate_keeps_state_reason_and_old_regime_files_stay_readable(tmp_path, monkeypatch):
+    old = pl.DataFrame({"date": [REFERENCE], "state": ["weak"]})
+    monkeypatch.setattr(context, "load_regime_history", lambda _: old)
+    result = context.load_environment(tmp_path, as_of=TODAY, reference_date=REFERENCE,
+                                      allowed_states=["range"], allowed_phases=["rally"])
+    assert not result["allowed"] and "市场环境不在允许范围" in result["reason"]
+    assert result["phase"] is None and result["ladder"]["max_consecutive"] is None
+
+
+def mainline_history(kind):
+    rows = {"concept": [(REFERENCE, "机器人", 1, 9, 4), (REFERENCE, "算力", 6, 3, 1), (TODAY, "低空经济", 1, 8, 3)],
+            "industry": [(REFERENCE, "机械设备-自动化设备", 2, 5, 2)]}[kind]
+    return pl.DataFrame({"date": [r[0] for r in rows], "kind": [kind] * len(rows), "member": [r[1] for r in rows],
+                         "rank": pl.Series([r[2] for r in rows], dtype=pl.UInt32),
+                         "limit_up_count": [r[3] for r in rows], "max_boards": [r[4] for r in rows],
+                         "ge2_count": [1] * len(rows), "score": [80.0] * len(rows),
+                         "leader_symbol": ["600001.SH"] * len(rows)})
+
+
+def test_mainlines_use_exact_reference_day_top_ranks_and_current_membership(tmp_path, monkeypatch):
+    monkeypatch.setattr(context, "load_mainline_history", lambda _dir, kind: mainline_history(kind))
+    mainlines = context.load_mainlines(tmp_path, as_of=TODAY, reference_date=REFERENCE)
+    # 排名第 6 的算力和当日(未完成)的低空经济都不能进入。
+    assert [(item["kind"], item["name"]) for item in mainlines["items"]] == [
+        ("concept", "机器人"), ("industry", "机械设备-自动化设备")]
+    maps = {"concept": [("600001.SH", "机器人"), ("600001.SH", "算力"), ("600002.SH", "算力")],
+            "industry": [("600001.SH", "机械设备-自动化设备-机器人"), ("600003.SH", "机械设备-自动化设备-激光")]}
+    monkeypatch.setattr(context, "_load_concept_map_df", lambda _repo, kind: (
+        pl.DataFrame({"_sym_up": [p[0] for p in maps[kind]], kind: [p[1] for p in maps[kind]]}), 0))
+    members = context.load_mainline_members(SimpleNamespace(), mainlines)
+    hit = context.mainline_evidence(mainlines, members, "600001.SH")
+    assert hit["hit"] is True and [match["name"] for match in hit["matches"]] == ["机器人", "机械设备-自动化设备"]
+    assert context.mainline_evidence(mainlines, members, "600003.SH")["matches"][0]["kind"] == "industry"
+    miss = context.mainline_evidence(mainlines, members, "600002.SH")
+    assert miss["hit"] is False and "不属于" in miss["reason"]
+
+
+def test_missing_mainline_history_is_unknown_not_a_miss(tmp_path, monkeypatch):
+    monkeypatch.setattr(context, "load_mainline_history", lambda _dir, _kind: pl.DataFrame())
+    mainlines = context.load_mainlines(tmp_path, as_of=TODAY, reference_date=REFERENCE)
+    assert mainlines["status"] == "unavailable" and mainlines["items"] == []
+    assert context.mainline_evidence(mainlines, {}, "600001.SH")["hit"] is None
+    assert context.load_mainlines(tmp_path, as_of=TODAY, reference_date=TODAY)["status"] == "unavailable"

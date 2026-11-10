@@ -28,7 +28,10 @@ from app.services.first_board_context import (
     SECTOR_PROXY_NOTE,
     evaluate_sector_peers,
     load_environment,
+    load_mainline_members,
+    load_mainlines,
     load_sector_members,
+    mainline_evidence,
 )
 from app.services.first_board_data_status import build_data_status, radar_clocks
 from app.services.first_board_feedback import FirstBoardFeedback, empty_feedback, expire_feedback
@@ -135,6 +138,9 @@ class FirstBoardConfig(BaseModel):
     # None 表示观察全部个股; 角色按当前板块归属盘中判定, 不属于可回测的 FirstBoardRules。
     stock_roles: list[Literal["leader", "core"]] | None = None
     core_top_n: int = Field(default=3, ge=1, le=10)
+    # None 表示不按情绪阶段限制; 阶段沿用市场环境页的连板梯队判定, 取候选参考交易日。
+    allowed_market_phases: list[Literal["ice", "ignite", "rally", "climax", "ebb", "repair"]] | None = None
+    require_mainline: bool = False
 
     @model_validator(mode="after")
     def validate_rules(self) -> Self:
@@ -154,6 +160,10 @@ class FirstBoardConfig(BaseModel):
         if self.stock_roles is not None and (not self.stock_roles
                                              or len(set(self.stock_roles)) != len(self.stock_roles)):
             raise ValueError("观察角色至少选择一项且不能重复")
+        if self.allowed_market_phases is not None and (
+                not self.allowed_market_phases
+                or len(set(self.allowed_market_phases)) != len(self.allowed_market_phases)):
+            raise ValueError("情绪阶段至少选择一项且不能重复")
         return self
 
 
@@ -214,6 +224,8 @@ class FirstBoardService:
         self._sectors: dict[str, str] = {}
         self._float_shares: dict[str, float] = {}
         self._environment: dict = {}
+        self._mainlines: dict = {}
+        self._mainline_members: dict[str, list[dict]] = {}
         self._latest_prices: dict[str, float] = {}
         self._latest_quote_times: dict[str, str] = {}
         self._latest_limits: dict[str, float] = {}
@@ -439,7 +451,8 @@ class FirstBoardService:
             dates = history.filter(pl.col("date") < as_of)["date"] if "date" in history.columns else []
             reference = max(dates) if len(dates) else None
         environment = load_environment(self.repo.store.data_dir, as_of=as_of,
-                                       reference_date=reference, allowed_states=config.allowed_market_states)
+                                       reference_date=reference, allowed_states=config.allowed_market_states,
+                                       allowed_phases=config.allowed_market_phases)
         if self._stop.is_set():
             return
         validation = self._validate_history_sessions(history, candidates, as_of, config)
@@ -455,6 +468,14 @@ class FirstBoardService:
         except Exception:  # noqa: BLE001 - 缺股本只让中军市值排名待确认
             logger.warning("首板流通股本读取失败, 中军市值排名待确认", exc_info=True)
             float_shares = {}
+        try:
+            mainlines = load_mainlines(self.repo.store.data_dir, as_of=as_of, reference_date=reference)
+            mainline_members = load_mainline_members(self.repo, mainlines)
+        except Exception:  # noqa: BLE001 - 主线缺失只让主线归属待确认, 不中断盯盘
+            logger.warning("首板主线读取失败, 主线归属待确认", exc_info=True)
+            mainlines = {"date": None, "status": "unavailable", "reason": "主线读取失败, 归属待确认", "items": []}
+            mainline_members = {}
+        self._mainlines, self._mainline_members = mainlines, mainline_members
         self._candidates, self._environment, self._sectors = candidates, environment, sectors
         self._float_shares = float_shares
         self._prepared_key, self._prepared_at = key, time.monotonic()
@@ -892,6 +913,12 @@ class FirstBoardService:
                         blocked.append(role_reason)
                     if excluded:
                         role_hidden.add((symbol, row["pattern"]))
+                    mainline = mainline_evidence(self._mainlines, self._mainline_members, symbol)
+                    row["mainline"] = mainline
+                    row["evidence"]["mainline"] = mainline
+                    if config.require_mainline and mainline["hit"] is not True:
+                        blocked.append(mainline["reason"] if mainline["hit"] is False
+                                       else f"主线归属待确认：{mainline['reason']}")
                     sector = peer_sectors.get(symbol, {})
                     row["sector_confirmation"] = sector
                     row["evidence"]["environment"] = environment
@@ -1005,6 +1032,7 @@ class FirstBoardService:
                     "revision": config.revision,
                     "rows": sorted(visible_rows, key=lambda row: (not row["can_buy"], row["symbol"], row["pattern"])),
                     "environment": dict(self._environment),
+                    "mainlines": copy.deepcopy(self._mainlines),
                     "yesterday_feedback": feedback,
                     "coverage": {"candidate_count": len(visible_rows),
                                  "symbol_count": len({row["symbol"] for row in visible_rows}),

@@ -17,17 +17,17 @@ def stamp(hour=10, minute=0, day=21):
 def quotes():
     return pl.DataFrame([
         {"symbol": f"{i:06d}.SZ", "name": f"股票{i}", "raw_close": 10.8 if i else 11.0,
-         "limit_up_price": 10.995, "change_pct": .08 if i < 5 else -.01}
-        for i in range(10)
+         "limit_up_price": 10.995, "change_pct": .08 if i < 6 else -.01}
+        for i in range(12)
     ])
 
 
 def groups():
     return [
         {"id": "hot", "name": "科技", "kind": "concept", "source_id": "one", "field": "concept",
-         "members": [f"{i:06d}.SZ" for i in range(5)]},
+         "members": [f"{i:06d}.SZ" for i in range(6)]},
         {"id": "cold", "name": "材料", "kind": "concept", "source_id": "one", "field": "concept",
-         "members": [f"{i:06d}.SZ" for i in range(5, 10)]},
+         "members": [f"{i:06d}.SZ" for i in range(6, 12)]},
     ]
 
 
@@ -70,7 +70,7 @@ def test_strength_uses_fraction_breadth_full_group_and_market_comparison():
     assert "相对同来源分类覆盖股票" in group["reason"]
     assert group["coverage"] == 1
     assert group["rank"] == 1 and group["total"] == 2
-    assert group["member_count"] == 5 and group["valid_count"] == 5
+    assert group["member_count"] == 6 and group["valid_count"] == 6
     assert result["intraday_rising"] is True
     assert result["leader_follow"] is False  # first observation is after the rise window
     assert result["group"] == "S1F0"
@@ -212,8 +212,8 @@ def test_positive_return_with_large_drawdown_does_not_qualify():
 
 def test_strong_and_follow_in_different_concepts_do_not_form_joint_group():
     members = [*groups(), {**groups()[1], "id": "follow", "members":
-                           ["000001.SZ", "000000.SZ", "000005.SZ", "000006.SZ", "000007.SZ"]}]
-    members[0] = {**members[0], "members": ["000001.SZ", "000002.SZ", "000003.SZ", "000004.SZ", "000008.SZ"]}
+                           ["000001.SZ", "000000.SZ", "000005.SZ", "000006.SZ", "000007.SZ", "000009.SZ"]}]
+    members[0] = {**members[0], "members": ["000001.SZ", "000002.SZ", "000003.SZ", "000004.SZ", "000005.SZ", "000008.SZ"]}
     engine = AttentionEvaluator()
     evaluate(engine, members=members, now=stamp(9, 40))
     result = evaluate(engine, members=members)
@@ -288,3 +288,27 @@ def test_morning_session_grid_never_fills_missing_or_mixed_labels(problem):
             pl.lit(stamp(11, 30).replace(tzinfo=None)).alias("datetime"))
         bars = pl.concat([bars, extra])
     assert evaluate(observed_engine(), now=now, bars=bars)["intraday_rising"] is None
+
+
+def test_candidate_own_move_cannot_lift_its_group_into_strong():
+    # With the candidate's +9%, "lift" would rank first and beat the market
+    # mean; its peers alone are weaker than both the other group and market.
+    peers = {"000002.SZ": .01, "000003.SZ": .01, "000004.SZ": .01, "000005.SZ": -.01, "000006.SZ": -.01}
+    flat = {f"{i:06d}.SZ": .005 for i in range(7, 13)}
+    changes = {"000001.SZ": .09, **peers, **flat}
+    frame = pl.DataFrame([{"symbol": symbol, "name": symbol, "raw_close": 10.5, "limit_up_price": 10.995,
+                           "change_pct": change} for symbol, change in changes.items()])
+    members = [{**groups()[0], "id": "lift", "members": ["000001.SZ", *peers]},
+               {**groups()[1], "id": "flat", "members": list(flat)}]
+    result = evaluate(frame=frame, members=members)
+    lift = result["groups"][0]
+    assert lift["rank"] == 1 and lift["mean_change_pct"] > lift["market_mean_change_pct"]
+    assert lift["peer_rank"] == 2 and lift["strong"] is False
+    assert result["strong_sector"] is False and "剔除本股" in lift["reason"]
+
+
+def test_group_with_fewer_than_five_peers_is_known_negative_not_unknown():
+    small = [{**groups()[0], "members": [f"{i:06d}.SZ" for i in range(5)]}]
+    result = evaluate(members=small)
+    assert result["groups"][0]["strong"] is False
+    assert result["strong_sector"] is False

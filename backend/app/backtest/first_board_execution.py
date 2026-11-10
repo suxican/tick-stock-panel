@@ -27,6 +27,8 @@ from app.services.minute_adjust import minute_basis_is_raw
 from app.strategy.paper import apply_slippage, buy_fee, sell_fee
 
 GROUPS = ("S0F0", "S1F0", "S0F1", "S1F1", "unknown")
+PHASE_GROUPS = ("ice", "ignite", "rally", "climax", "ebb", "repair", "unknown")
+MAINLINE_GROUPS = ("hit", "miss", "unknown")
 MAX_SIGNALS = 5000
 MAX_DETAILS = 500
 MINUTE_COLUMNS = {"symbol", "datetime", "open", "high", "low", "close", "volume", "amount"}
@@ -81,6 +83,23 @@ def _frame_digest(digest, frame: pl.DataFrame) -> None:
         digest.update(frame.select(sorted(frame.columns)).hash_rows(seed=0).to_numpy().tobytes())
 
 
+def _frozen_context(candidates: list[dict]) -> tuple[str, str]:
+    """信号当时归档的情绪阶段与主线归属; 旧样本缺失或各形态不一致时为 unknown, 不用今天的数据补。"""
+    phases, mainlines = set(), set()
+    for candidate in candidates:
+        evidence = candidate.get("evidence")
+        evidence = evidence if isinstance(evidence, dict) else {}
+        environment = evidence.get("environment")
+        phase = environment.get("phase") if isinstance(environment, dict) else None
+        phases.add(phase if isinstance(phase, str) and phase in PHASE_GROUPS else "unknown")
+        mainline = candidate.get("mainline")
+        mainline = mainline if isinstance(mainline, dict) else evidence.get("mainline")
+        hit = mainline.get("hit") if isinstance(mainline, dict) else None
+        mainlines.add("hit" if hit is True else "miss" if hit is False else "unknown")
+    return (phases.pop() if len(phases) == 1 else "unknown",
+            mainlines.pop() if len(mainlines) == 1 else "unknown")
+
+
 def _trade(sample: dict, row: dict, revision: int, candidates: list[dict], *, shadow: bool) -> dict:
     context = row.get("attention_context")
     context = context if isinstance(context, dict) else {}
@@ -119,11 +138,13 @@ def _trade(sample: dict, row: dict, revision: int, candidates: list[dict], *, sh
     # All shapes for this symbol come from one quote. A partially archived
     # batch can still supply its change; conflicting observations cannot.
     changes = {_number(c.get("change_pct")) for c in candidates} - {None}
+    phase, mainline = _frozen_context(candidates)
     return {
         "signal_id": hashlib.sha256(identity.encode()).hexdigest()[:24],
         "symbol": row["symbol"], "name": row.get("name"), "date": str(stamp.date()), "revision": revision,
         "patterns": sorted({item["pattern"] for item in candidates if isinstance(item.get("pattern"), str)}),
-        "group": group if group in GROUPS else "unknown", "signal_at": stamp.isoformat(),
+        "group": group if group in GROUPS else "unknown", "phase": phase, "mainline": mainline,
+        "signal_at": stamp.isoformat(),
         "order_at": stamp.isoformat(), "entry_bar_at": None, "entry_at": None,
         "exit_signal_bar_at": None, "exit_signal_at": None,
         "exit_order_at": None, "exit_bar_at": None, "exit_at": None, "qty": None,
@@ -821,6 +842,10 @@ def run_execution_validation(repo, store, *, start: date, end: date, revision: i
             "priority_comparison": _priority_comparison(trades, shadows),
             "technical_comparison": _technical_comparison(alerts),
             "by_group": {group: _summary([row for row in trades if row["group"] == group]) for group in GROUPS},
+            "by_phase": {group: _summary([row for row in trades if row["phase"] == group])
+                         for group in PHASE_GROUPS},
+            "by_mainline": {group: _summary([row for row in trades if row["mainline"] == group])
+                            for group in MAINLINE_GROUPS},
             "trades": [{key: value for key, value in row.items() if not key.startswith("_")}
                        for row in trades[:MAX_DETAILS]],
             "total_trades": len(trades), "trades_truncated": len(trades) > MAX_DETAILS,

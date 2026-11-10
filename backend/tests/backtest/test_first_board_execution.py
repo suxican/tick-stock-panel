@@ -97,6 +97,43 @@ def test_recorded_signal_delays_entry_and_t1_exit_and_charges_real_cash_fees(set
     assert len(repo.calls) == len(set(repo.calls))
 
 
+def test_replay_groups_by_phase_and_mainline_frozen_at_the_signal(setup):
+    repo, _ = setup
+    old = run(repo, [sample()])
+    # 旧样本没有归档阶段与主线: 只能是未知, 不补今天的数据。
+    assert (old["trades"][0]["phase"], old["trades"][0]["mainline"]) == ("unknown", "unknown")
+    assert old["by_phase"]["unknown"]["closed"] == old["by_mainline"]["unknown"]["closed"] == 1
+
+    first, later = sample(), sample(minute=5)
+    first["rows"][0]["candidates"][0]["evidence"]["environment"] = {"phase": "rally"}
+    first["rows"][0]["candidates"][0]["mainline"] = {"hit": True, "matches": []}
+    later["rows"][0]["candidates"][0]["evidence"]["environment"] = {"phase": "ebb"}
+    later["rows"][0]["candidates"][0]["mainline"] = {"hit": False, "matches": []}
+    result = run(repo, [first, later])
+    trade = result["trades"][0]
+    assert (trade["phase"], trade["mainline"]) == ("rally", "hit")
+    assert result["by_phase"]["rally"]["closed"] == result["by_mainline"]["hit"]["closed"] == 1
+    assert result["by_phase"]["ebb"]["signals"] == result["by_mainline"]["miss"]["signals"] == 0
+    assert set(result["by_phase"]) == set(execution.PHASE_GROUPS)
+    assert sum(item["signals"] for item in result["by_phase"].values()) == result["summary"]["signals"]
+    assert sum(item["signals"] for item in result["by_mainline"].values()) == result["summary"]["signals"]
+
+
+@pytest.mark.parametrize("environment,mainline,expected", [
+    ({"phase": "boom"}, {"hit": None}, ("unknown", "unknown")),
+    ("bad", "bad", ("unknown", "unknown")),
+    ({"phase": ["rally"]}, {"hit": "yes"}, ("unknown", "unknown")),
+    ({"phase": "ice"}, {"hit": False}, ("ice", "miss")),
+])
+def test_frozen_context_treats_malformed_or_conflicting_evidence_as_unknown(environment, mainline, expected):
+    candidate = {"evidence": {"environment": environment}, "mainline": mainline}
+    assert execution._frozen_context([candidate]) == expected
+    other = {"evidence": {"environment": {"phase": "rally"}, "mainline": {"hit": True}}}
+    assert execution._frozen_context([other]) == ("rally", "hit")
+    assert execution._frozen_context([candidate, other]) == ("unknown", "unknown")
+    assert execution._frozen_context([]) == ("unknown", "unknown")
+
+
 def test_priority_replay_separates_shadow_and_never_backfills_old_scores(setup):
     repo, _ = setup
     old = sample()

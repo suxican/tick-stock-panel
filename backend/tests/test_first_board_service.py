@@ -766,3 +766,37 @@ def test_closed_session_labels_roles_from_latest_displayed_quotes(service, monke
     assert row["can_buy"] is False
     assert row["stock_role"]["leader"] is True
     assert service.events(closed.date()) == []
+
+
+def test_mainline_evidence_is_recorded_and_gate_is_opt_in(service):
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    row = service.snapshot()["rows"][0]
+    # 默认不限制: 主线数据缺失只记为待确认, 不影响提示。
+    assert row["can_buy"] and row["mainline"]["hit"] is None
+    assert service.snapshot()["mainlines"] == {}
+
+    service.save_config({**service.get_config(), "require_mainline": True})
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    row = service.snapshot()["rows"][0]
+    assert not row["can_buy"] and any("主线归属待确认" in reason for reason in row["blocked_reasons"])
+
+    item = {"kind": "concept", "name": "机器人", "rank": 1, "limit_up_count": 9.0, "max_boards": 4.0}
+    service._mainlines = {"date": "2026-10-15", "status": "ready", "reason": "", "top_n": 5, "items": [item]}
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    row = service.snapshot()["rows"][0]
+    assert not row["can_buy"] and any("不属于参考交易日" in reason for reason in row["blocked_reasons"])
+
+    service._mainline_members = {SYMBOL: [item]}
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    row = service.snapshot()["rows"][0]
+    assert row["can_buy"] and row["evidence"]["mainline"]["matches"][0]["name"] == "机器人"
+    assert service.snapshot()["mainlines"]["items"][0]["name"] == "机器人"
+
+
+def test_phase_and_mainline_settings_default_off_and_validate():
+    config = fb.FirstBoardConfig()
+    assert config.allowed_market_phases is None and config.require_mainline is False
+    assert fb.FirstBoardConfig(allowed_market_phases=["ignite", "rally"]).allowed_market_phases == ["ignite", "rally"]
+    for invalid in ([], ["rally", "rally"], ["boom"]):
+        with pytest.raises(ValueError):
+            fb.FirstBoardConfig(allowed_market_phases=invalid)

@@ -83,6 +83,9 @@ class _ReplayTrade(_Contract):
     revision: Count
     patterns: list[str]
     group: Literal["S0F0", "S1F0", "S0F1", "S1F1", "unknown"]
+    # 旧报告没有这两项分组。
+    phase: Literal["ice", "ignite", "rally", "climax", "ebb", "repair", "unknown"] | None = None
+    mainline: Literal["hit", "miss", "unknown"] | None = None
     signal_at: Timestamp
     order_at: Timestamp | None
     entry_at: Timestamp | None
@@ -218,6 +221,8 @@ class _ReplayResult(_BaseResult):
     coverage: _ReplayCoverage
     summary: _ReplaySummary
     by_group: dict[str, _ReplaySummary]
+    by_phase: dict[str, _ReplaySummary] | None = None
+    by_mainline: dict[str, _ReplaySummary] | None = None
     priority_comparison: _PriorityComparison | None = None
     technical_comparison: _TechnicalComparison | None = None
     trades: list[_ReplayTrade]

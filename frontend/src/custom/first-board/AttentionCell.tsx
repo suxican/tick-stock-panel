@@ -85,9 +85,15 @@ export function AttentionCell({ context, snapshotCurrent }: { context?: FirstBoa
         <p>观测 {stamp(context.as_of)} · 规则 {context.rule_version}<br />成分版本 {context.membership_version || '待确认'}</p>
         {context.groups.map(group => <div key={group.id} className="space-y-1">
           <p className="font-medium text-foreground">{group.kind === 'industry' ? '行业' : '概念'} · {group.name}</p>
-          <p>排名 {group.rank ?? '—'} / {group.total ?? '—'} · 覆盖 {group.valid_count} / {group.member_count}（{pct(group.coverage)}）</p>
-          <p>平均涨幅 {pct(group.mean_change_pct)} · 上涨占比 {pct(group.up_ratio)}</p>
-          {group.market_mean_change_pct != null && <p>同来源分类均值 {pct(group.market_mean_change_pct)}</p>}
+          {group.peer_count != null ? <>
+            <p>剔除本股后排名 {group.peer_rank ?? '—'} / {group.peer_total ?? '—'} · 覆盖 {group.peer_valid_count ?? '—'} / {group.peer_count}</p>
+            <p>同行平均涨幅 {pct(group.peer_mean_change_pct)} · 上涨占比 {pct(group.peer_up_ratio)}</p>
+            {group.peer_market_mean_change_pct != null && <p>同来源分类均值 {pct(group.peer_market_mean_change_pct)}</p>}
+          </> : <>
+            <p>排名 {group.rank ?? '—'} / {group.total ?? '—'} · 覆盖 {group.valid_count} / {group.member_count}（{pct(group.coverage)}）</p>
+            <p>平均涨幅 {pct(group.mean_change_pct)} · 上涨占比 {pct(group.up_ratio)}</p>
+            {group.market_mean_change_pct != null && <p>同来源分类均值 {pct(group.market_mean_change_pct)}</p>}
+          </>}
           <p>{group.reason}</p>
           {group.leader && <p>领涨股 {group.leader.name || group.leader.symbol}（{group.leader.symbol}）· {leaderStatus(group.leader.at_limit)}<br />首次观测触板 {stamp(group.leader.observed_limit_at)}</p>}
           <p>来源 {group.source_id} · 分类 {group.field}</p>

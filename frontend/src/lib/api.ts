@@ -6346,6 +6346,27 @@ export interface FirstBoardConfig {
   stock_roles?: FirstBoardStockRole[] | null
   /** 中军：板块内流通市值或成交额排名前 N。 */
   core_top_n?: number
+  /** null 表示不按情绪阶段限制；阶段取候选参考交易日，未知时同样暂停提示。旧后端缺省。 */
+  allowed_market_phases?: FirstBoardPhase[] | null
+  /** 只提示属于参考交易日主线的个股；主线数据缺失时暂停提示。旧后端缺省。 */
+  require_mainline?: boolean
+}
+/** 情绪周期阶段，沿用市场环境页的连板梯队判定。 */
+export type FirstBoardPhase = 'ice' | 'ignite' | 'rally' | 'climax' | 'ebb' | 'repair'
+/** 参考交易日的主线排行项；概念与行业各自排名。 */
+export interface FirstBoardMainlineItem {
+  kind: 'concept' | 'industry'
+  name: string
+  rank: number
+  limit_up_count: number | null
+  max_boards: number | null
+}
+/** hit 为 null 表示主线数据缺失，归属待确认。 */
+export interface FirstBoardMainline {
+  hit: boolean | null
+  date: string | null
+  matches: FirstBoardMainlineItem[]
+  reason: string
 }
 export type FirstBoardStockRole = 'leader' | 'core'
 export interface FirstBoardRoleMatch {
@@ -6380,6 +6401,14 @@ export interface FirstBoardAttentionGroup {
   up_ratio: number | null
   strong: boolean | null
   peer_strong?: boolean | null
+  /** attention-v2 起强势按剔除本股后的同行统计判定；旧样本无以下字段。 */
+  peer_rank?: number | null
+  peer_total?: number | null
+  peer_count?: number
+  peer_valid_count?: number
+  peer_mean_change_pct?: number | null
+  peer_up_ratio?: number | null
+  peer_market_mean_change_pct?: number | null
   follow: boolean | null
   reason: string
   leader: { symbol: string; name: string; observed_limit_at: string; at_limit: boolean | null } | null
@@ -6454,6 +6483,7 @@ export interface FirstBoardCandidate {
   sector_confirmation?: { reason?: string; confirmed?: boolean; member_count?: number; count?: number; coverage?: number }
   attention_context?: FirstBoardAttention
   stock_role?: FirstBoardRole
+  mainline?: FirstBoardMainline
   priority_score?: FirstBoardPriority
   last_priority?: { score: number; known_max: number; as_of: string; status: string; version: string; source?: 'event' } | null
   suggested_amount: number | null
@@ -6587,7 +6617,13 @@ export interface FirstBoardSnapshot {
   rows: FirstBoardCandidate[]
   attention_sampling?: FirstBoardAttentionSampling
   yesterday_feedback?: FirstBoardFeedback
-  environment: { date?: string | null; state?: string | null; label?: string; allowed: boolean; reason?: string }
+  /** phase 与 ladder 取自参考交易日；比例为小数制，缺失为 null。旧后端缺省。 */
+  environment: {
+    date?: string | null; state?: string | null; label?: string; allowed: boolean; reason?: string
+    phase?: FirstBoardPhase | null; phase_label?: string
+    ladder?: Partial<Record<'max_consecutive' | 'first_board' | 'ge2_count' | 'promo_rate' | 'seal_rate' | 'limit_up' | 'limit_down' | 'broken_limit', number | null>>
+  }
+  mainlines?: { date?: string | null; status?: 'ready' | 'unavailable'; reason?: string; top_n?: number; items?: FirstBoardMainlineItem[] }
   /** role_hidden_count：因不属于所选角色而未列出的股票数，旧后端缺省。 */
   coverage: { candidate_count: number; symbol_count: number; quote_count: number; fresh_count: number; role_hidden_count?: number }
   limitations: string[]
@@ -6814,6 +6850,9 @@ export interface FirstBoardReplayValidation extends FirstBoardValidationBase {
   }
   summary: FirstBoardExecutionSummary
   by_group: Record<string, FirstBoardExecutionSummary>
+  /** 按信号当时归档的情绪阶段、主线归属分组；旧报告缺省，旧样本归入 unknown。 */
+  by_phase?: Record<string, FirstBoardExecutionSummary> | null
+  by_mainline?: Record<string, FirstBoardExecutionSummary> | null
   priority_comparison?: {
     version: string; scored: number; unscored: number; popularity_known: number; holdout_start: string | null
     groups: (FirstBoardRankOutcomes & {

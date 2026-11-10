@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type FirstBoardConfig, type FirstBoardExecutionOptions, type FirstBoardPaperValidation, type FirstBoardReplayValidation, type FirstBoardTradeValidation, type FirstBoardTradeValidationRequest } from '@/lib/api'
+import { api, type FirstBoardConfig, type FirstBoardExecutionOptions, type FirstBoardExecutionSummary, type FirstBoardPaperValidation, type FirstBoardReplayValidation, type FirstBoardTradeValidation, type FirstBoardTradeValidationRequest } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { PriorityComparison } from './PriorityComparison'
 import { TechnicalComparison } from './TechnicalComparison'
-import { beijingDay, buttonClass, ErrorNotice, inputClass, LoadingRows, money, Notice, panelClass, pct, stamp } from './shared'
+import { beijingDay, buttonClass, ErrorNotice, inputClass, LoadingRows, money, Notice, panelClass, pct, phaseLabels, stamp } from './shared'
 
 const modeLabels = { replay: '已记录信号成交回放（模型估计）', paper: '模拟盘成交归因' }
 const defaults: FirstBoardExecutionOptions = { amount: 10000, commission_pct: .0003, stamp_tax_pct: .0005, slippage_bps: 5, participation_rate: .01, entry_window_minutes: 5, max_exit_sessions: 5 }
@@ -19,6 +19,18 @@ const optionFields: { key: keyof FirstBoardExecutionOptions; label: string; scal
 ]
 const tradeLabels: Record<string, string> = { no_fill: '未成交', unverifiable: '无法验证', open_position: '持有中', closed: '已闭环', not_ordered: '未发现委托', pending: '委托待成交', filled: '已成交', cancelled: '已撤单', expired: '委托已过期', open: '持有中', partially_closed: '部分退出', evidence_missing: '证据缺失' }
 const groupLabels: Record<string, string> = { S0F0: '两项未满足', S1F0: '仅强势板块', S0F1: '仅领涨带动', S1F1: '同板块双条件', unknown: '未知组' }
+const phaseGroupLabels: Record<string, string> = { ...phaseLabels, unknown: '阶段未知' }
+const mainlineGroupLabels: Record<string, string> = { hit: '主线内', miss: '非主线', unknown: '主线未知' }
+
+function GroupTable({ label, head, groups, labels, hideEmpty = false }: {
+  label: string; head: string; groups: Record<string, FirstBoardExecutionSummary>; labels: Record<string, string>; hideEmpty?: boolean
+}) {
+  const rows = Object.entries(groups).filter(([, value]) => !hideEmpty || value.signals > 0)
+  return <div className="overflow-x-auto"><table className="w-full min-w-[650px] text-left text-xs" aria-label={label}>
+    <thead><tr>{[head, '信号', '闭环', '未成交', '无法验证', '持有中', '闭环平均净收益率'].map(item => <th className="px-2 py-2 font-normal text-secondary" key={item}>{item}</th>)}</tr></thead>
+    <tbody>{rows.map(([group, value]) => <tr key={group} className="border-t border-border"><th className="px-2 py-2 font-medium">{labels[group] ?? group}</th><td className="px-2 py-2">{value.signals}</td><td className="px-2 py-2">{value.closed}</td><td className="px-2 py-2">{value.no_fill}</td><td className="px-2 py-2">{value.unverifiable}</td><td className="px-2 py-2">{value.open_position}</td><td className="px-2 py-2">{pct(value.closed ? value.net_return_mean : null)}</td></tr>)}</tbody>
+  </table></div>
+}
 const resultLabels: Record<string, string> = { modelled: '已完成模型估计', insufficient_evidence: '证据不足', no_signals: '无已记录信号', ready: '归因完成', incomplete: '部分证据不完整', unavailable: '当前不可用', error: '验证失败' }
 const reasonLabels: Record<string, string> = {
   recorded_signal_config_missing: '缺少信号当时的完整规则', recorded_limit_evidence_mismatch: '涨停价与已记录信号不一致',
@@ -103,7 +115,15 @@ function ValidationResult({ result, onOpenStock }: { result: FirstBoardTradeVali
     {replay?.priority_comparison && <PriorityComparison key={replay.id} report={replay.priority_comparison} />}
     {replay && <TechnicalComparison key={`technical-${replay.id}`} report={replay.technical_comparison} />}
     {signals === 0 && <Notice>{replay?.technical_comparison?.eligible ? '五分钟采样成交回放没有可验证的已记录信号。技术影子排序使用首次买入候选事件单独统计。' : '所选范围没有可验证的已记录信号。缺少记录不能解释为策略没有机会。'}</Notice>}
-    {replay && Object.keys(replay.by_group).length > 0 && <details><summary className="cursor-pointer text-sm">前向分组与闭环分母</summary><div className="mt-2 overflow-x-auto"><table className="w-full min-w-[650px] text-left text-xs" aria-label="交易验证分组"><thead><tr>{['当时分组', '信号', '闭环', '未成交', '无法验证', '持有中', '闭环平均净收益率'].map(label => <th className="px-2 py-2 font-normal text-secondary" key={label}>{label}</th>)}</tr></thead><tbody>{Object.entries(replay.by_group).map(([group, value]) => <tr key={group} className="border-t border-border"><th className="px-2 py-2 font-medium">{groupLabels[group] ?? group}</th><td className="px-2 py-2">{value.signals}</td><td className="px-2 py-2">{value.closed}</td><td className="px-2 py-2">{value.no_fill}</td><td className="px-2 py-2">{value.unverifiable}</td><td className="px-2 py-2">{value.open_position}</td><td className="px-2 py-2">{pct(value.closed ? value.net_return_mean : null)}</td></tr>)}</tbody></table></div></details>}
+    {replay && Object.keys(replay.by_group).length > 0 && <details><summary className="cursor-pointer text-sm">前向分组与闭环分母</summary>
+      <div className="mt-2 space-y-4">
+        <GroupTable label="交易验证分组" head="板块联动" groups={replay.by_group} labels={groupLabels} />
+        {/* 阶段与主线分组只列出现过信号的行，避免七个阶段的空行淹没结果。 */}
+        {replay.by_phase && <GroupTable label="情绪阶段分组" head="情绪阶段" groups={replay.by_phase} labels={phaseGroupLabels} hideEmpty />}
+        {replay.by_mainline && <GroupTable label="主线归属分组" head="主线归属" groups={replay.by_mainline} labels={mainlineGroupLabels} hideEmpty />}
+        {(replay.by_phase || replay.by_mainline) && <p className="max-w-prose text-xs leading-relaxed text-secondary">阶段与主线按首次可买信号当时的归档分组，接入前的样本归入未知。规则中开启对应条件后，被拦下的个股不会成为信号，该分组会为空，不能据此比较。</p>}
+      </div>
+    </details>}
     {result.trades.length > 0 && <div className="overflow-x-auto"><table className="w-full min-w-[850px] text-left text-xs" aria-label="交易验证明细"><thead><tr>{['股票 / 信号时间', '执行状态', '闭环净收益', '闭环净收益率', '剩余数量', '原因与交易链'].map(label => <th key={label} className="px-2 py-2 font-normal text-secondary">{label}</th>)}</tr></thead><tbody>
       {replay?.trades.map(trade => <tr className="border-t border-border" key={trade.signal_id}><td className="px-2 py-3 align-top"><button className="font-medium hover:underline" onClick={() => onOpenStock(trade.symbol, trade.name || trade.symbol)}>{trade.name || trade.symbol}</button><span className="mt-1 block text-secondary">{trade.symbol}<br />{stamp(trade.signal_at)}</span></td><td className="px-2 py-3 align-top">{tradeLabels[trade.status]}</td><td className="px-2 py-3 align-top tabular-nums">{money(trade.status === 'closed' ? trade.net_pnl : null)}</td><td className="px-2 py-3 align-top tabular-nums">{pct(trade.status === 'closed' ? trade.net_return : null)}</td><td className="px-2 py-3 align-top">{trade.status === 'open_position' ? trade.qty ?? '—' : trade.status === 'closed' || trade.status === 'no_fill' ? 0 : '—'}</td><td className="min-w-64 max-w-xl px-2 py-3 align-top"><p className="leading-relaxed">{trade.reasons.map(reasonText).join('；') || '—'}</p><details className="mt-2"><summary className="cursor-pointer">信号 → 委托 → 成交 → 退出</summary><ReplayTrace trade={trade} /></details></td></tr>)}
       {paper?.trades.map(trade => <tr className="border-t border-border" key={trade.signal_id}><td className="px-2 py-3 align-top"><button className="font-medium hover:underline" onClick={() => onOpenStock(trade.symbol, trade.symbol)}>{trade.symbol}</button><span className="mt-1 block text-secondary">{stamp(trade.signal_at)}</span></td><td className="px-2 py-3 align-top">{tradeLabels[trade.status]}</td><td className="px-2 py-3 align-top tabular-nums">{money(trade.status === 'closed' ? trade.realized_net_pnl : null)}</td><td className="px-2 py-3 align-top tabular-nums">{pct(trade.status === 'closed' ? trade.closed_net_return : null)}</td><td className="px-2 py-3 align-top">{trade.remaining_qty ?? '—'}</td><td className="min-w-64 max-w-xl px-2 py-3 align-top"><p className="leading-relaxed">{trade.reason || '—'}</p><details className="mt-2"><summary className="cursor-pointer">信号 → 委托 → 成交 → 退出</summary><PaperTrace trade={trade} /></details></td></tr>)}

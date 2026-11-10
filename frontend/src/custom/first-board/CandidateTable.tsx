@@ -10,7 +10,7 @@ import { useTableSort } from '@/components/stock-table/useTableSort'
 import { AttentionCell, AttentionSummary, attentionPriority, matchesAttention, type AttentionFilter } from './AttentionCell'
 import { TechnicalEvidence } from './TechnicalEvidence'
 import { PriorityCell, PrioritySummary, currentPriority, matchesPriority, priorityFilters, strongBoards, type PriorityFilter } from './PriorityCell'
-import { ErrorNotice, inputClass, LoadingRows, money, panelClass, PatternBadge, patternLabels, pct, roleLabels, stamp, StateBadge, stateLabels } from './shared'
+import { ErrorNotice, inputClass, LoadingRows, money, panelClass, PatternBadge, patternLabels, pct, roleClasses, roleLabels, stamp, StateBadge, stateLabels } from './shared'
 
 const candidateColumns: ColumnConfig[] = [
   ['symbol', '股票 / 行业'], ['pattern', '形态'], ['state', '状态'], ['price', '现价'], ['change_pct', '涨幅'],
@@ -45,6 +45,7 @@ export function useCandidateView(all: FirstBoardCandidate[] | undefined, current
   const [filter, setFilter] = useState<FirstBoardPattern | 'all'>('all')
   const [stateFilter, setStateFilter] = useState<FirstBoardState | 'all'>('all')
   const [onlyActionable, setOnlyActionable] = useState(false)
+  const [onlyMainline, setOnlyMainline] = useState(false)
   const [attentionFilter, setAttentionFilter] = useState<AttentionFilter>('all')
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('all')
   const [boardId, setBoardId] = useState('')
@@ -75,6 +76,7 @@ export function useCandidateView(all: FirstBoardCandidate[] | undefined, current
     // 状态分段的计数基于除状态外的其余筛选，切换状态时数字不跳动。
     const base = (all ?? []).filter(row =>
       (filter === 'all' || row.pattern === filter) && (!onlyActionable || row.can_buy)
+      && (!onlyMainline || row.mainline?.hit === true)
       && matchesAttention(row.attention_context, attentionFilter, current) && inPriorityFilter(row))
     const counts = Object.fromEntries(states.map(state => [state, 0])) as Record<FirstBoardState, number>
     for (const row of base) if (row.state in counts) counts[row.state] += 1
@@ -85,9 +87,10 @@ export function useCandidateView(all: FirstBoardCandidate[] | undefined, current
       sorted.sort((a, b) => tier(a) - tier(b))
     }
     return { rows: markedFirst(sorted, marks, 'focused'), stateCounts: counts, stateTotal: base.length }
-  }, [all, filter, stateFilter, onlyActionable, attentionFilter, priorityFilter, boardIndex, boardId, current, sortRows, sort?.key, marks])
+  }, [all, filter, stateFilter, onlyActionable, onlyMainline, attentionFilter, priorityFilter, boardIndex, boardId, current, sortRows, sort?.key, marks])
   return {
     rows, stateCounts, stateTotal, sort, toggleSort, boardIndex, filter, setFilter, stateFilter, setStateFilter, onlyActionable, setOnlyActionable,
+    onlyMainline, setOnlyMainline,
     attentionFilter, setAttentionFilter, priorityFilter, setPriorityFilter, boardId, setBoardId,
   }
 }
@@ -113,6 +116,9 @@ function CandidateFilters({ view }: { view: CandidateView }) {
       <label className={cn(chipClass, 'cursor-pointer', view.onlyActionable ? 'border-accent/50 bg-accent/10 text-foreground' : 'border-border text-secondary hover:text-foreground')}>
         <input type="checkbox" className="accent-[hsl(var(--accent))]" checked={view.onlyActionable} onChange={event => view.setOnlyActionable(event.target.checked)} />只看可提示候选
       </label>
+      <label className={cn(chipClass, 'cursor-pointer', view.onlyMainline ? 'border-accent/50 bg-accent/10 text-foreground' : 'border-border text-secondary hover:text-foreground')}>
+        <input type="checkbox" className="accent-[hsl(var(--accent))]" checked={view.onlyMainline} onChange={event => view.setOnlyMainline(event.target.checked)} />只看主线
+      </label>
       <button type="button" aria-expanded={moreOpen} aria-controls={moreId} onClick={() => setMoreOpen(value => !value)}
         className={cn(chipClass, active ? 'border-accent/50 text-foreground' : 'border-border text-secondary hover:text-foreground')}>
         <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />更多筛选{active > 0 && <span className="tabular-nums">· {active}</span>}
@@ -136,6 +142,7 @@ function emptyMessage(view: CandidateView) {
   if (view.priorityFilter !== 'all') return '当前评分筛选下暂无候选。可选择全部候选查看缺失证据或最近盘中评分。'
   if (view.stateFilter !== 'all') return '当前筛选条件下暂无候选，可切换状态或调整其他筛选条件。'
   if (view.attentionFilter !== 'all') return '当前筛选下没有满足重点关注条件的候选。数据不足或过期的候选不计入重点筛选，可选择全部候选查看联动依据。'
+  if (view.onlyMainline) return '当前没有属于参考交易日主线的候选。主线数据缺失的候选不计入，可取消筛选查看全部。'
   if (view.onlyActionable) return '当前没有通过全部确认条件的候选，可取消筛选查看阻断原因。'
   return '暂无匹配的首板候选。系统需要完成日线建立观察池，并等待有效盘中报价；没有候选时不会生成买入提示。'
 }
@@ -176,6 +183,7 @@ function CandidateEvidence({ row, current, day, stockReasons }: { row: FirstBoar
       <ul className="space-y-1 text-secondary">
         {row.reasons.map(reason => <li key={reason}>{reason}</li>)}
         {row.sector_confirmation?.reason && !stockReasons.includes(row.sector_confirmation.reason) && <li>{row.sector_confirmation.reason}</li>}
+        {row.mainline && <li>{row.mainline.reason}</li>}
         <li>形态参考日期：{String(row.evidence.reference_date ?? '—')}</li>
         {typeof row.evidence.breakout_price_raw === 'number' && <li>原价突破参考：{money(row.evidence.breakout_price_raw)} 元</li>}
       </ul>
@@ -200,8 +208,15 @@ export function RoleTags({ row }: { row: FirstBoardCandidate }) {
   const hits = (Object.keys(roleLabels) as (keyof typeof roleLabels)[]).filter(name => role[name] === true)
   return <>{hits.map(name => {
     const boards = role.matches.filter(match => match.roles.includes(name)).map(match => match.name)
-    return <span key={name} title={`${roleLabels[name]}：${boards.join('、')}`} className="ml-1 inline-flex shrink-0 items-center rounded border border-accent/40 px-1 text-[10px] leading-4 text-accent">{roleLabels[name]}</span>
+    return <span key={name} title={`${roleLabels[name]}：${boards.join('、')}`} className={cn('ml-1 inline-flex shrink-0 items-center rounded border px-1 text-[10px] leading-4', roleClasses[name])}>{roleLabels[name]}</span>
   })}</>
+}
+
+/** 只标出已命中参考交易日主线的个股；未命中与待确认的说明在依据中。 */
+export function MainlineTag({ row }: { row: FirstBoardCandidate }) {
+  const matches = row.mainline?.hit === true ? row.mainline.matches : []
+  if (!matches.length) return null
+  return <span title={`${row.mainline?.date ?? ''} 主线：${matches.map(match => `${match.name}（第 ${match.rank}）`).join('、')}`} className="ml-1 inline-flex shrink-0 items-center rounded border border-accent/40 bg-accent/10 px-1 text-[10px] leading-4 text-foreground">主线</span>
 }
 
 function CandidateRow({ row, current, day, focused, canOrder, globalReasons, expanded, onToggle, onFocus, onOpen, onBuy }: {
@@ -221,6 +236,7 @@ function CandidateRow({ row, current, day, focused, canOrder, globalReasons, exp
         <div className="flex items-start gap-1">
           <button className="whitespace-nowrap text-left font-medium hover:underline focus-visible:outline focus-visible:outline-accent" onClick={() => onOpen(row.symbol, row.name)}>{row.name}{board && <span className={`ml-1 shrink-0 inline-flex items-center justify-center w-[18px] h-[18px] rounded text-[9px] font-bold leading-none border ${board.color}`}>{board.label}</span>}</button>
           <RoleTags row={row} />
+          <MainlineTag row={row} />
           <button type="button" aria-pressed={focused} aria-label={`${focused ? '取消关注' : '特别关注'} ${row.name} ${row.symbol}`} title={focused ? '取消关注' : '特别关注并优先显示'}
             className={cn('-my-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded focus-visible:outline focus-visible:outline-accent', focused ? 'text-accent' : 'text-muted hover:text-foreground')}
             onClick={() => onFocus(row.symbol)}><Star className="h-3.5 w-3.5" fill={focused ? 'currentColor' : 'none'} aria-hidden="true" /></button>
