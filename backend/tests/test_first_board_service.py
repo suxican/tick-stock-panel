@@ -800,3 +800,35 @@ def test_phase_and_mainline_settings_default_off_and_validate():
     for invalid in ([], ["rally", "rally"], ["boom"]):
         with pytest.raises(ValueError):
             fb.FirstBoardConfig(allowed_market_phases=invalid)
+
+
+def test_seal_quality_is_attached_only_at_the_limit_price_and_never_gates_buys(service):
+    calls = []
+
+    def sealed_map(_day, is_down):
+        calls.append(is_down)
+        return {SYMBOL: {"sealed": False, "vol": 500, "ready": True, "age": 3.0}}
+
+    service._depth_service = SimpleNamespace(is_sealed_ready=lambda _day: True, get_sealed_age=lambda _day: 3.0,
+                                             get_sealed_map=sealed_map)
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    row = service.snapshot()["rows"][0]
+    # 临近涨停时不读盘口表, 买入提示不受封单数据影响。
+    assert row["state"] == "approaching" and row["can_buy"] and "seal_quality" not in row and not calls
+
+    service.process_snapshot(quotes(raw_close=11.0, close=11.0, raw_high=11.0, change_pct=.1),
+                             NOW.date(), now=NOW + timedelta(seconds=5))
+    row = service.snapshot()["rows"][0]
+    assert row["state"] == "sealed" and calls == [False]
+    quality = row["seal_quality"]
+    assert quality["status"] == "fake" and quality["vol_lots"] == 500
+    assert quality["sealed_amount"] == pytest.approx(500 * 100 * 11.0)
+    assert quality["seal_ratio"] == pytest.approx(550_000 / 80_000_000)
+    assert row["evidence"]["seal_quality"] == quality
+    sealed_event = [event for event in service.events(NOW.date()) if event["type"] == "sealed"]
+    assert sealed_event and sealed_event[-1]["evidence"]["seal_quality"]["status"] == "fake"
+
+    service._depth_service = None
+    service.process_snapshot(quotes(raw_close=11.0, close=11.0, raw_high=11.0, change_pct=.1),
+                             NOW.date(), now=NOW + timedelta(seconds=10))
+    assert service.snapshot()["rows"][0]["seal_quality"]["status"] == "unavailable"

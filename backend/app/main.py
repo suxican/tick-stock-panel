@@ -496,6 +496,7 @@ async def _application_lifespan(app: FastAPI):
         first_board_service = FirstBoardService(
             repo, history_loader=_screener_svc._load_enriched_history,
             publish=qs.publish_first_board_alerts, quote_service=qs,
+            depth_service=getattr(app.state, "depth_service", None),
         )
         first_board_service.start()
         app.state.first_board_service = first_board_service

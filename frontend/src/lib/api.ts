@@ -6361,6 +6361,15 @@ export interface FirstBoardMainlineItem {
   limit_up_count: number | null
   max_boards: number | null
 }
+/** 封板质量取自五档封单判定；封单量单位为手，封单额为元，封成比为封单额／当日成交额（小数制）。 */
+export interface FirstBoardSealQuality {
+  status: 'real' | 'fake' | 'pending' | 'unavailable'
+  vol_lots: number | null
+  sealed_amount: number | null
+  seal_ratio: number | null
+  age_seconds: number | null
+  reason: string
+}
 /** hit 为 null 表示主线数据缺失，归属待确认。 */
 export interface FirstBoardMainline {
   hit: boolean | null
@@ -6484,6 +6493,8 @@ export interface FirstBoardCandidate {
   attention_context?: FirstBoardAttention
   stock_role?: FirstBoardRole
   mainline?: FirstBoardMainline
+  /** 仅到涨停价的候选有此项；旧后端缺省。 */
+  seal_quality?: FirstBoardSealQuality
   priority_score?: FirstBoardPriority
   last_priority?: { score: number; known_max: number; as_of: string; status: string; version: string; source?: 'event' } | null
   suggested_amount: number | null

@@ -1147,6 +1147,29 @@ it('shows the reference-day sentiment phase and mainlines, and filters candidate
   await toggleExact('只看主线')
   expect(candidateNames()).toEqual(['主线股票'])
 })
+it('shows seal quality only for candidates at the limit price and keeps unknown amounts blank', async () => {
+  const base = snapshot()
+  const seal = { vol_lots: 12000, sealed_amount: 132_000_000, seal_ratio: .2, age_seconds: 5.4, reason: '涨停价上卖一无挂单' }
+  calls.firstBoardSnapshot.mockResolvedValue({ ...base, rows: [
+    candidate('真封股票', { symbol: '600001.SH', state: 'sealed', can_buy: false, seal_quality: { ...seal, status: 'real' } }),
+    candidate('假封股票', { symbol: '600002.SH', state: 'sealed', can_buy: false, seal_quality: { ...seal, status: 'fake', sealed_amount: null, seal_ratio: null, reason: '涨停价上卖一仍有挂单, 封单不稳' } }),
+    candidate('无数据股票', { symbol: '600003.SH', state: 'sealed', can_buy: false, seal_quality: { status: 'unavailable', vol_lots: null, sealed_amount: null, seal_ratio: null, age_seconds: null, reason: '五档盘口封单数据未就绪' } }),
+    candidate('临板股票', { symbol: '600004.SH' }),
+  ] })
+  await render()
+  const stateCell = (name: string) => candidateRows().find(row => row.textContent?.includes(name))!.children[2].textContent
+  expect(stateCell('真封股票')).toBe('涨停价观察真封 · 1.32亿')
+  expect(stateCell('假封股票')).toBe('涨停价观察假封')
+  expect(stateCell('无数据股票')).toBe('涨停价观察封单数据不可用')
+  expect(stateCell('临板股票')).toBe('临近涨停')
+  const fake = [...host.querySelectorAll('span')].find(node => node.textContent === '假封')!
+  expect(fake.className).toContain('amber')
+  expect(fake.title).toContain('卖一仍有挂单')
+  await expandEvidence()
+  // 封成比为小数制 0.2，须显示为 20%。
+  expect(host.textContent).toContain('封板质量：真封，涨停价上卖一无挂单；封单 1.32亿 元（12,000 手），封成比 20.00%，5 秒前更新')
+  expect(host.textContent).toContain('封板质量：封单数据不可用，五档盘口封单数据未就绪')
+})
 it('hides sentiment and mainline chips for snapshots from an older backend', async () => {
   await render()
   const status = host.querySelector('section[aria-label="盯盘状态"]')!

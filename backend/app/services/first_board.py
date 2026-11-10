@@ -35,6 +35,7 @@ from app.services.first_board_context import (
 )
 from app.services.first_board_data_status import build_data_status, radar_clocks
 from app.services.first_board_feedback import FirstBoardFeedback, empty_feedback, expire_feedback
+from app.services.first_board_seal import load_sealed, seal_quality
 from app.services.first_board_observations import FirstBoardObservationStore
 from app.services.first_board_portfolio import (
     buy_budget,
@@ -197,8 +198,9 @@ def _feedback_gate(feedback: dict, config: FirstBoardConfig, as_of: date) -> dic
 
 
 class FirstBoardService:
-    def __init__(self, repo, *, history_loader, publish=None, quote_service=None):
+    def __init__(self, repo, *, history_loader, publish=None, quote_service=None, depth_service=None):
         self.repo = repo
+        self._depth_service = depth_service
         self.root: Path = repo.store.data_dir / "user_data" / "first_board"
         self.config_path = self.root / "config.json"
         self._history_loader = history_loader
@@ -861,6 +863,9 @@ class FirstBoardService:
             except Exception:  # noqa: BLE001 - optional radar must not disable the original buy gate
                 logger.warning("首板雷达暂不可用", exc_info=True)
                 radar = {}
+            # 只有已到涨停价的候选需要封单判定; 没有时不读盘口表。
+            sealed = (load_sealed(self._depth_service, as_of)
+                      if any(row["state"] == "sealed" for row in rows) else None)
             status_inputs = {"clocks": radar_clocks(radar), "minute": dict(self._attention_input),
                              "membership_reason": self._attention_data.reason}
             messages: list[dict] = []
@@ -913,6 +918,11 @@ class FirstBoardService:
                         blocked.append(role_reason)
                     if excluded:
                         role_hidden.add((symbol, row["pattern"]))
+                    if sealed is not None and row["state"] == "sealed":
+                        quality = seal_quality(sealed, symbol, price=row.get("price"),
+                                               amount=row["evidence"].get("amount"), live=live)
+                        row["seal_quality"] = quality
+                        row["evidence"]["seal_quality"] = quality
                     mainline = mainline_evidence(self._mainlines, self._mainline_members, symbol)
                     row["mainline"] = mainline
                     row["evidence"]["mainline"] = mainline

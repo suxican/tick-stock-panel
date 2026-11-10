@@ -4,7 +4,7 @@ import type { FirstBoardCandidate, FirstBoardPattern, FirstBoardState } from '@/
 import type { ColumnConfig } from '@/lib/list-columns'
 import { markedFirst, type StockMarks, type useStockMarks } from '@/lib/useStockMarks'
 import { cn } from '@/lib/cn'
-import { fmtPct, fmtPrice, priceColorClass } from '@/lib/format'
+import { fmtBigNum, fmtPct, fmtPrice, priceColorClass } from '@/lib/format'
 import { boardTag } from '@/components/stock-table/primitives'
 import { useTableSort } from '@/components/stock-table/useTableSort'
 import { AttentionCell, AttentionSummary, attentionPriority, matchesAttention, type AttentionFilter } from './AttentionCell'
@@ -183,6 +183,7 @@ function CandidateEvidence({ row, current, day, stockReasons }: { row: FirstBoar
       <ul className="space-y-1 text-secondary">
         {row.reasons.map(reason => <li key={reason}>{reason}</li>)}
         {row.sector_confirmation?.reason && !stockReasons.includes(row.sector_confirmation.reason) && <li>{row.sector_confirmation.reason}</li>}
+        <SealQuality row={row} detail />
         {row.mainline && <li>{row.mainline.reason}</li>}
         <li>形态参考日期：{String(row.evidence.reference_date ?? '—')}</li>
         {typeof row.evidence.breakout_price_raw === 'number' && <li>原价突破参考：{money(row.evidence.breakout_price_raw)} 元</li>}
@@ -210,6 +211,18 @@ export function RoleTags({ row }: { row: FirstBoardCandidate }) {
     const boards = role.matches.filter(match => match.roles.includes(name)).map(match => match.name)
     return <span key={name} title={`${roleLabels[name]}：${boards.join('、')}`} className={cn('ml-1 inline-flex shrink-0 items-center rounded border px-1 text-[10px] leading-4', roleClasses[name])}>{roleLabels[name]}</span>
   })}</>
+}
+
+const sealLabels = { real: '真封', fake: '假封', pending: '封单待确认', unavailable: '封单数据不可用' } as const
+/** 涨停价候选的封板质量：真封附封单额，假封用琥珀提示，其余置灰；明细在依据中。 */
+export function SealQuality({ row, detail = false }: { row: FirstBoardCandidate; detail?: boolean }) {
+  const seal = row.seal_quality
+  if (!seal) return null
+  const amount = seal.sealed_amount == null ? null : fmtBigNum(seal.sealed_amount)
+  if (detail) return <li>封板质量：{sealLabels[seal.status]}，{seal.reason}{amount && `；封单 ${amount} 元`}{seal.vol_lots != null && `（${seal.vol_lots.toLocaleString('zh-CN')} 手）`}{seal.seal_ratio != null && `，封成比 ${pct(seal.seal_ratio)}`}{seal.age_seconds != null && `，${Math.round(seal.age_seconds)} 秒前更新`}</li>
+  return <span title={seal.reason} className={cn('mt-1 block whitespace-nowrap tabular-nums', seal.status === 'fake' ? 'text-amber-700 dark:text-amber-400' : seal.status === 'real' ? 'text-foreground' : 'text-muted')}>
+    {sealLabels[seal.status]}{seal.status !== 'unavailable' && amount && ` · ${amount}`}
+  </span>
 }
 
 /** 只标出已命中参考交易日主线的个股；未命中与待确认的说明在依据中。 */
@@ -244,7 +257,7 @@ function CandidateRow({ row, current, day, focused, canOrder, globalReasons, exp
         <span className="block max-w-40 truncate text-secondary" title={`${row.symbol} · ${row.sector || '行业未确认'}`}>{row.symbol} · {row.sector || '行业未确认'}</span>
       </td>
       <td className="px-3 py-2.5"><PatternBadge pattern={row.pattern} label={row.pattern_label} /></td>
-      <td className="px-3 py-2.5"><StateBadge state={row.state} /></td>
+      <td className="px-3 py-2.5"><StateBadge state={row.state} /><SealQuality row={row} /></td>
       <td className={cn('px-3 py-2.5 tabular-nums', priceColorClass(row.price ? row.change_pct : null))}>{fmtPrice(row.price)}</td>
       <td className={cn('px-3 py-2.5 tabular-nums', priceColorClass(row.change_pct))}>{fmtPct(row.change_pct)}</td>
       <td className="px-3 py-2.5 tabular-nums">{pct(row.distance_to_limit_pct)}</td>
