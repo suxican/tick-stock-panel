@@ -3,6 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { finalizeFrontendExtensions } from '@/extensions/registry'
 import { StockPreviewDialogContent, type Props } from './StockPreviewDialogContent'
 import type { HuichunChartContext } from '@/lib/huichun-chart'
 
@@ -33,6 +34,7 @@ let host: HTMLDivElement
 let root: Root
 let client: QueryClient
 beforeEach(() => {
+  finalizeFrontendExtensions(new Set())
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   Object.values(calls).forEach(call => call.mockReset())
   clock.now = Date.parse('2026-10-22T02:00:00Z')
