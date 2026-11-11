@@ -23,8 +23,12 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',   // dev.sh / dev.ps1 会用 CLI --host 覆盖
     port: 3011,
-    // 不要开启 server.warmup: Windows 上实测会偶发让 dev server 整体无响应
-    // 数分钟 (CPU 空闲, 所有请求挂起), 只换来首屏少等几秒, 得不偿失。
+    watch: {
+      // Vite 默认监听 root 下除 node_modules/.git 外的全部文件。frontend 下若留有
+      // pnpm 本地 store (.pnpm-store, 上万文件), 启动时逐个建 fs.watch 会把事件
+      // 循环占满数分钟, 期间所有请求挂起 (Windows 上实测)。非源码目录一律不监听。
+      ignored: ['**/.pnpm-store/**', '**/dist/**', '**/.uv/**'],
+    },
     proxy: {
       // dev 时 /api 转发到与启动脚本相同的 FastAPI 地址
       '/api': {
