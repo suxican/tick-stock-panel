@@ -11,10 +11,12 @@ it('uses only GET and keeps historical dates, funds and windows separate', async
   await api.etfObservation(1)
   await api.etfObservation(20, '2026-09-30')
   await api.etfObservationDetail('510310.SH', 60, '2026-11-04')
+  await api.etfTurnover()
   expect(fetch.mock.calls.map(([url, init]) => [url, init.method ?? 'GET'])).toEqual([
     ['/api/etf-observation?window=1', 'GET'],
     ['/api/etf-observation?window=20&as_of=2026-09-30', 'GET'],
     ['/api/etf-observation/detail?symbol=510310.SH&window=60&as_of=2026-11-04', 'GET'],
+    ['/api/etf-observation/turnover', 'GET'],
   ])
   expect(QK.etfObservation(20)).not.toEqual(QK.etfObservation(60))
   expect(QK.etfObservation(20)).not.toEqual(QK.etfObservation(20, '2026-09-30'))

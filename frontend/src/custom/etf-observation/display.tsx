@@ -15,3 +15,8 @@ export function SourceLink({ href, children, page }: { href: string | null; chil
     {children}<ExternalLink aria-hidden size={12} />
   </a>
 }
+
+export function direction(value: number | null | undefined) {
+  if (value == null || value === 0) return ''
+  return value > 0 ? 'text-red-700 dark:text-bull' : 'text-emerald-700 dark:text-bear'
+}

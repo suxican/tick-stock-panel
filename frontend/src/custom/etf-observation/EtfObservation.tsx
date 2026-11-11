@@ -1,6 +1,6 @@
 import { Fragment, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { CalendarDays, ChartNoAxesColumn, ChevronDown, ChevronRight, FileText, Info } from 'lucide-react'
+import { Activity, CalendarDays, ChartNoAxesColumn, ChevronDown, ChevronRight, FileText, Info } from 'lucide-react'
 import { EmptyState } from '@/components/EmptyState'
 import { ErrorState } from '@/components/ErrorState'
 import { Skeleton } from '@/components/data/Skeleton'
@@ -8,7 +8,8 @@ import { api, type EtfFlowWindow, type EtfObservationDay, type EtfObservationFun
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
 import { Disclosures } from './Disclosures'
-import { number, SourceLink } from './display'
+import { direction, number, SourceLink } from './display'
+import { Turnover } from './Turnover'
 import './observation.css'
 
 const scopes = { fund_total_verified: '全基金', listed_only: '仅场内', unverified: '全基金待核' }
@@ -16,11 +17,6 @@ const windows = [[1, '单日'], [20, '近20日'], [60, '近60日']] as const
 
 function billions(value: number | null) {
   return number(value == null ? null : value / 1e8, 2, true)
-}
-
-function direction(value: number | null) {
-  if (value == null || value === 0) return ''
-  return value > 0 ? 'text-red-700 dark:text-bull' : 'text-emerald-700 dark:text-bear'
 }
 
 function Loading() {
@@ -161,7 +157,7 @@ function FlowSummary({ data }: { data: EtfObservationSnapshot }) {
 }
 
 export default function EtfObservation() {
-  const [view, setView] = useState<'flow' | 'disclosure'>('flow')
+  const [view, setView] = useState<'flow' | 'disclosure' | 'turnover'>('flow')
   const [period, setPeriod] = useState<EtfFlowWindow>(1)
   const [date, setDate] = useState<string>()
   // Named holdings have their own publication dates, independent of the flow window.
@@ -174,10 +170,11 @@ export default function EtfObservation() {
   return <div className="etf-page min-h-full bg-base text-foreground">
     <header className="etf-header border-b border-border bg-surface">
       <div className="etf-width">
-        <h1 className="text-xl font-semibold">宽基 ETF 份额与汇金披露</h1>
+        <h1 className="text-xl font-semibold">宽基 ETF 观察</h1>
         <nav aria-label="观察视图" className="mt-4 flex gap-6">
           <button type="button" aria-pressed={view === 'flow'} onClick={() => setView('flow')} className="etf-tab"><ChartNoAxesColumn aria-hidden size={16} />份额观察</button>
           <button type="button" aria-pressed={view === 'disclosure'} onClick={() => setView('disclosure')} className="etf-tab"><FileText aria-hidden size={15} />汇金披露</button>
+          <button type="button" aria-pressed={view === 'turnover'} onClick={() => setView('turnover')} className="etf-tab"><Activity aria-hidden size={15} />成交与资金</button>
         </nav>
       </div>
     </header>
@@ -195,7 +192,7 @@ export default function EtfObservation() {
           </select></label>
         </div>
       </div>}
-      {result.isPending ? <Loading /> : result.isError && !data ? <ErrorState title="ETF 数据读取失败" hint={result.error.message} onRetry={() => void result.refetch()} retrying={result.isFetching} /> :
+      {view === 'turnover' ? <Turnover /> : result.isPending ? <Loading /> : result.isError && !data ? <ErrorState title="ETF 数据读取失败" hint={result.error.message} onRetry={() => void result.refetch()} retrying={result.isFetching} /> :
         data && <>
           {result.isError && <p role="status" className="mb-3 text-sm text-amber-700 dark:text-warning">更新失败，当前显示上一次成功读取的数据。 <button className="etf-link" onClick={() => void result.refetch()}>重试</button></p>}
           {view === 'disclosure' ? <Disclosures data={data} /> : <>

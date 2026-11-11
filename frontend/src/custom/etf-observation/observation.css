@@ -56,3 +56,17 @@
   .etf-holders { font-size: .75rem; }
   .etf-holders th:first-child { width: 40%; }
 }
+.etf-turnover-facts { @apply grid grid-cols-2 sm:grid-cols-4; }
+.etf-turnover-facts > div { @apply px-5 py-3; }
+.etf-turnover-facts dt { @apply text-xs text-secondary; }
+.etf-turnover-facts dd { @apply mt-1 text-sm font-medium; }
+.etf-share-chart { display: block; width: 100%; height: 140px; overflow: visible; }
+.etf-share-chart .etf-axis { stroke: hsl(var(--fg-muted) / .5); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.etf-bar-up { fill: hsl(var(--bull) / .6); }
+.etf-bar-down { fill: hsl(var(--bear) / .6); }
+.etf-index-line { fill: none; stroke: hsl(var(--accent)); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.etf-legend-bar { display: inline-block; width: 8px; height: 8px; background: hsl(var(--bull) / .6); }
+.etf-legend-line { display: inline-block; width: 12px; border-top: 2px solid hsl(var(--accent)); }
+.etf-spark { display: inline-block; width: 80px; height: 24px; vertical-align: middle; }
+.etf-spark polyline { fill: none; stroke: hsl(var(--accent)); stroke-width: 1.25; }
+.etf-refresh { @apply inline-flex min-h-8 items-center gap-1.5 rounded-btn border border-border bg-surface px-2.5 text-foreground hover:bg-elevated disabled:opacity-60; }

@@ -72,3 +72,56 @@ export interface EtfObservationDetail {
   window: EtfFlowWindow
   rows: EtfObservationDay[]
 }
+
+export type EtfTurnoverLevel = 'strong' | 'mild' | 'calm'
+
+export interface EtfTurnoverFund {
+  symbol: string
+  name: string
+  amount_cny: number | null
+  avg_amount_cny: number | null
+  /** 已达成 20 日均额的比例，不做时点对齐 */
+  progress: number | null
+  /** 收盘后为全天倍数；盘中为同时点倍数，缺分钟基准时为 null */
+  ratio: number | null
+  /** 小数比例，0.01 表示 1% */
+  change_pct: number | null
+  /** 最近核实的场内份额 × 现价（元） */
+  size_cny?: number | null
+  listed_units?: number | null
+  listed_change_units?: number | null
+  /** 2025 年报前十大持有人中汇金两家主体合计份额；0 表示未列名，null 表示无披露记录 */
+  huijin_units?: number | null
+  /** 与 recent_dates 对齐，最早到最近 */
+  recent_amounts_cny?: (number | null)[]
+}
+
+export interface EtfTurnoverSnapshot {
+  as_of: string | null
+  previous_date?: string | null
+  baseline_start?: string | null
+  baseline_end?: string | null
+  live?: boolean
+  elapsed_minutes?: number | null
+  data_time?: string | null
+  stale?: boolean
+  funds: EtfTurnoverFund[]
+  totals: {
+    amount_cny: number | null
+    avg_amount_cny: number | null
+    ratio: number | null
+    progress: number | null
+    weighted_change_pct: number | null
+    /** 收盘后 14:30–15:00 成交额占全天比例，小数 */
+    tail_share?: number | null
+    tail_share_avg?: number | null
+  } | null
+  recent_dates?: string[]
+  huijin_period_end?: string | null
+  conclusion: EtfTurnoverLevel | null
+  thresholds: { strong: number; mild: number }
+  shares: {
+    series: { date: string; listed_change_value_cny: number | null; index: number | null }[]
+    units_as_of: string | null
+  }
+}

@@ -4,7 +4,7 @@
 // Prod:同源(FastAPI 托管前端 dist)
 
 import { toast } from '@/components/Toast'
-import type { EtfFlowWindow, EtfObservationDetail, EtfObservationSnapshot } from './etfObservation'
+import type { EtfFlowWindow, EtfObservationDetail, EtfObservationSnapshot, EtfTurnoverSnapshot } from './etfObservation'
 export type * from './etfObservation'
 
 const BASE = ''
@@ -3571,6 +3571,7 @@ export const api = {
     if (asOf) params.set('as_of', asOf)
     return request<EtfObservationDetail>(`/api/etf-observation/detail?${params}`, { quiet: true })
   },
+  etfTurnover: () => request<EtfTurnoverSnapshot>('/api/etf-observation/turnover', { quiet: true }),
   huichunConfig: () => request<HuichunConfig>('/api/huichun/config', { quiet: true }),
   huichunSaveConfig: (body: { rules: HuichunRules; expected_revision: number }) => request<HuichunConfig>('/api/huichun/config', {
     method: 'PUT', body: JSON.stringify(body), quiet: true,

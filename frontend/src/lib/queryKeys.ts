@@ -35,6 +35,7 @@ export const QK = {
   etfObservation: (window: EtfFlowWindow, asOf?: string) => ['etf-observation', window, asOf ?? 'latest'] as const,
   etfObservationDetail: (symbol: string, window: EtfFlowWindow, asOf?: string) =>
     ['etf-observation', 'detail', symbol, window, asOf ?? 'latest'] as const,
+  etfTurnover: ['etf-observation', 'turnover'] as const,
   dataVersions: ['data-versions'] as const,
   extensionPackages: ['extension-packages'] as const,
   // 回春扫描和收益快照独立刷新；现价仍复用市场行情缓存。
