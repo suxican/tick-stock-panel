@@ -3,7 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { RecapSnapshot } from '@/lib/api'
-import { RecapSnapshotPanel } from './RecapSnapshot'
+import { RecapSnapshotPanel, stripPlanBlock } from './RecapSnapshot'
 
 const chart = vi.hoisted(() => ({ setOption: vi.fn() }))
 vi.mock('echarts', () => ({
@@ -87,4 +87,43 @@ it('marks intraday snapshots and missing mainline data', () => {
   const text = host.textContent ?? ''
   expect(text).toContain('盘中快照 11:30')
   expect(text).toContain('涨停主线尚未计算')
+})
+
+it('renders the system plan check with hit-rate stats', () => {
+  act(() => root.render(<RecapSnapshotPanel snapshot={{
+    ...snapshot,
+    plan_check: {
+      from_as_of: '2026-11-10', as_of: '2026-11-11',
+      scenarios: [
+        { name: '强于预期', primary: false, status: 'miss', conditions: [
+          { label: '开盘半小时成交额 ≥ 6000亿', actual: 5341, actual_text: '5341亿', status: 'miss' },
+        ] },
+        { name: '符合预期', primary: true, status: 'hit', conditions: [
+          { label: '日出东方连板数 ≥ 5板', actual: 5, actual_text: '5板', status: 'hit' },
+        ] },
+        { name: '弱于预期', primary: false, match: 'any', status: 'pending', conditions: [
+          { label: '开盘半小时成交额 < 4800亿', actual: null, actual_text: '—', status: 'pending' },
+          { label: '涨停家数 < 40家', actual: null, actual_text: '—', status: 'pending' },
+        ] },
+      ],
+    },
+    plan_stats: { primary_total: 5, primary_hits: 3, covered_total: 4, covered: 4 },
+  }} />))
+  const text = host.textContent ?? ''
+  expect(text).toContain('来自 11-10')
+  expect(text).toContain('主判断命中 3/5')
+  expect(text).toContain('剧本覆盖 4/4')
+  expect(text).toContain('开盘半小时成交额 ≥ 6000亿→ 5341亿')
+  expect(text).toContain('符合预期主判断')
+  expect(text).toContain('✅ 命中')
+  expect(text).toContain('❌ 落空')
+  expect(text).toContain('➖ 待定')
+  expect(text).toContain('或涨停家数 < 40家')
+})
+
+it('strips the plan block, including a half-streamed fence', () => {
+  expect(stripPlanBlock('正文\n> 免责\n\n```plan\n{"scenarios":[]}\n```\n')).toBe('正文\n> 免责\n')
+  expect(stripPlanBlock('正文\n```plan\n{"scen')).toBe('正文\n')
+  expect(stripPlanBlock('正文\n```pl')).toBe('正文\n')
+  expect(stripPlanBlock('正文')).toBe('正文')
 })

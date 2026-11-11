@@ -240,7 +240,7 @@ async def test_stream_meta_carries_snapshot_and_dated_contexts(monkeypatch, tmp_
                         lambda data_dir, target=None: calls.setdefault("lhb", target) and "")
     monkeypatch.setattr("app.services.auction_benchmark.build_recap_context",
                         lambda data_dir, target=None: calls.setdefault("bench", target) and "")
-    monkeypatch.setattr(market_recap, "find_prev_plan", lambda as_of: None)
+    monkeypatch.setattr(market_recap, "_load_reports", lambda: [])
     monkeypatch.setattr(market_recap, "effective_system_prompt", lambda: "sys")
     captured: list = []
 

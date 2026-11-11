@@ -85,7 +85,7 @@ async def test_stream_passes_custom_prompt_to_llm(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "app.services.auction_benchmark.build_recap_context", lambda data_dir, target=None: "",
     )
-    monkeypatch.setattr(market_recap, "find_prev_plan", lambda as_of: None)
+    monkeypatch.setattr(market_recap, "_load_reports", lambda: [])
 
     captured: list[list[dict]] = []
 

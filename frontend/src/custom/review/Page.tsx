@@ -19,7 +19,7 @@ import {
 } from 'lucide-react'
 
 import { api, type OverviewMarket, type AiReviewReport, type DragonTigerStockItem, type RecapSnapshot } from '@/lib/api'
-import { RecapSnapshotPanel } from './RecapSnapshot'
+import { RecapSnapshotPanel, stripPlanBlock } from './RecapSnapshot'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
 import { fmtPct, fmtVolume, priceColorClass } from '@/lib/format'
@@ -230,7 +230,7 @@ export function ReviewPage() {
 
   // 复制全文到剪贴板(viewing 优先,与主区域显示一致)
   const copyContent = useCallback(async () => {
-    const text = viewing?.content ?? content
+    const text = stripPlanBlock(viewing?.content ?? content)
     if (!text) return
     try {
       await navigator.clipboard.writeText(text)
@@ -242,7 +242,7 @@ export function ReviewPage() {
 
   // 下载为 .md 文件(viewing 优先)
   const downloadContent = useCallback(() => {
-    const text = viewing?.content ?? content
+    const text = stripPlanBlock(viewing?.content ?? content)
     if (!text) return
     const reportDate = viewing?.as_of ?? meta?.as_of ?? asOf ?? new Date().toISOString().slice(0, 10)
     const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
@@ -268,7 +268,8 @@ export function ReviewPage() {
   const data = marketQuery.data
   // 主区域显示的内容:viewing(查看历史)优先于 store 的生成 content,
   // 这样点历史报告不会覆盖后台生成中的流。
-  const displayContent = viewing?.content ?? content
+  // ```plan 结构化剧本只供系统核验: 生成中的流式正文同样隐藏
+  const displayContent = stripPlanBlock(viewing?.content ?? content)
 
   return (
     <>

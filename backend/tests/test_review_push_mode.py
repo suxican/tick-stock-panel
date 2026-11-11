@@ -133,3 +133,46 @@ def test_scheduled_review_auto_pushes(monkeypatch):
     # auto 模式: 归档并外发
     assert len(archived) == 1
     assert pushed == [{"as_of": "2026-07-18", "emotion_label": "中性"}]
+
+
+_PLAN_CONTENT = (
+    "正文\n\n```plan\n"
+    '{"scenarios":[{"name":"A","primary":true,"conditions":[{"metric":"limit_up","op":">=","value":80}]}]}'
+    "\n```\n"
+)
+
+
+def test_save_report_strips_plan_block_before_archive_and_push(monkeypatch):
+    from app.api import market_recap
+    from app.jobs import daily_pipeline
+
+    archived: list[dict] = []
+    pushed: list[str] = []
+    monkeypatch.setattr(
+        "app.services.market_recap_reports.save_report",
+        lambda d: archived.append(d) or {"id": "r1"},
+    )
+    monkeypatch.setattr(daily_pipeline, "_maybe_push_review", lambda content, meta: pushed.append(content))
+    preferences.set_review_push_mode("auto")
+
+    market_recap.save_report(None, market_recap.SaveReportRequest(as_of="2026-07-18", content=_PLAN_CONTENT))
+    assert "```plan" not in archived[0]["content"] and "```plan" not in pushed[0]
+    assert archived[0]["plan"]["scenarios"][0]["conditions"][0]["metric"] == "limit_up"
+
+
+def test_scheduled_review_strips_plan_block(monkeypatch):
+    from app.jobs import daily_pipeline
+
+    pushed: list = []
+    archived: list = []
+    _patch_scheduled_review(monkeypatch, pushed, archived)
+
+    async def _fake_stream(*a, **k):
+        return _PLAN_CONTENT, {"as_of": "2026-07-18", "emotion_label": "中性"}
+
+    monkeypatch.setattr(daily_pipeline, "_stream_review_with_retry", _fake_stream)
+    preferences.set_review_push_mode("manual")
+
+    asyncio.run(daily_pipeline._run_scheduled_review(None))
+    assert "```plan" not in archived[0]["content"]
+    assert archived[0]["plan"]["scenarios"][0]["primary"] is True

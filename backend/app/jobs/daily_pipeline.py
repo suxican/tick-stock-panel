@@ -1162,11 +1162,15 @@ async def _run_scheduled_review(repo) -> None:
                     ensure_ascii=False))
             return
 
-        # 落盘: 与手动生成完全相同的归档格式
+        # 落盘: 与手动生成完全相同的归档格式(剥离 ```plan 结构化剧本, 推送也用剥离后的正文)
+        from app.services.market_recap_plan import split_plan_block
+
+        content, plan = split_plan_block(content)
         market_recap_reports.save_report({
             "as_of": meta.get("as_of"),
             "focus": "",
             "content": content,
+            "plan": plan,
             "summary": meta.get("summary", ""),
             "emotion_score": meta.get("emotion_score"),
             "emotion_label": meta.get("emotion_label", ""),

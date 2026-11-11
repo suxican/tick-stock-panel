@@ -1016,6 +1016,25 @@ export interface RecapSnapshot {
   }
   ladder: { boards: number; count: number; stocks: { symbol: string; name: string }[] }[]
   prev_limit_up: { count: number; avg_pct: number; up_ratio: number } | null
+  /** 系统对上一交易日结构化剧本的核验; 无结构化剧本或不紧邻时为 null */
+  plan_check?: RecapPlanCheck | null
+  /** 历次核验汇总: 主判断命中 / 剧本覆盖(仅统计已定型的核验) */
+  plan_stats?: { primary_total: number; primary_hits: number; covered_total: number; covered: number } | null
+}
+
+export type RecapPlanStatus = 'hit' | 'miss' | 'pending'
+
+export interface RecapPlanCheck {
+  from_as_of: string
+  as_of: string
+  scenarios: {
+    name: string
+    primary: boolean
+    /** all=条件同时成立; any=任一成立 */
+    match?: 'all' | 'any'
+    status: RecapPlanStatus
+    conditions: { label: string; actual: number | null; actual_text: string; status: RecapPlanStatus }[]
+  }[]
 }
 
 export interface AiReviewReport {

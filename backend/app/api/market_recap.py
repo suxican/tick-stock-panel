@@ -138,11 +138,18 @@ def list_reports(request: Request):
 
 @router.post("/reports")
 def save_report(request: Request, req: SaveReportRequest):
-    """保存一条复盘报告。req.push=True 或 review_push_mode=auto 时才推送到外部渠道。"""
+    """保存一条复盘报告。req.push=True 或 review_push_mode=auto 时才推送到外部渠道。
+
+    正文末尾的 ```plan 结构化剧本被剥离为 report["plan"], 供下一篇复盘系统核验。
+    """
+    from app.services.market_recap_plan import split_plan_block
+
+    content, plan = split_plan_block(req.content)
     report = market_recap_reports.save_report({
         "as_of": req.as_of,
         "focus": req.focus,
-        "content": req.content,
+        "content": content,
+        "plan": plan,
         "summary": req.summary,
         "emotion_score": req.emotion_score,
         "emotion_label": req.emotion_label,
@@ -152,7 +159,7 @@ def save_report(request: Request, req: SaveReportRequest):
     # 内部 try/except 静默降级, 不影响归档返回值。
     if req.push or preferences.get_review_push_mode() == "auto":
         from app.jobs.daily_pipeline import _maybe_push_review
-        _maybe_push_review(req.content, {
+        _maybe_push_review(content, {
             "as_of": req.as_of,
             "emotion_label": req.emotion_label,
         })

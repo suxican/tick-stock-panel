@@ -7,11 +7,21 @@
  */
 import { useMemo } from 'react'
 import type { EChartsOption } from 'echarts'
-import type { RecapSnapshot, RecapSnapshotMetric } from '@/lib/api'
+import type { RecapPlanCheck, RecapPlanStatus, RecapSnapshot, RecapSnapshotMetric } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { priceColorClass } from '@/lib/format'
 import { useChartTheme } from '@/lib/theme'
 import { HistoryChart } from '@/custom/market-game/HistoryChart'
+
+/**
+ * 去掉正文末尾给系统核验用的 ```plan 代码块(含流式中尚未闭合的部分)。
+ * 归档时后端已剥离; 这里覆盖生成中的流式正文与复制/下载。
+ */
+export function stripPlanBlock(content: string): string {
+  // 流式中围栏可能只到了一半(如 "```pl"), 末尾的未完成围栏一并隐藏
+  const i = content.search(/\n?```plan|\n```p?l?a?$/)
+  return i < 0 ? content : content.slice(0, i).trimEnd() + '\n'
+}
 
 const BULL = '#F04438'
 const AMOUNT = 'rgba(59,130,246,0.55)'
@@ -216,6 +226,66 @@ function Ladder({ snapshot, onOpenStock }: { snapshot: RecapSnapshot; onOpenStoc
   )
 }
 
+const STATUS_TEXT: Record<RecapPlanStatus, string> = { hit: '✅ 命中', miss: '❌ 落空', pending: '➖ 待定' }
+const STATUS_CLS: Record<RecapPlanStatus, string> = { hit: 'text-bull', miss: 'text-bear', pending: 'text-muted' }
+
+function PlanCheck({ check, stats }: { check: RecapPlanCheck | null | undefined; stats: RecapSnapshot['plan_stats'] }) {
+  if (!check && !stats) return null
+  return (
+    <div className="min-w-0 space-y-1.5">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11px]">
+        <span className="text-muted">
+          昨日剧本核验(系统按实际数据判定{check ? ` · 来自 ${check.from_as_of.slice(5)}` : ''})
+        </span>
+        {stats && stats.primary_total > 0 && (
+          <span className="text-secondary">主判断命中 <b className="font-mono text-foreground">{stats.primary_hits}/{stats.primary_total}</b></span>
+        )}
+        {stats && stats.covered_total > 0 && (
+          <span className="text-secondary" title="至少一个情景全部条件成立的天数占比">
+            剧本覆盖 <b className="font-mono text-foreground">{stats.covered}/{stats.covered_total}</b>
+          </span>
+        )}
+      </div>
+      {check ? (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[12px]">
+            <thead>
+              <tr className="text-[11px] text-muted">
+                <th className="py-1 pr-2 text-left font-normal">情景</th>
+                <th className="px-2 py-1 text-left font-normal">触发条件 → 实际</th>
+                <th className="py-1 pl-2 text-right font-normal">结果</th>
+              </tr>
+            </thead>
+            <tbody>
+              {check.scenarios.map(sc => (
+                <tr key={sc.name} className={cn('border-t border-border/40', sc.primary && 'bg-accent/5')}>
+                  <td className="whitespace-nowrap py-1.5 pr-2 align-top text-foreground">
+                    {sc.name}{sc.primary && <span className="ml-1 text-[10px] text-accent">主判断</span>}
+                  </td>
+                  <td className="px-2 py-1.5">
+                    {sc.conditions.map((c, i) => (
+                      <div key={i} className="flex flex-wrap gap-x-1.5">
+                        {i > 0 && sc.match === 'any' && <span className="text-muted">或</span>}
+                        <span className="text-secondary">{c.label}</span>
+                        <span className={cn('font-mono', STATUS_CLS[c.status])}>→ {c.actual_text}</span>
+                      </div>
+                    ))}
+                  </td>
+                  <td className={cn('whitespace-nowrap py-1.5 pl-2 text-right align-top', STATUS_CLS[sc.status])}>
+                    {STATUS_TEXT[sc.status]}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="text-[11px] text-muted">上一交易日没有可核验的结构化剧本</div>
+      )}
+    </div>
+  )
+}
+
 export function RecapSnapshotPanel({ snapshot, onOpenStock }: { snapshot: RecapSnapshot; onOpenStock?: (symbol: string) => void }) {
   const { phase } = snapshot
   return (
@@ -235,6 +305,7 @@ export function RecapSnapshotPanel({ snapshot, onOpenStock }: { snapshot: RecapS
           <span className="text-muted" title="复盘日尚未写入环境时序, 今日列取实时总览, 与历史列口径略有差异">今日为总览口径</span>
         )}
       </div>
+      <PlanCheck check={snapshot.plan_check} stats={snapshot.plan_stats} />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <MetricsTable metrics={snapshot.metrics} intraday={snapshot.intraday} />
         <TrendChart snapshot={snapshot} />

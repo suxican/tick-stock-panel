@@ -49,19 +49,27 @@ _SYSTEM_PROMPT = """你是一位有 15 年 A 股短线与波段实战经验的�
 一行:**【周期:<阶段> · 状态:偏强/中性/偏弱】** + 一句核心矛盾(不超过 40 字)。周期优先采用输入的"情绪周期"阶段;你判断不同时,在句中给出理由。盘中快照须注明"盘中"。
 
 ## ✅ 昨日预判验证
-表格 `| 预判 | 实际 | 结果 |`,结果只用 ✅兑现 / ❌证伪 / ➖待定,逐条对照输入中"上一交易日复盘的剧本"。表后一句话说明偏差原因(没有偏差则省略)。没有上一篇复盘时只写一句"无上一交易日复盘可验证"。
+- 输入含"昨日剧本系统核验"时:页面已展示核验表,本节**不画表、不改判**,只用 1-3 句说明主判断命中或落空的原因,以及明天要修正什么。
+- 只有"上一交易日复盘的剧本"文本时:表格 `| 预判 | 实际 | 结果 |`,结果只用 ✅兑现 / ❌证伪 / ➖待定,逐条对照;表后一句话说明偏差原因。
+- 没有上一篇复盘时只写一句"无上一交易日复盘可验证"。
 
 ## 🔥 主线与龙头
 表格 `| 方向 | 阶段 | 龙头/梯队 | 判断 |`,最多 4 行。阶段用 首日/发酵/高潮/分歧/退潮(结合"连续 N 日位列前10")。判断不超过 25 字,说清资金是否确认(龙虎榜)、有无补涨或掉队。表后一行"退潮/流出方向:……"。
 
 ## 🗺️ 明日剧本
-表格 `| 情景 | 触发条件 | 应对 |`,2-3 行(强于预期/符合预期/弱于预期)。触发条件必须能在开盘后 30-60 分钟内验证,例如开盘半小时成交额较今日同期增减、某龙头是否晋级或开板、涨停家数是否超过某值。应对写参与方向与参与强度(如"主线核心加大参与""只做分歧转一致""降低参与度、以观望为主"),不点名推荐买入具体个股。
+表格 `| 情景 | 触发条件 | 应对 |`,2-3 行(强于预期/符合预期/弱于预期),在情景名后用"(主判断)"标出你认为最可能的一个。触发条件只能用输入"明日剧本可用的触发指标"里的指标,表格中写中文含义(如"开盘半小时成交额 ≥ 5500亿"),不写英文 metric 名;优先用开盘半小时成交额(开盘后即可验证);阈值必须参照该表的今日值与前5日均给出,不得凭空设定。应对写参与方向与参与强度(如"主线核心加大参与""只做分歧转一致""降低参与度、以观望为主"),不点名推荐买入具体个股。
 
 ## ⛔ 失效条件
 1-3 条列表,出现即说明今天的定调错了。
 
-最后单独一行:
+然后单独一行:
 > ⚠️ 本内容由 AI 基于公开行情数据生成,仅供个人复盘与计划参考,不构成投资建议。
+
+**最后**输出一个 plan 代码块,把明日剧本表格结构化,供系统次日自动核验(页面不显示)。格式:
+```plan
+{"scenarios":[{"name":"强于预期","primary":false,"conditions":[{"metric":"amount_30m","op":">=","value":6000},{"metric":"limit_up","op":">=","value":90}]},{"name":"符合预期","primary":true,"conditions":[{"metric":"boards","symbol":"603366.SH","name":"日出东方","op":">=","value":5}]},{"name":"弱于预期","primary":false,"match":"any","conditions":[{"metric":"amount_30m","op":"<","value":4800},{"metric":"limit_up","op":"<","value":70}]}]}
+```
+规则:metric 只能取触发指标表中的值;op 只能是 > >= < <=;value 是数字,单位与表中一致(亿/家/%/板);同一情景内条件默认同时成立才算命中,表格里写"或"的情景加 "match":"any"(任一成立即命中);"区间"写成两个条件(如 ≥4800 与 <5500);每个情景 1-3 个条件,与表格触发条件一一对应、不得省略;恰好一个情景 primary 为 true;boards 必须带 symbol(用输入中的代码)和 name。
 
 ## 准则
 1. 只输出结论,不写分析过程和"我先看……"之类的元话语。
@@ -176,7 +184,8 @@ def _build_emotion_block(overview: dict) -> str:
 
 def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context: str = "",
                        bench_context: str = "", snapshot_context: str = "",
-                       prev_plan: dict | None = None) -> str:
+                       prev_plan: dict | None = None, plan_check_context: str = "",
+                       plan_vocab_context: str = "") -> str:
     """构建用户消息:复盘日期 + 近期对比/周期/梯队/主线(快照) + 市场数据精简切片
     + 龙虎榜(可选) + 盘前风向标(可选) + 上一篇剧本 + 新闻 + 关注点。"""
     as_of = overview.get("as_of") or "今日"
@@ -217,7 +226,13 @@ def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context
             bench_context,
         ])
 
-    parts.extend(["", "## 上一交易日复盘的剧本(待验证)", _prev_plan_text(prev_plan)])
+    if plan_check_context:
+        # 有结构化剧本的系统核验时, 模型只解释原因, 不再自评
+        parts.extend(["", plan_check_context])
+    else:
+        parts.extend(["", "## 上一交易日复盘的剧本(待验证)", _prev_plan_text(prev_plan)])
+    if plan_vocab_context:
+        parts.extend(["", plan_vocab_context])
 
     if news:
         news_lines = []
@@ -271,24 +286,55 @@ def _extract_plan_sections(content: str) -> str:
     return text[:_PREV_PLAN_MAX_CHARS]
 
 
-def find_prev_plan(as_of: str) -> dict | None:
-    """复盘日之前最近一篇归档复盘的剧本; 无则 None。"""
+def _load_reports() -> list[dict]:
     try:
         from app.services import market_recap_reports
 
-        candidates = [
-            r for r in market_recap_reports.list_reports()
-            if str(r.get("as_of") or "") < as_of and r.get("content")
-        ]
+        return market_recap_reports.list_reports()
     except Exception as e:  # noqa: BLE001
-        logger.debug("load previous recap failed: %s", e)
-        return None
+        logger.debug("load archived recaps failed: %s", e)
+        return []
+
+
+def find_prev_report(as_of: str, reports: list[dict] | None = None) -> dict | None:
+    """复盘日之前最近一篇归档复盘; 同一日多篇(盘中 + 盘后)取最后生成的一篇。"""
+    reports = _load_reports() if reports is None else reports
+    candidates = [r for r in reports if str(r.get("as_of") or "") < as_of and r.get("content")]
     if not candidates:
         return None
-    # 同一日可能有多篇(盘中 + 盘后): 取日期最新、其中生成时间最晚的一篇
-    prev = max(candidates, key=lambda r: (str(r.get("as_of")), str(r.get("created_at") or "")))
+    return max(candidates, key=lambda r: (str(r.get("as_of")), str(r.get("created_at") or "")))
+
+
+def find_prev_plan(as_of: str, reports: list[dict] | None = None) -> dict | None:
+    """复盘日之前最近一篇归档复盘的剧本文本; 无则 None。"""
+    prev = find_prev_report(as_of, reports)
+    if not prev:
+        return None
     plan = _extract_plan_sections(prev["content"])
     return {"as_of": prev.get("as_of"), "plan": plan} if plan else None
+
+
+def attach_plan_check(snapshot: dict | None, repo, reports: list[dict]) -> None:
+    """系统核验上一交易日的结构化剧本, 结果与历史命中率写入快照(就地)。
+
+    只核验紧邻的上一交易日的剧本: 中间缺了复盘时, 旧剧本针对的不是复盘日。
+    """
+    if not snapshot:
+        return
+    from app.services.market_recap_plan import archived_checks, evaluate_plan, plan_stats
+
+    as_of = snapshot["as_of"]
+    dates = snapshot.get("dates") or []
+    prev = find_prev_report(as_of, reports)
+    check = None
+    if prev and prev.get("plan") and len(dates) >= 2 and dates[-2] == prev.get("as_of"):
+        try:
+            check = evaluate_plan(prev["plan"], snapshot, repo, from_as_of=prev["as_of"])
+        except Exception as e:  # noqa: BLE001
+            logger.warning("plan check failed for %s: %s", as_of, e)
+    snapshot["plan_check"] = check
+    stats = plan_stats(archived_checks(reports, as_of) + ([check] if check else []))
+    snapshot["plan_stats"] = stats if (stats["primary_total"] or stats["covered_total"]) else None
 
 
 def _prev_plan_text(prev_plan: dict | None) -> str:
@@ -357,6 +403,7 @@ async def recap_market_stream(
     emo = overview.get("emotion") or {}
 
     # 数据快照: 近期对比/周期/梯队/主线, 同时供 prompt 与前端结构化面板; 失败只降级
+    from app.services.market_recap_plan import plan_check_prompt_block, plan_vocabulary_block
     from app.services.market_recap_snapshot import build_recap_snapshot, snapshot_prompt_block
 
     try:
@@ -364,6 +411,8 @@ async def recap_market_stream(
     except Exception as e:  # noqa: BLE001
         logger.warning("recap snapshot failed for %s: %s", as_of_str, e)
         snapshot = None
+    reports = _load_reports()
+    attach_plan_check(snapshot, repo, reports)
 
     # 2. meta 事件(前端据此先渲染信号灯/看板与数据面板)
     yield json.dumps({
@@ -393,7 +442,11 @@ async def recap_market_stream(
         user_prompt = _build_user_prompt(
             overview, news or [], focus, lhb_ctx, bench_ctx,
             snapshot_context=snapshot_prompt_block(snapshot),
-            prev_plan=find_prev_plan(as_of_str),
+            prev_plan=find_prev_plan(as_of_str, reports),
+            plan_check_context=plan_check_prompt_block(
+                (snapshot or {}).get("plan_check"), (snapshot or {}).get("plan_stats"),
+            ),
+            plan_vocab_context=plan_vocabulary_block(snapshot),
         )
         got_content = False
         async for delta in stream_ai_text(

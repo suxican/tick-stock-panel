@@ -37,6 +37,8 @@ _MARKET_CLOSE = time(15, 0)
 # 指标定义: key, 标签, 单位, 小数位; 顺序即前端表格行序
 METRIC_DEFS: list[tuple[str, str, str, int]] = [
     ("amount_yi", "成交额", "亿", 0),
+    # 09:30–10:00 分钟K合计, 明日剧本"开盘半小时成交额"触发条件的同口径基准
+    ("amount_30m", "开盘半小时成交额", "亿", 0),
     ("up_count", "上涨家数", "家", 0),
     ("limit_up", "涨停", "家", 0),
     ("limit_down", "跌停", "家", 0),
@@ -293,6 +295,12 @@ def build_recap_snapshot(repo, overview: dict, *, now: datetime | None = None) -
     now = now or cn_now()
 
     days, today_source = _load_days(data_dir, as_of, overview) if data_dir else ([_overview_day(overview)], "overview")
+    if data_dir:
+        from app.services.market_recap_plan import opening_amount_yi
+
+        for d in days:
+            traded = int((d.get("up_count") or 0) + (d.get("down_count") or 0))
+            d["amount_30m"] = opening_amount_yi(data_dir, d["date"], traded)
     prev_date = days[-2]["date"] if len(days) >= 2 else None
     return {
         "version": SNAPSHOT_VERSION,
