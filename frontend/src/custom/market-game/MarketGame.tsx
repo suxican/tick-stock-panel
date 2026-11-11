@@ -170,7 +170,7 @@ function Candidate({ candidate, onOpen, observation }: { candidate: MarketGameCa
 }
 
 function Observation({ data }: { data: MarketGameEvaluation }) {
-  const stateLabels = { pending: '待观察', available: '已观察', missing: '行情缺失', unavailable: '无法核验' }
+  const stateLabels = { pending: '待观察', available: '已观察', unverified: '收盘未核验', missing: '行情缺失', unavailable: '无法核验' }
   const planLabels: Record<string, string> = { pending: '等待入场观察日', entry_window: '入场观察窗口内', observation_only: '入场已结束，仅观察持有期', expired: '观察计划已到期', unverified: '有效交易日待核验', research_only: '历史研究窗口' }
   return <>
     <p className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-secondary">
@@ -186,7 +186,7 @@ function Observation({ data }: { data: MarketGameEvaluation }) {
       <table className="w-full min-w-[940px] text-left text-xs">
         <caption className="sr-only">报告候选后续收盘观察表现</caption>
         <thead className="border-b border-border text-secondary"><tr>{['个股', '观察序列', '实际行情日', '收盘观察收益', '基准收益', '超额收益', '期间最高 / 最低', '状态'].map(label => <th key={label} scope="col" className="py-2 pr-4 font-medium">{label}</th>)}</tr></thead>
-        <tbody>{data.rows.map(row => <tr key={`${row.symbol}-${row.horizon}`} className="border-b border-border/60"><td className="py-3 pr-4">{row.name}<span className="block font-mono text-xs text-secondary">{row.symbol}</span></td><td className="pr-4">{row.label}</td><td className="pr-4 font-mono">{row.trade_date ?? '—'}</td><td className="pr-4 font-mono">{row.state === 'available' ? pct(row.close_return) : '—'}</td><td className="pr-4 font-mono">{pct(row.benchmark_return)}</td><td className="pr-4 font-mono">{row.state === 'available' ? pct(row.excess_return) : '—'}</td><td className="pr-4 font-mono">{pct(row.max_upside)} / {pct(row.max_drawdown)}</td><td>{stateLabels[row.state]}</td></tr>)}</tbody>
+        <tbody>{data.rows.map(row => <tr key={`${row.symbol}-${row.horizon}`} className="border-b border-border/60"><td className="py-3 pr-4">{row.name}<span className="block font-mono text-xs text-secondary">{row.symbol}</span></td><td className="pr-4">{row.label}</td><td className="pr-4 font-mono">{row.trade_date ?? '—'}</td><td className="pr-4 font-mono">{row.state === 'available' || row.state === 'unverified' ? pct(row.close_return) : '—'}</td><td className="pr-4 font-mono">{pct(row.benchmark_return)}</td><td className="pr-4 font-mono">{row.state === 'available' || row.state === 'unverified' ? pct(row.excess_return) : '—'}</td><td className="pr-4 font-mono">{pct(row.max_upside)} / {pct(row.max_drawdown)}</td><td>{stateLabels[row.state]}</td></tr>)}</tbody>
       </table>
     </div> : <p className="text-sm text-secondary">暂没有可核验的候选后续行情。</p>}
   </>

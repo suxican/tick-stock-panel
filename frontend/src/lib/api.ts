@@ -1164,7 +1164,7 @@ export interface MarketGameEvaluation {
   calendar_verified?: boolean
   rows: {
     symbol: string; name: string; horizon: number; label: string; trade_date: string | null
-    close_return: number | null; state: 'pending' | 'available' | 'missing' | 'unavailable'
+    close_return: number | null; state: 'pending' | 'available' | 'unverified' | 'missing' | 'unavailable'
     benchmark_return?: number | null; excess_return?: number | null
     max_upside?: number | null; max_drawdown?: number | null
   }[]

@@ -26,12 +26,13 @@ def _positive(value) -> float | None:
 
 
 def _closing_evidence(repo, table: str, symbols: list[str], start: date, end: date,
-                      known_by: datetime) -> dict[tuple[str, date], tuple[float, datetime, float | None, float | None]]:
-    """Verify raw closing observations through the repository's read API.
+                      known_by: datetime) -> dict[tuple[str, date], tuple[float, datetime | None, float | None, float | None]]:
+    """Read raw closing observations through the repository's read API.
 
-    A null quote timestamp is commonly a historical batch row, but it is also
-    possible for a realtime supplier to omit its timestamp. Without separate
-    batch provenance this observer cannot certify it merely from that null.
+    A post-15:00 quote timestamp certifies a close. A null timestamp is the
+    normal post-close batch row; it is kept with ``observed=None`` so callers
+    can show it as an unverified close instead of hiding every value. A row
+    explicitly stamped before 15:00 is an intraday snapshot and is rejected.
     """
     if not symbols or start > end:
         return {}
@@ -59,12 +60,17 @@ def _closing_evidence(repo, table: str, symbols: list[str], start: date, end: da
             if key in seen:
                 duplicates.add(key)
             seen.add(key)
-            price, stamp = _positive(raw_close), _positive(quote_ts)
-            if price is None or stamp is None or not start <= day <= end:
+            price = _positive(raw_close)
+            if price is None or not start <= day <= end:
                 continue
-            observed = datetime.fromtimestamp(stamp / 1000, tz=CN_TZ)
-            if observed.date() != day or observed.hour < 15 or observed > known_by:
-                continue
+            observed = None
+            if quote_ts is not None:
+                stamp = _positive(quote_ts)
+                if stamp is None:
+                    continue
+                observed = datetime.fromtimestamp(stamp / 1000, tz=CN_TZ)
+                if observed.date() != day or observed.hour < 15 or observed > known_by:
+                    continue
             result[key] = (price, observed, _positive(raw_high), _positive(raw_low))
         except (TypeError, ValueError, OSError, OverflowError):
             continue
@@ -74,10 +80,14 @@ def _closing_evidence(repo, table: str, symbols: list[str], start: date, end: da
 
 
 def _matches(evidence: dict, key: tuple[str, date], raw_close: float | None,
-             known_by: datetime) -> bool:
+             known_by: datetime) -> bool | None:
+    """True: certified close; False: batch close without time evidence; None: unusable."""
     value = evidence.get(key)
-    return bool(value and raw_close and value[1] <= known_by
-                and math.isclose(value[0], raw_close, rel_tol=1e-8, abs_tol=1e-6))
+    if not (value and raw_close and math.isclose(value[0], raw_close, rel_tol=1e-8, abs_tol=1e-6)):
+        return None
+    if value[1] is None:
+        return False
+    return True if value[1] <= known_by else None
 
 
 def _range_matches(evidence: dict, key: tuple[str, date], high: float | None,
@@ -105,7 +115,7 @@ def evaluate_observations(repo, report: dict, *, now: datetime | None = None) ->
         "日序来自核心指数已观测交易日期, 独立交易日历完整性未验证; 缺失市场日期可能影响日序。",
         "收益使用同次读取的前复权收盘序列; 不以报告原始报价跨除权直接相除。",
         "买入后受 T+1、停牌、涨跌停及滑点约束; 本观察表不模拟成交或退出。",
-        "基准、后续股价和指数均需原始收盘时间证据; 时间缺失或原始价与复权记录不匹配时标为无法核验, 不推定已完成收盘。",
+        "盘中时间戳的日线、或原始价与复权记录不匹配时标为无法核验; 批量同步无时间戳的收盘标为收盘未核验。",
     ]
     result = {
         "report_id": report["id"], "as_of": report["as_of"],
@@ -184,26 +194,31 @@ def evaluate_observations(repo, report: dict, *, now: datetime | None = None) ->
                 state = "pending"
             elif not base or not close:
                 state = "missing"
-            elif not (
-                _matches(stock_evidence, (symbol, base_day), raw_prices.get((symbol, base_day)), cutoff)
-                and _matches(stock_evidence, (symbol, day), raw_prices.get((symbol, day)), now)
-                and _matches(index_evidence, (CORE_INDEX_SYMBOLS[0], day), index_prices.get(day), now)
-            ):
-                state = "unavailable"
             else:
-                state = "available"
-            close_return = round(close / base - 1, 6) if state == "available" else None
+                checks = [
+                    _matches(stock_evidence, (symbol, base_day), raw_prices.get((symbol, base_day)), cutoff),
+                    _matches(stock_evidence, (symbol, day), raw_prices.get((symbol, day)), now),
+                ]
+                state = ("unavailable" if None in checks else
+                         "available" if all(checks) else "unverified")
+            shown = state in ("available", "unverified")
+            close_return = round(close / base - 1, 6) if shown else None
             benchmark = index_prices.get(day)
             benchmark_base = index_prices.get(base_day)
             benchmark_return = None
-            if (state == "available" and benchmark and benchmark_base
-                    and _matches(index_evidence, (CORE_INDEX_SYMBOLS[0], base_day), benchmark_base, cutoff)):
+            index_checks = [
+                _matches(index_evidence, (CORE_INDEX_SYMBOLS[0], base_day), benchmark_base, cutoff),
+                _matches(index_evidence, (CORE_INDEX_SYMBOLS[0], day), benchmark, now),
+            ] if shown else [None]
+            if shown and benchmark and benchmark_base and None not in index_checks:
                 benchmark_return = round(benchmark / benchmark_base - 1, 6)
+                if not all(index_checks):
+                    state = "unverified"
             # Bounds describe the watchlist's price excursion from report close,
             # not trade MFE/MAE: neither an entry time nor a fill is established.
             observed_ranges = [ranges.get((symbol, observed), (None, None)) for observed in sessions[:horizon]]
-            ranges_verified = state == "available" and all(
-                _matches(stock_evidence, (symbol, observed), raw_prices.get((symbol, observed)), now)
+            ranges_verified = shown and all(
+                _matches(stock_evidence, (symbol, observed), raw_prices.get((symbol, observed)), now) is not None
                 and _range_matches(stock_evidence, (symbol, observed), high, low, prices.get((symbol, observed)))
                 for observed, (high, low) in zip(sessions[:horizon], observed_ranges, strict=True)
             )
@@ -218,7 +233,10 @@ def evaluate_observations(repo, report: dict, *, now: datetime | None = None) ->
                 "state": state,
             })
     states = [row["state"] for row in result["rows"]]
-    if all(state == "available" for state in states):
+    if "unverified" in states:
+        limitations.append("部分行情为盘后批量同步、没有收盘时间戳, 标为“收盘未核验”: 数值可参考, "
+                           "但不能排除数据源把盘中快照写成日线。")
+    if all(state in ("available", "unverified") for state in states):
         result["status"] = "complete"
     elif any(state != "pending" for state in states):
         result["status"] = "partial"
