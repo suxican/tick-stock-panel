@@ -1,13 +1,15 @@
 """AI 大盘复盘 —— 流式 LLM 复盘生成。
 
 复刻 stock_analyzer.py 的 NDJSON 流式协议(meta/delta/error/done),
-将「市场总览」聚合数据交给 LLM 生成结构化复盘报告。
+将「市场总览」聚合数据 + 复盘快照(近期对比/情绪周期/连板梯队/涨停主线,
+见 market_recap_snapshot) + 上一篇复盘的剧本交给 LLM, 生成交易员视角的五节复盘。
+数字由前端用快照画成表格/图表, LLM 正文只写判断与计划。
 
 数据来源:services.market_overview_builder.build_market_overview
 (与 GET /api/overview/market 同源,保证复盘与看板数据口径一致)。
 
 流式协议(与 stock_analyzer / financial_analyzer 一致,前端解析无差异):
-    {"type":"meta", "as_of", "emotion_score", "emotion_label", "summary"}
+    {"type":"meta", "as_of", "emotion_score", "emotion_label", "summary", "snapshot"}
     {"type":"delta","content":"..."}   逐 chunk 文本
     {"type":"error","message":"..."}
     {"type":"done"}
@@ -34,61 +36,40 @@ _INDEX_SHORT = {
 }
 
 # ================================================================
-# 系统提示词(客观市场分析 + 固定八节模板)
+# 系统提示词(交易员复盘 + 固定五节模板)
 # ================================================================
 
-_SYSTEM_PROMPT = """你是一位拥有 15 年 A 股一线研究经验的市场分析师,擅长从指数结构、涨跌家数、连板梯队、板块轮动与资金情绪中客观提炼市场主线,产出一份**客观、中立、不包含任何买卖或操作建议**的盘后复盘报告。
+_SYSTEM_PROMPT = """你是一位有 15 年 A 股短线与波段实战经验的交易员,为自己写盘后复盘,目的是校验昨天的判断、定位情绪周期、制定明天的计划。
 
-## 核心红线(务必遵守)
+读者会同时看到页面上的数据面板(核心指标今日/昨日/5日均对比表、成交额与涨停走势图、涨停主线表、连板梯队),所以**正文不复述面板数字**,只写判断、因果和计划。
 
-- **绝对不输出**"进攻/防守/加仓/减仓/轻仓/半仓/重仓/仓位建议/低吸/反包/追高/回避方向"等任何交易指令或倾向性措辞
-- 你的角色是**客观陈述**今日市场的结构、情绪、板块轮动特征,以及后续值得客观关注的盘面信号
-- 换成"一个中立财经记者能不能写出来"——能写就保留,不能写就删除
+## 输出结构(严格按以下 5 节,Markdown,不加标题行和其他章节,正文 400-800 字)
 
-## 输出规范
+## 🎯 定调
+一行:**【周期:<阶段> · 状态:偏强/中性/偏弱】** + 一句核心矛盾(不超过 40 字)。周期优先采用输入的"情绪周期"阶段;你判断不同时,在句中给出理由。盘中快照须注明"盘中"。
 
-用 **Markdown** 格式输出,严格遵循以下结构。不要输出任何 JSON 或代码块,直接输出 Markdown 正文。
+## ✅ 昨日预判验证
+表格 `| 预判 | 实际 | 结果 |`,结果只用 ✅兑现 / ❌证伪 / ➖待定,逐条对照输入中"上一交易日复盘的剧本"。表后一句话说明偏差原因(没有偏差则省略)。没有上一篇复盘时只写一句"无上一交易日复盘可验证"。
 
-### 1. 🎯 一句话定调(1-2 句)
-用一句话概括今日市场的**核心矛盾与状态**(如"放量普涨、情绪修复,主线围绕科技扩散"/"指数走强、个股普跌,赚钱效应偏弱")。结尾用【市场状态:偏强 / 中性 / 偏弱】客观描述当日市场强弱,**不下基调结论、不指挥操作**。
+## 🔥 主线与龙头
+表格 `| 方向 | 阶段 | 龙头/梯队 | 判断 |`,最多 4 行。阶段用 首日/发酵/高潮/分歧/退潮(结合"连续 N 日位列前10")。判断不超过 25 字,说清资金是否确认(龙虎榜)、有无补涨或掉队。表后一行"退潮/流出方向:……"。
 
-### 2. 📊 盘面总览
-- 三大指数(上证/深证/创业板)表现:谁强谁弱、量能配合
-- 涨跌家数、涨停/跌停/炸板结构、两市成交额(放量/缩量判断)
-- 情绪温度(强势/偏暖/震荡/偏冷/冰点)及一句话依据
+## 🗺️ 明日剧本
+表格 `| 情景 | 触发条件 | 应对 |`,2-3 行(强于预期/符合预期/弱于预期)。触发条件必须能在开盘后 30-60 分钟内验证,例如开盘半小时成交额较今日同期增减、某龙头是否晋级或开板、涨停家数是否超过某值。应对写参与方向与参与强度(如"主线核心加大参与""只做分歧转一致""降低参与度、以观望为主"),不点名推荐买入具体个股。
 
-### 3. 📈 指数结构
-谁在走强、谁在走弱;指数是否同步;关键支撑/压力位(基于当日点位推断);是否存在量价背离。
+## ⛔ 失效条件
+1-3 条列表,出现即说明今天的定调错了。
 
-### 4. 🔥 板块主线
-- 领涨板块:背后的逻辑(消息/业绩/资金/技术)、持续性判断
-- 领跌板块:客观风险信号、是否扩散
-- 连板梯队与投机情绪:最高连板、封板率、炸板率反映的资金活跃程度
+最后单独一行:
+> ⚠️ 本内容由 AI 基于公开行情数据生成,仅供个人复盘与计划参考,不构成投资建议。
 
-### 5. 💰 资金与情绪
-成交额结构(增量/存量)、市场宽度(上涨占比、站上均线占比)、量能指标(量比)解读;风险偏好是修复还是转弱。
-
-### 6. 📰 消息催化
-结合提供的近期新闻,客观提炼可能影响后续盘面的催化或扰动,明确区分"已兑现"与"待发酵"。**若无新闻数据,则直接从量价异动客观推断可能的催化逻辑并给出结论,不要标注"[推断]"之类的过程标签,更不要编造具体消息。**
-
-### 7. 📌 后续观察要点
-- 客观列出明日值得关注的盘面信号(如量能能否维持、某均线得失、某板块持续性)
-- 客观描述不同情景下市场结构的可能演变(如"若量能持续放大,普涨格局或延续";"若量能萎缩,结构性行情为主"),**不涉及仓位与买卖方向**
-- **不输出**"仓位建议""进攻/防守基调""买卖方向""追高/低吸/反包"等操作指令
-
-### 8. ⚠️ 风险提示
-列出需要客观关注的风险点(如量能跟不上、外资流出、连板断层等)。末尾附一行:
-"> ⚠️ 本内容由 AI 基于公开行情数据生成,仅客观陈述市场状态,不构成任何投资建议或买卖指令。交易有风险,入市需谨慎。"
-
-## 分析准则(务必遵守)
-
-0. **只输出结论,不输出思考过程**:禁止复述你的分析步骤或方法论。不要写"我先按...做结构化复盘""接下来看...""基于上述数据我认为"这类元话语——直接给结论。读者要的是复盘结果,不是你怎么推导出来的。
-1. **数据说话**:每个判断引用具体数值,严禁空泛套话("情绪回暖"必须改成"涨停 68 家较前日 +22,封板率 75%")
-2. **客观中立**:看多就客观陈述多头特征,看空就客观陈述空头特征,不下基调、不骑墙;数据不支持时直言无法判断
-3. **结构优先**:先看指数同步性与量能结构,再看板块与情绪,最后才是消息
-4. **不重复数字**:正文负责解读表格数据背后的含义,不要照抄罗列已提供的大段原始数字
-5. **不输出操作指令**:不写"仓位建议""进攻/防守""买卖方向"等任何交易指令
-6. **简明客观**:用读者能扫读的密度输出,总字数 1200-2000 字,重在客观信息密度
+## 准则
+1. 只输出结论,不写分析过程和"我先看……"之类的元话语。
+2. 数字只为支撑判断而引用,每节不超过 3 个;引用时指标名必须与输入完全一致(如"封板率"不得写成"炸板率"),不自行换算新指标。
+3. 量能只依据输入中的两市成交额及其对比判断,不要用其他指标推断"放量/缩量"。
+4. 数据日期与复盘日不一致的(如龙虎榜回退到上一期),不得当作复盘日数据。
+5. 没有新闻数据时不编造具体消息;如需提及催化,用一句推断放进主线判断里。
+6. 表格单元格内不换行,不使用竖线字符。
 
 现在请基于下方数据进行复盘。"""
 
@@ -150,15 +131,14 @@ def _build_breadth_block(overview: dict) -> str:
     if lim.get("tiers"):
         tiers_str = "、".join(f"{t['boards']}板×{t['count']}" for t in lim["tiers"][:5])
         lines.append(f"- 连板梯队: {tiers_str}")
-    lines.append(f"- 两市成交额: {amount_yi:.0f} 亿元")
+    lines.append(f"- 两市成交额: {amount_yi:.0f} 亿元(与昨日/5日均对比见「近期对比」)")
     lines.append(
         f"- 均线站位: MA5 {tr.get('above_ma5_pct',0):.0f}% / "
         f"MA20 {tr.get('above_ma20_pct',0):.0f}% / MA60 {tr.get('above_ma60_pct',0):.0f}%"
     )
-    lines.append(
-        f"- 量能: 平均换手 {act.get('avg_turnover',0):.2f}%, "
-        f"量比5日均 {act.get('vol_ratio',1):.2f}"
-    )
+    # 不再提供"个股平均量比": 它是个股量比的等权均值, 不代表市场成交额变化,
+    # 曾导致报告在放量日得出"量能收缩"的错误结论。量能统一看成交额对比。
+    lines.append(f"- 平均换手: {act.get('avg_turnover',0):.2f}%")
     return "\n".join(lines)
 
 
@@ -185,20 +165,26 @@ def _build_emotion_block(overview: dict) -> str:
     score = emo.get("score", 50)
     label = emo.get("label", "—")
     lines = [f"- 情绪温度: {score} ({label})"]
-    if radar:
-        dims = "、".join(f"{r.get('label')}{r.get('value',0)}" for r in radar)
-        lines.append(f"- 六维雷达: {dims}")
+    # 雷达"量能"维来自个股平均量比, 与成交额口径不一致, 不提供给模型
+    dims = "、".join(
+        f"{r.get('label')}{r.get('value',0)}" for r in radar if r.get("label") != "量能"
+    )
+    if dims:
+        lines.append(f"- 情绪分项: {dims}")
     return "\n".join(lines)
 
 
 def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context: str = "",
-                       bench_context: str = "") -> str:
-    """构建用户消息:复盘日期 + 市场数据精简切片 + 龙虎榜(可选) + 盘前风向标(可选) + 新闻 + 关注点。"""
+                       bench_context: str = "", snapshot_context: str = "",
+                       prev_plan: dict | None = None) -> str:
+    """构建用户消息:复盘日期 + 近期对比/周期/梯队/主线(快照) + 市场数据精简切片
+    + 龙虎榜(可选) + 盘前风向标(可选) + 上一篇剧本 + 新闻 + 关注点。"""
     as_of = overview.get("as_of") or "今日"
 
-    parts: list[str] = [
-        f"复盘日期: {as_of}",
-        "",
+    parts: list[str] = [f"复盘日期: {as_of}", ""]
+    if snapshot_context:
+        parts.extend([snapshot_context, ""])
+    parts.extend([
         "## 主要指数",
         _build_indices_block(overview),
         "",
@@ -213,7 +199,7 @@ def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context
         "",
         "## 行业板块排名",
         _build_sector_block(overview.get("industry_rank"), "行业"),
-    ]
+    ])
 
     # 龙虎榜资金动向 (fuyao 数据源, 摘要自带数据日期; 无数据源/失败时为空不占段)
     if lhb_context:
@@ -230,6 +216,8 @@ def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context
             "## 盘前风向标(竞价)",
             bench_context,
         ])
+
+    parts.extend(["", "## 上一交易日复盘的剧本(待验证)", _prev_plan_text(prev_plan)])
 
     if news:
         news_lines = []
@@ -255,6 +243,58 @@ def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context
         parts.extend(["", focus_instruction])
 
     return "\n".join(parts)
+
+
+# ================================================================
+# 上一篇复盘的剧本(供"昨日预判验证")
+# ================================================================
+
+# 新模板"明日剧本/失效条件", 旧模板"后续观察要点/风险提示"
+_PLAN_HEADINGS = ("剧本", "失效", "后续观察", "观察要点")
+_PREV_PLAN_MAX_CHARS = 1500
+
+
+def _extract_plan_sections(content: str) -> str:
+    """从复盘 Markdown 中截取计划类二级小节(到下一个二级标题或免责声明为止)。"""
+    sections: list[list[str]] = []
+    current: list[str] | None = None
+    for line in (content or "").splitlines():
+        if line.startswith("## "):
+            current = [line] if any(h in line for h in _PLAN_HEADINGS) else None
+            if current is not None:
+                sections.append(current)
+        elif line.startswith("> ⚠️"):
+            current = None
+        elif current is not None:
+            current.append(line)
+    text = "\n\n".join("\n".join(sec).strip() for sec in sections)
+    return text[:_PREV_PLAN_MAX_CHARS]
+
+
+def find_prev_plan(as_of: str) -> dict | None:
+    """复盘日之前最近一篇归档复盘的剧本; 无则 None。"""
+    try:
+        from app.services import market_recap_reports
+
+        candidates = [
+            r for r in market_recap_reports.list_reports()
+            if str(r.get("as_of") or "") < as_of and r.get("content")
+        ]
+    except Exception as e:  # noqa: BLE001
+        logger.debug("load previous recap failed: %s", e)
+        return None
+    if not candidates:
+        return None
+    # 同一日可能有多篇(盘中 + 盘后): 取日期最新、其中生成时间最晚的一篇
+    prev = max(candidates, key=lambda r: (str(r.get("as_of")), str(r.get("created_at") or "")))
+    plan = _extract_plan_sections(prev["content"])
+    return {"as_of": prev.get("as_of"), "plan": plan} if plan else None
+
+
+def _prev_plan_text(prev_plan: dict | None) -> str:
+    if not prev_plan:
+        return "(无上一交易日复盘)"
+    return f"(来自 {prev_plan['as_of']} 的复盘)\n{prev_plan['plan']}"
 
 
 # ================================================================
@@ -316,13 +356,23 @@ async def recap_market_stream(
 
     emo = overview.get("emotion") or {}
 
-    # 2. meta 事件(前端据此先渲染信号灯/看板)
+    # 数据快照: 近期对比/周期/梯队/主线, 同时供 prompt 与前端结构化面板; 失败只降级
+    from app.services.market_recap_snapshot import build_recap_snapshot, snapshot_prompt_block
+
+    try:
+        snapshot = build_recap_snapshot(repo, overview)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("recap snapshot failed for %s: %s", as_of_str, e)
+        snapshot = None
+
+    # 2. meta 事件(前端据此先渲染信号灯/看板与数据面板)
     yield json.dumps({
         "type": "meta",
         "as_of": as_of_str,
         "emotion_score": emo.get("score", 50),
         "emotion_label": emo.get("label", "—"),
         "summary": _recap_summary(overview),
+        "snapshot": snapshot,
     }, ensure_ascii=False)
 
     # 3+4. 构建 prompt + 流式调用 LLM(整体 try-except,任何异常 yield error,避免前端卡死)
@@ -332,13 +382,19 @@ async def recap_market_stream(
         # 龙虎榜摘要 (fuyao 专有): 拉取失败/未配置 → 空串, 复盘主流程不受影响
         from app.services import dragon_tiger as dragon_tiger_svc
 
-        lhb_ctx = dragon_tiger_svc.build_recap_context(repo.store.data_dir)
+        # 龙虎榜/风向标按复盘日取数(而非"最新一期"), 补做历史复盘时不串日期
+        recap_day = date.fromisoformat(as_of_str)
+        lhb_ctx = dragon_tiger_svc.build_recap_context(repo.store.data_dir, recap_day)
 
         # 盘前风向标摘要 (fuyao 专有): 失败/未配置 → 空串
         from app.services import auction_benchmark as auction_benchmark_svc
 
-        bench_ctx = auction_benchmark_svc.build_recap_context(repo.store.data_dir)
-        user_prompt = _build_user_prompt(overview, news or [], focus, lhb_ctx, bench_ctx)
+        bench_ctx = auction_benchmark_svc.build_recap_context(repo.store.data_dir, recap_day)
+        user_prompt = _build_user_prompt(
+            overview, news or [], focus, lhb_ctx, bench_ctx,
+            snapshot_context=snapshot_prompt_block(snapshot),
+            prev_plan=find_prev_plan(as_of_str),
+        )
         got_content = False
         async for delta in stream_ai_text(
             [

@@ -1170,6 +1170,7 @@ async def _run_scheduled_review(repo) -> None:
             "summary": meta.get("summary", ""),
             "emotion_score": meta.get("emotion_score"),
             "emotion_label": meta.get("emotion_label", ""),
+            "snapshot": meta.get("snapshot"),
         })
         logger.info("scheduled review saved: as_of=%s", meta.get("as_of"))
 

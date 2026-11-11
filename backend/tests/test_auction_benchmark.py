@@ -173,6 +173,14 @@ def test_build_recap_context_contains_summary(data_dir, monkeypatch):
     assert "当日" in ctx  # 收益对照
 
 
+def test_build_recap_context_uses_target_day_without_next_day_returns(data_dir, monkeypatch):
+    # 08-27 有次日 K 线(d1_pct 存在), 但复盘 prompt 不得泄露次日收益
+    _use_provider(monkeypatch, _FakeProvider())
+    ctx = ab.build_recap_context(data_dir, date(2026, 8, 27))
+    assert "2026-08-27" in ctx
+    assert "次日" not in ctx
+
+
 def test_build_recap_context_empty_without_source(data_dir, monkeypatch):
     monkeypatch.setattr(ab, "_provider", lambda: None)
     assert ab.build_recap_context(data_dir) == ""

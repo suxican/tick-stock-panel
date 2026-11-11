@@ -125,6 +125,8 @@ class SaveReportRequest(BaseModel):
     summary: str = ""
     emotion_score: int | None = None
     emotion_label: str = ""
+    # 复盘数据快照(meta.snapshot 原样回传), 历史报告据此重绘表格/图表; 旧客户端不传为 None
+    snapshot: dict | None = None
     push: bool = False  # 是否显式外发推送(manual 模式下需显式传 true)
 
 
@@ -144,6 +146,7 @@ def save_report(request: Request, req: SaveReportRequest):
         "summary": req.summary,
         "emotion_score": req.emotion_score,
         "emotion_label": req.emotion_label,
+        "snapshot": req.snapshot,
     })
     # 推送门控: manual 模式需显式 push=True; auto 模式保持归档即推。
     # 内部 try/except 静默降级, 不影响归档返回值。

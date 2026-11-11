@@ -18,7 +18,8 @@ import {
   Database, Wand2, Copy, Download, Clock, X, Check, Trophy, ChevronDown, ChevronUp,
 } from 'lucide-react'
 
-import { api, type OverviewMarket, type AiReviewReport, type DragonTigerStockItem } from '@/lib/api'
+import { api, type OverviewMarket, type AiReviewReport, type DragonTigerStockItem, type RecapSnapshot } from '@/lib/api'
+import { RecapSnapshotPanel } from './RecapSnapshot'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
 import { fmtPct, fmtVolume, priceColorClass } from '@/lib/format'
@@ -32,7 +33,7 @@ import { usePreferences } from '@/lib/useSharedQueries'
 import { useReviewState } from '@/lib/useReviewStore'
 import {
   startReviewGeneration, resetReview, isReviewGenerating, cancelReviewGeneration,
-  type ReviewPhase,
+  type ReviewPhase, type ReviewMeta,
 } from '@/lib/reviewStore'
 
 // ================================================================
@@ -201,7 +202,7 @@ export function ReviewPage() {
   }, [phase, viewing])
 
   // 自动归档(生成完成后台静默保存)—— 通过回调注入 store,避免 store 直接依赖 qc/marketQuery
-  const onGenerationDone = useCallback(async (fullContent: string, doneMeta: { as_of?: string; summary?: string; emotion_score?: number; emotion_label?: string } | null) => {
+  const onGenerationDone = useCallback(async (fullContent: string, doneMeta: ReviewMeta | null) => {
     const reportAsOf = doneMeta?.as_of ?? marketQuery.data?.as_of ?? asOf ?? new Date().toISOString().slice(0, 10)
     try {
       await api.reviewReportSave({
@@ -211,6 +212,7 @@ export function ReviewPage() {
         summary: doneMeta?.summary,
         emotion_score: doneMeta?.emotion_score ?? null,
         emotion_label: doneMeta?.emotion_label ?? '',
+        snapshot: doneMeta?.snapshot ?? null,
       })
       qc.invalidateQueries({ queryKey: QK.reviewReports })
     } catch { /* 静默 */ }
@@ -373,6 +375,8 @@ export function ReviewPage() {
                 <ReportPanel
                   phase={phase}
                   content={displayContent}
+                  snapshot={viewing ? (viewing.snapshot ?? null) : (meta?.snapshot ?? null)}
+                  onOpenStock={setPreviewSymbol}
                   error={error}
                   isGenerating={isGenerating}
                   viewing={viewing}
@@ -805,10 +809,12 @@ function MarketSummaryBar({ data }: { data: OverviewMarket }) {
 // 报告面板(流式 + 错误 + 历史/完成态)
 // ================================================================
 function ReportPanel({
-  phase, content, error, isGenerating, viewing, onCopy, onDownload, onRegenerate, reportEndRef,
+  phase, content, snapshot, onOpenStock, error, isGenerating, viewing, onCopy, onDownload, onRegenerate, reportEndRef,
 }: {
   phase: ReviewPhase
   content: string
+  snapshot: RecapSnapshot | null
+  onOpenStock: (symbol: string) => void
   error: string
   isGenerating: boolean
   viewing: AiReviewReport | null
@@ -847,20 +853,18 @@ function ReportPanel({
         <div className="text-center">
           <div className="text-[16px] leading-6 font-semibold text-foreground">AI 大盘复盘</div>
           <p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-secondary">
-            一键生成今日盘后复盘报告 —— 从一句话定调到明日交易计划,
-            结构化输出可直接指导次日仓位与节奏。
+            数据对比与走势由图表呈现, AI 只写判断:
+            验证昨日预判、定位情绪周期、给出明日剧本。
           </p>
         </div>
-        {/* 报告七节预览 —— 空状态也有内容感,暗示报告结构 */}
-        <div className="mt-2 grid w-full max-w-md grid-cols-2 gap-2 sm:grid-cols-4">
+        {/* 报告五节预览 —— 空状态也有内容感,暗示报告结构 */}
+        <div className="mt-2 grid w-full max-w-md grid-cols-3 gap-2 sm:grid-cols-5">
           {[
-            { icon: '🎯', label: '一句话定调' },
-            { icon: '📊', label: '盘面总览' },
-            { icon: '🔥', label: '板块主线' },
-            { icon: '💰', label: '资金情绪' },
-            { icon: '📰', label: '消息催化' },
-            { icon: '🎯', label: '明日计划' },
-            { icon: '⚠️', label: '风险提示' },
+            { icon: '🎯', label: '定调' },
+            { icon: '✅', label: '预判验证' },
+            { icon: '🔥', label: '主线龙头' },
+            { icon: '🗺️', label: '明日剧本' },
+            { icon: '⛔', label: '失效条件' },
           ].map((s) => (
             <div key={s.label} className="flex flex-col items-center gap-1 rounded-btn bg-elevated/40 px-2 py-2">
               <span className="text-[16px] leading-6">{s.icon}</span>
@@ -908,6 +912,8 @@ function ReportPanel({
         )}
       </div>
       <div className="max-h-[calc(100vh-22rem)] overflow-y-auto px-5 py-4">
+        {/* 数据面板: 数字统一由快照渲染, 正文只写判断与计划; 旧报告无快照时只显示正文 */}
+        {snapshot && <RecapSnapshotPanel snapshot={snapshot} onOpenStock={onOpenStock} />}
         {isLoading ? (
           <div className="flex flex-col items-center justify-center gap-3 py-16">
             <div className="relative">

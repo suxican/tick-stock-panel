@@ -258,10 +258,14 @@ def _respond(
     return payload
 
 
-def build_recap_context(data_dir: Path) -> str:
-    """AI 复盘的盘前风向标摘要段 (纯文本, 失败返回空串不影响复盘)。"""
+def build_recap_context(data_dir: Path, target: date_cls | None = None) -> str:
+    """AI 复盘的盘前风向标摘要段 (纯文本, 失败返回空串不影响复盘)。
+
+    target 为复盘日。只给复盘日当天表现, 不给次日收益: 补做历史复盘时
+    次日数据已存在, 写进 prompt 等于把未来信息泄露给模型。
+    """
     try:
-        payload = get_auction_benchmark(data_dir, None)
+        payload = get_auction_benchmark(data_dir, target)
         if payload.get("state") not in ("ok", "fallback_prev"):
             return ""
         items = payload.get("items") or []
@@ -275,8 +279,6 @@ def build_recap_context(data_dir: Path) -> str:
                    f"[{'·'.join(i.get('tags') or [])}]")
             if i.get("day0_oc") is not None:
                 seg += f" → 当日开盘买{i['day0_oc']*100:+.2f}%"
-            if i.get("d1_pct") is not None:
-                seg += f", 次日{i['d1_pct']*100:+.2f}%"
             segs.append(seg)
         lines.append("盘前风向标名单: " + "; ".join(segs))
         ocs = [i["day0_oc"] for i in items if i.get("day0_oc") is not None]

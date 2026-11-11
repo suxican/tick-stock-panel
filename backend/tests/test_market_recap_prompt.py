@@ -80,11 +80,12 @@ async def test_stream_passes_custom_prompt_to_llm(monkeypatch, tmp_path):
     }
     monkeypatch.setattr(market_recap, "build_market_overview", lambda *a, **k: overview)
     monkeypatch.setattr(
-        "app.services.dragon_tiger.build_recap_context", lambda data_dir: "",
+        "app.services.dragon_tiger.build_recap_context", lambda data_dir, target=None: "",
     )
     monkeypatch.setattr(
-        "app.services.auction_benchmark.build_recap_context", lambda data_dir: "",
+        "app.services.auction_benchmark.build_recap_context", lambda data_dir, target=None: "",
     )
+    monkeypatch.setattr(market_recap, "find_prev_plan", lambda as_of: None)
 
     captured: list[list[dict]] = []
 

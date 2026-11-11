@@ -980,6 +980,44 @@ export interface MainlineResult {
 }
 
 // ===== 大盘复盘 =====
+/** AI 复盘数据快照 (后端 market_recap_snapshot); 百分比字段均为百分数, 金额为亿元。 */
+export interface RecapSnapshotMetric {
+  key: string
+  label: string
+  unit: string
+  digits: number
+  today: number | null
+  prev: number | null
+  avg5: number | null
+  series: (number | null)[]
+}
+
+export interface RecapSnapshot {
+  version: number
+  as_of: string
+  intraday: boolean
+  generated_at: string
+  /** regime=今日已入环境时序; overview=今日取实时总览补齐 */
+  today_source: 'regime' | 'overview'
+  phase: { key: string; label: string; days: number; capped?: boolean; date: string; state_label: string | null } | null
+  metrics: RecapSnapshotMetric[]
+  dates: string[]
+  mainlines: {
+    name: string
+    rank: number
+    limit_up: number
+    max_boards: number
+    leader: { symbol: string; name: string } | null
+    streak: number
+  }[]
+  sectors: {
+    leading: { name: string; pct: number; leader: string | null }[]
+    lagging: { name: string; pct: number; leader: string | null }[]
+  }
+  ladder: { boards: number; count: number; stocks: { symbol: string; name: string }[] }[]
+  prev_limit_up: { count: number; avg_pct: number; up_ratio: number } | null
+}
+
 export interface AiReviewReport {
   id: string
   as_of: string
@@ -988,6 +1026,8 @@ export interface AiReviewReport {
   summary?: string
   emotion_score?: number | null
   emotion_label?: string
+  /** 新版复盘的数据快照; 旧报告无此字段 */
+  snapshot?: RecapSnapshot | null
   created_at: string
 }
 
@@ -5518,6 +5558,7 @@ export const api = {
   reviewReportSave: (r: {
     as_of: string; focus?: string; content: string
     summary?: string; emotion_score?: number | null; emotion_label?: string
+    snapshot?: RecapSnapshot | null
     push?: boolean
   }) =>
     request<{ ok: boolean; report: AiReviewReport }>('/api/market-recap/reports', {

@@ -272,10 +272,13 @@ def get_dragon_tiger(data_dir: Path, target: date_cls | None = None) -> dict:
         return {"state": "no_data", "message": str(e)}
 
 
-def build_recap_context(data_dir: Path) -> str:
-    """AI 复盘的龙虎榜摘要段 (纯文本, 失败返回空串不影响复盘)。"""
+def build_recap_context(data_dir: Path, target: date_cls | None = None) -> str:
+    """AI 复盘的龙虎榜摘要段 (纯文本, 失败返回空串不影响复盘)。
+
+    target 为复盘日; 未发布时服务层回退上一期, 摘要首行的数据日期会如实标注。
+    """
     try:
-        payload = get_dragon_tiger(data_dir, None)
+        payload = get_dragon_tiger(data_dir, target)
         if payload.get("state") not in ("ok", "fallback_prev"):
             return ""
         items = payload.get("all", {}).get("stock_items") or []
