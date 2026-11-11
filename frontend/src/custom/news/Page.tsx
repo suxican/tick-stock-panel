@@ -7,6 +7,7 @@ import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { api, type NewsCatalystGroup, type NewsCatalystItem, type NewsCatalystsResult } from '@/lib/api'
 import { cnDateFromUtc, cnDateTimeFromUtc, fmtPct, fmtVolume, priceColorClass } from '@/lib/format'
 import { QK } from '@/lib/queryKeys'
+import { Announcements } from './Announcements'
 import type { NavItem } from '@/lib/listNav'
 
 type Ready = Extract<NewsCatalystsResult, { state: 'ok' }>
@@ -119,39 +120,59 @@ function Catalysts({ data, open }: { data: Ready; open: OpenStock }) {
   </>
 }
 
-export function NewsAnalysis() {
-  const today = cnDateFromUtc(new Date().toISOString())
-  const [day, setDay] = useState(today)
-  const [stock, setStock] = useState<{ symbol: string; name: string; date: string; navList: NavItem[] } | null>(null)
+type StockTarget = { symbol: string; name: string; date: string; navList: NavItem[] }
+
+function CatalystsTab({ day, onOpen }: { day: string; onOpen: (stock: StockTarget) => void }) {
   // 当日数据每次查询都会请求上游，窗口聚焦等自动重取限制为每分钟一次。
   const query = useQuery({ queryKey: QK.newsCatalysts(day), queryFn: () => api.newsCatalysts(day), staleTime: 60_000 })
   const data = query.data?.requested_date === day ? query.data : undefined
+  return <>
+    {data && <p className="text-xs text-secondary"><Context day={data.trade_date} /></p>}
+    {query.isPending && <p role="status" className="text-sm text-secondary">正在读取异动解读，首次查看需回补近期数据…</p>}
+    {query.isError && <p role="alert" className="text-sm text-danger">
+      {query.error.message || '读取失败。'}
+      <button type="button" className="ml-2 text-accent underline" onClick={() => void query.refetch()}>重试</button>
+    </p>}
+    {data && data.trade_date !== day && <p className="text-sm text-secondary">{day} 暂无异动解读或不是交易日，显示 {data.trade_date} 的数据。</p>}
+    {data?.state === 'source_unavailable' && <p role="alert" className="text-sm text-warning">
+      催化解读需要扶摇数据源。<Link className={'ml-1 ' + link} to="/settings?tab=data-sources&highlight=fuyao">前往配置</Link>
+    </p>}
+    {data?.state === 'no_data' && <p role="alert" className="text-sm text-warning">
+      {data.message}
+      <button type="button" className="ml-2 text-accent underline" disabled={query.isFetching} onClick={() => void query.refetch()}>重试</button>
+    </p>}
+    {data?.state === 'ok' && <Catalysts key={data.trade_date} data={data}
+      open={(item, list) => onOpen({ symbol: item.symbol, name: item.name, date: data.trade_date, navList: list.map(s => ({ symbol: s.symbol, name: s.name })) })} />}
+  </>
+}
+
+const tabs = [['catalysts', '催化验证'], ['announcements', '公告排雷']] as const
+type Tab = typeof tabs[number][0]
+
+export function NewsAnalysis() {
+  const today = cnDateFromUtc(new Date().toISOString())
+  const [day, setDay] = useState(today)
+  const [tab, setTab] = useState<Tab>('catalysts')
+  const [stock, setStock] = useState<StockTarget | null>(null)
   return <div className="min-h-full bg-base text-foreground">
     <header className="border-b border-border bg-surface px-4 py-3 pl-14 md:px-6">
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <h1 className="flex items-center gap-2 text-xl font-semibold"><Newspaper aria-hidden className="h-5 w-5 text-accent" />资讯分析</h1>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-secondary">
-          {data && <Context day={data.trade_date} />}
-          <span className="flex items-center gap-2">交易日 <DatePicker value={day} max={today} onChange={date => { setDay(date); setStock(null) }} /></span>
-        </div>
+        <span className="flex items-center gap-2 text-xs text-secondary">交易日 <DatePicker value={day} max={today} onChange={date => { setDay(date); setStock(null) }} /></span>
       </div>
     </header>
     <div className="mx-auto max-w-6xl space-y-4 px-3 py-4 sm:px-6">
-      {query.isPending && <p role="status" className="text-sm text-secondary">正在读取异动解读，首次查看需回补近期数据…</p>}
-      {query.isError && <p role="alert" className="text-sm text-danger">
-        {query.error.message || '读取失败。'}
-        <button type="button" className="ml-2 text-accent underline" onClick={() => void query.refetch()}>重试</button>
-      </p>}
-      {data && data.trade_date !== day && <p className="text-sm text-secondary">{day} 暂无异动解读或不是交易日，显示 {data.trade_date} 的数据。</p>}
-      {data?.state === 'source_unavailable' && <p role="alert" className="text-sm text-warning">
-        催化解读需要扶摇数据源。<Link className={'ml-1 ' + link} to="/settings?tab=data-sources&highlight=fuyao">前往配置</Link>
-      </p>}
-      {data?.state === 'no_data' && <p role="alert" className="text-sm text-warning">
-        {data.message}
-        <button type="button" className="ml-2 text-accent underline" disabled={query.isFetching} onClick={() => void query.refetch()}>重试</button>
-      </p>}
-      {data?.state === 'ok' && <Catalysts key={data.trade_date} data={data}
-        open={(item, list) => setStock({ symbol: item.symbol, name: item.name, date: data.trade_date, navList: list.map(s => ({ symbol: s.symbol, name: s.name })) })} />}
+      <nav aria-label="资讯分析视图" className="flex gap-5 border-b border-border">
+        {tabs.map(([id, label]) => <button type="button" key={id} aria-pressed={id === tab}
+          onClick={() => { setTab(id); setStock(null) }}
+          className={'whitespace-nowrap border-b-2 px-1 pb-3 pt-1 text-sm font-medium focus-visible:outline-accent ' + (id === tab ? 'border-accent text-accent' : 'border-transparent text-secondary hover:text-foreground')}>
+          {label}
+        </button>)}
+      </nav>
+      {tab === 'catalysts'
+        ? <CatalystsTab day={day} onOpen={setStock} />
+        : <Announcements day={day} open={(row, list) => setStock({ symbol: row.symbol, name: row.name, date: row.published_at.slice(0, 10),
+          navList: [...new Map(list.map(r => [r.symbol, { symbol: r.symbol, name: r.name }])).values()] })} />}
     </div>
     <StockPreviewDialog symbol={stock?.symbol ?? null} name={stock?.name} tradeDate={stock?.date ?? null} navList={stock?.navList}
       onNavigate={(symbol, name) => setStock(prev => prev && { ...prev, symbol, name: name || symbol })} onClose={() => setStock(null)} />

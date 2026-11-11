@@ -77,6 +77,7 @@ user_data / strategies / pools → 用户定义与配置 → 各业务模块
 | `depth5/` | `date=<date>/part.parquet`：涨跌停候选的封板判定旁表，包括 `sealed_up/down`、买卖一档量、状态和采集时间。 | [depth_service.py](../backend/app/services/depth_service.py) 盘中维护内存，盘后定版、启动补跑或显式持久化时落盘；供连板梯队和总览读取。不是全市场完整五档逐笔历史；量单位为手，不能靠日 K 重建历史盘口。 |
 | `dragon_tiger/` | `date=<date>.json`：Fuyao 龙虎榜综合、机构、游资榜及日期/状态。 | [dragon_tiger.py](../backend/app/services/dragon_tiger.py) 在复盘或 AI 上下文查询时按需拉取，历史日缓存，当日现取；未发布时可能返回前一交易日并标明回退。删除后依赖上游历史重取。 |
 | `news_catalysts/` | `date=<date>.json`：Fuyao 异动解读中归属该交易日的 A 股个股记录（代码、异动标签、关键词、解读正文、异动与首次发布时间）及取得时间。 | [news_catalysts.py](../backend/app/services/news_catalysts.py) 在打开「资讯分析」时按需拉取该日及前 10 个交易日，历史日缓存，当日现取不落盘；空结果和被截断的响应不缓存。涨跌幅、涨停数和次日表现在读取时由本地日线补算，不在缓存内。删除后依赖上游历史重取。 |
+| `news_announcements/` | `<symbol>.json`：巨潮资讯网该股已取得的全部公告（标题、发布时间、PDF 地址）及每个自然日的取得时间；`_org_ids.json` 为巨潮机构代码表副本。 | [news_announcements.py](../backend/app/services/news_announcements.py) 在「资讯分析 → 公告排雷」点击同步时，按自选股在后台拉取约 20 个交易日；读取只读本地文件，风险分类在读取时按标题规则计算。公告日次日 06:00 后取得的日期不再重拉；机构代码表 7 天内复用，过期且上游失败时沿用旧副本。删除后需重新同步。 |
 | `auction_benchmark/` | `date=<date>.json`：Fuyao 竞价异动、短线风向标名单及概念信息。 | [auction_benchmark.py](../backend/app/services/auction_benchmark.py) 按需缓存历史日；当日/次日收益在读取时由本地日线补算，不是名单缓存里的固定收益记录。删除后需上游重取。 |
 
 ## 3. 扩展数据与页面

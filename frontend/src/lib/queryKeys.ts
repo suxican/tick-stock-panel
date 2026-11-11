@@ -151,6 +151,7 @@ export const QK = {
   pipelineJob:          (id: string) => ['pipeline-job', id] as const,
   extData:              ['ext-data'] as const,
   newsCatalysts:        (date: string) => ['news-catalysts', date] as const,
+  newsAnnouncements:    (date: string) => ['news-announcements', date] as const,
   zzshareThemes:        (date: string) => ['zzshare-themes', date] as const,
   zzshareThemeMembers:  (plateCode: string, date: string) => ['zzshare-theme-members', plateCode, date] as const,
   zzshareThemeIntraday: (plateCode: string, date: string) => ['zzshare-theme-intraday', plateCode, date] as const,

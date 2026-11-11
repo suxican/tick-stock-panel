@@ -828,6 +828,36 @@ export type NewsCatalystsResult =
     items: NewsCatalystItem[]
   }
 
+// ── 资讯分析·公告排雷 (巨潮; 范围为自选股) ──
+export type NewsRiskLevel = 'high' | 'medium' | 'low'
+
+export interface NewsAnnouncementRow {
+  id: string
+  symbol: string
+  name: string
+  title: string
+  /** 北京时间; has_time 为 false 时只代表公告日期。 */
+  published_at: string
+  has_time: boolean
+  url: string | null
+  type: string
+  label: string
+  level: NewsRiskLevel
+}
+
+export interface NewsAnnouncementsResult {
+  date: string
+  start: string
+  sync: { state: 'running' | 'ready' | 'error'; message: string; done: number; total: number; failed: number } | null
+  symbols: number
+  /** 尚未取得公告 / 未覆盖完整回看窗口的自选股。 */
+  missing: string[]
+  partial: string[]
+  types: { type: string; label: string; level: NewsRiskLevel }[]
+  counts: Record<string, number>
+  rows: NewsAnnouncementRow[]
+}
+
 // ── 市场阶段(情绪周期) 与 主线 ──
 export type MarketPhase = 'ice' | 'ignite' | 'rally' | 'climax' | 'ebb' | 'repair'
 
@@ -5391,6 +5421,14 @@ export const api = {
   /** 资讯分析·催化验证 (fuyao 专有; 首次查看会回补近 10 个交易日, 故放宽超时) */
   newsCatalysts: (date: string) =>
     request<NewsCatalystsResult>(`/api/news/catalysts?${new URLSearchParams({ date })}`, { quiet: true, timeoutMs: 60_000 }),
+
+  /** 公告排雷: 只读本地快照; 拉取由 syncNewsAnnouncements 在后台进行 */
+  newsAnnouncements: (date: string) =>
+    request<NewsAnnouncementsResult>(`/api/news/announcements?${new URLSearchParams({ date })}`, { quiet: true }),
+  syncNewsAnnouncements: (date: string) =>
+    request<{ started: boolean; message: string }>('/api/news/announcements/sync', {
+      method: 'POST', body: JSON.stringify({ date }), quiet: true,
+    }),
 
   /** 龙虎榜三榜 (fuyao 专有; 历史日按服务端缓存, 当日未发布自动回退上一期) */
   dragonTiger: (date?: string) =>
