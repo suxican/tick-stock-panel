@@ -115,7 +115,8 @@ def test_expired_scope_and_malformed_partitions_do_not_leak_to_totals(page, tmp_
     _partition(tmp_path, "1900-11-03", "1900-11-02")
     response = page.get("/api/etf-observation").json()
     assert response["dates"] == ["2026-11-04", "2026-11-05"]
-    assert response["as_of"] == "2026-11-04"
+    # Past the scope review the day is listed-only, so it is still the latest complete one.
+    assert response["as_of"] == "2026-11-05"
     partial = page.get("/api/etf-observation?as_of=2026-11-05").json()
     assert partial["totals"] == {"listed_change_value_cny": 40.0, "fund_net_estimate_cny": None}
     assert {r["scope"] for r in partial["funds"]} == {"unverified"}

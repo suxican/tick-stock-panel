@@ -103,3 +103,48 @@ def test_native_release_can_be_read_and_repeated_without_replacing_user_data(tmp
     publish(part, tmp_path)
     with pytest.raises(ValueError, match="differs"):
         publish(part.with_columns(pl.lit(Decimal("2.0000")).alias("amount")), tmp_path)
+
+
+def test_rows_after_scope_review_are_listed_only():
+    days = ["2026-11-03", "2026-11-04", "2026-11-05"]
+    symbol = "159919.SZ"
+    shares = {(symbol, d): (100 + i, URL) for i, d in enumerate(days)}
+    navs = {(symbol, d): (Decimal("2"), URL) for d in days}
+    scopes = {symbol: "fund_total_verified"}
+    reviewed, later = daily_rows(days, [symbol], shares, navs, scopes, {symbol: "2026-11-04"})
+    assert reviewed["scope"] == "fund_total_verified" and reviewed["fund_net_estimate_cny"] == 2
+    assert later["scope"] == "unverified" and later["fund_net_estimate_cny"] is None
+    assert later["listed_change_value_cny"] == 2
+
+
+def test_release_only_grows_after_its_last_day(tmp_path):
+    def day(d, amount="1.5"):
+        return pl.DataFrame({"symbol": ["159919.SZ"], "date": [d], "amount": [Decimal(amount)]})
+
+    assert publish(day("2026-11-04"), tmp_path) == ["2026-11-04"]
+    grown = pl.concat([day("2026-11-04"), day("2026-11-05"), day("2026-11-06")])
+    assert publish(grown, tmp_path) == ["2026-11-05", "2026-11-06"]
+    assert publish(grown, tmp_path) == []
+    folder = tmp_path / "ext_data" / TABLE / "timeseries"
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "date=2026-11-04", "date=2026-11-05", "date=2026-11-06",
+    ]
+    with pytest.raises(ValueError, match="differs"):
+        publish(pl.concat([day("2026-11-04"), day("2026-11-05", "9")]), tmp_path)
+    with pytest.raises(ValueError, match="backfill"):
+        publish(pl.concat([day("2026-11-03"), day("2026-11-04")]), tmp_path)
+    assert not (folder / "date=2026-11-03").exists()
+
+
+def test_recited_source_query_is_the_same_observation_but_another_host_is_not(tmp_path):
+    def day(source, amount="1.5"):
+        return pl.DataFrame({
+            "symbol": ["159919.SZ"], "date": ["2026-11-04"], "amount": [Decimal(amount)], "nav_source": [source],
+        })
+
+    publish(day("https://www.szse.cn/api?txtEnd=2026-11-04"), tmp_path)
+    assert publish(day("https://www.szse.cn/api?txtEnd=2026-11-10"), tmp_path) == []
+    with pytest.raises(ValueError, match="differs"):
+        publish(day("https://elsewhere.example/api"), tmp_path)
+    with pytest.raises(ValueError, match="differs"):
+        publish(day("https://www.szse.cn/api?txtEnd=2026-11-10", "1.6"), tmp_path)

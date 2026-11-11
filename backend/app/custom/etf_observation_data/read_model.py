@@ -262,7 +262,12 @@ class ObservationWindow:
 
     def _complete(self, day):
         rows = self._load(day)
-        return len(rows) == len(BASKET) and all(rows[s][WHOLE] is not None for s in self.whole)
+        # Rows past their scope review are listed-only; they cannot hold a session back.
+        return len(rows) == len(BASKET) and all(
+            rows[s][WHOLE] is not None
+            for s in self.whole
+            if rows[s]["scope"] == "fund_total_verified"
+        )
 
     def detail(self, symbol):
         rows = []

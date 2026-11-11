@@ -1,7 +1,9 @@
-"""Build the audited, fixed-period ETF observation dataset from the saved source rows.
+"""Build the audited ETF observation dataset from the saved source rows.
 
-From backend: python -m app.custom.etf_observation_data.ledger [--publish]
-The scope and event review apply only to this 60-session release.
+From backend: python -m app.custom.etf_observation_data.ledger [--publish] [--end YYYY-MM-DD]
+The original release covers BASELINE..LAST. Later sessions are appended one
+complete day at a time; published days are never rewritten. Scope reviews end
+at each fund's verified_through, after which rows are stored as unverified.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from decimal import Decimal
 from itertools import pairwise
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from urllib.parse import urlsplit
 
 import polars as pl
 
@@ -59,11 +62,14 @@ def observations(path: Path, field: str) -> dict:
     return by_key
 
 
-def daily_rows(sessions, symbols, shares, navs, scopes):
+def daily_rows(sessions, symbols, shares, navs, scopes, verified_through=None):
     rows = []
     for previous, today in pairwise(sessions):
         for symbol in symbols:
             scope = scopes[symbol]
+            # A scope review only vouches for the sessions it covered.
+            if verified_through and today > verified_through[symbol]:
+                scope = "unverified"
             s0, src0 = shares.get((symbol, previous), (None, None))
             s1, src1 = shares.get((symbol, today), (None, None))
             nav, nav_src = navs.get((symbol, today), (None, None))
@@ -212,8 +218,12 @@ def split_check(shares, navs):
     )
 
 
-def publish(frame: pl.DataFrame, data_dir: Path):
-    """Publish all validated partitions together; never overwrite another table."""
+def publish(frame: pl.DataFrame, data_dir: Path) -> list[str]:
+    """Publish validated partitions; never overwrite another table or a published day.
+
+    An existing release only grows: every published day must match exactly, and
+    new days must all come after the last published one. Returns the days added.
+    """
     fields = [
         ExtField(col, "int" if typ.is_integer() else "float" if typ.is_decimal() else "string")
         for col, typ in frame.schema.items()
@@ -228,37 +238,73 @@ def publish(frame: pl.DataFrame, data_dir: Path):
     # The extension contract uses Float64 for money. daily.csv retains the exact decimals.
     frame = frame.with_columns(pl.col(pl.Decimal).cast(pl.Float64))
     target = data_dir / "ext_data" / TABLE
-    groups = frame.partition_by("date", as_dict=True)
-    if target.exists():
-        stored = ExtConfigStore(data_dir).get(TABLE)
-        if not stored or stored.label != config.label or stored.mode != config.mode:
-            raise ValueError(f"Destination belongs to another dataset: {target}")
-        for (day,), part in groups.items():
-            existing = pl.read_parquet(target / "timeseries" / f"date={day}" / "part.parquet")
-            if existing.schema != part.schema or not existing.sort("symbol").equals(
-                part.sort("symbol")
-            ):
-                raise ValueError(
-                    f"Published snapshot differs on {day}; review the revision before replacing it"
-                )
-        return
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(dir=data_dir) as temp:
-        stage = Path(temp)
-        ExtConfigStore(stage).create(config)
-        for (day,), part in groups.items():
-            write_ext_parquet(
-                part, config, stage, snapshot_date=date.fromisoformat(day), keep_strategy_cache=True
+    groups = {day: part for (day,), part in frame.partition_by("date", as_dict=True).items()}
+    if not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(dir=data_dir) as temp:
+            stage = Path(temp)
+            _stage(config, stage, groups)
+            (stage / "ext_data" / TABLE).rename(target)
+        return sorted(groups)
+    stored = ExtConfigStore(data_dir).get(TABLE)
+    if not stored or stored.label != config.label or stored.mode != config.mode:
+        raise ValueError(f"Destination belongs to another dataset: {target}")
+    folder = target / "timeseries"
+    published = {p.name.removeprefix("date=") for p in folder.glob("date=*") if p.is_dir()}
+    for day in sorted(published & groups.keys()):
+        existing = pl.read_parquet(folder / f"date={day}" / "part.parquet")
+        if not _same_release(existing, groups[day]):
+            raise ValueError(
+                f"Published snapshot differs on {day}; review the revision before replacing it"
             )
-        (stage / "ext_data" / TABLE).rename(target)
+    added = sorted(groups.keys() - published)
+    if added and published and added[0] <= max(published):
+        raise ValueError(f"Refusing to backfill {added[0]} inside the published release")
+    if added:
+        with TemporaryDirectory(dir=data_dir) as temp:
+            stage = Path(temp)
+            _stage(config, stage, {day: groups[day] for day in added})
+            # Ascending renames keep the release a gap-free prefix if interrupted.
+            for day in added:
+                (stage / "ext_data" / TABLE / "timeseries" / f"date={day}").rename(folder / f"date={day}")
+    return added
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", type=Path, default=RESOURCES.resolve().parents[3] / "data")
-    parser.add_argument("--publish", action="store_true")
-    args = parser.parse_args()
-    base = args.data_dir / "etf_observation"
+SOURCE_COLUMNS = ("shares_source", "previous_shares_source", "nav_source")
+
+
+def _same_release(existing: pl.DataFrame, rebuilt: pl.DataFrame) -> bool:
+    """Values must match exactly; a source may only be re-cited from the same host.
+
+    Each run queries an exchange or manager over a range ending on the latest
+    session, so the cited query URL widens while the observation stays the same.
+    """
+    if existing.schema != rebuilt.schema:
+        return False
+    existing, rebuilt = existing.sort("symbol"), rebuilt.sort("symbol")
+    sources = [c for c in SOURCE_COLUMNS if c in existing.columns]
+    if not existing.drop(sources).equals(rebuilt.drop(sources)):
+        return False
+    for column in sources:
+        for old, new in zip(existing[column], rebuilt[column], strict=True):
+            if (old is None) != (new is None) or (old and urlsplit(old).netloc != urlsplit(new).netloc):
+                return False
+    return True
+
+
+def _stage(config: ExtConfig, stage: Path, groups: dict[str, pl.DataFrame]) -> None:
+    ExtConfigStore(stage).create(config)
+    for day, part in groups.items():
+        write_ext_parquet(
+            part, config, stage, snapshot_date=date.fromisoformat(day), keep_strategy_cache=True
+        )
+
+
+def build(data_dir: Path, end: date = LAST, *, publish_release: bool = False) -> list[str]:
+    """Rebuild BASELINE..end from the saved source rows; returns newly published days."""
+    if end < LAST:
+        raise ValueError(f"The audited release already runs to {LAST}")
+    base = data_dir / "etf_observation"
     inputs = [
         base / "shares.csv",
         base / "nav.csv",
@@ -271,6 +317,7 @@ def main():
     navs = observations(base / "nav.csv", "nav")
     scope_records = json.loads((RESOURCES / "scope.json").read_text(encoding="utf-8-sig"))
     scopes = {r["symbol"]: r["scope"] for r in scope_records}
+    verified_through = {r["symbol"]: r["verified_through"] for r in scope_records}
     if (
         len(scope_records) != len(BASKET)
         or set(scopes) != set(BASKET)
@@ -285,7 +332,7 @@ def main():
     ):
         raise ValueError("Incomplete scope evidence")
     sessions = [
-        d.isoformat() for d in load_market_calendar(BUNDLED_CALENDAR_PATH, start=BASELINE, end=LAST)
+        d.isoformat() for d in load_market_calendar(BUNDLED_CALENDAR_PATH, start=BASELINE, end=end)
     ]
     quarters = reconcile_quarters(shares, navs)
     expected_checks = {(s, d) for s in BASKET for d in ("2026-06-30", "2026-09-30")}
@@ -303,7 +350,7 @@ def main():
                 f"Whole-fund scope conflicts with OTC holdings in {check['symbol']} report"
             )
     split = split_check(shares, navs)
-    rows = daily_rows(sessions, BASKET, shares, navs, scopes)
+    rows = daily_rows(sessions, BASKET, shares, navs, scopes, verified_through)
     frame = pl.DataFrame(
         rows,
         infer_schema_length=None,
@@ -327,7 +374,7 @@ def main():
         .sort("symbol")
     )
     complete = (
-        len(sessions) == 61
+        sessions[-1] == end.isoformat()
         and all(r["status"] == "ok" for r in rows)
         and len(quarters) == 20
         and all(r["status"] == "pass" for r in quarters)
@@ -336,8 +383,9 @@ def main():
     if any(hashlib.sha256(p.read_bytes()).hexdigest() != input_hashes[p.name] for p in inputs):
         raise ValueError("Source changed during this run; retry against the completed snapshot.")
     # Once published, even an export-only retry must match the native table.
-    if complete and (args.publish or (args.data_dir / "ext_data" / TABLE).exists()):
-        publish(frame, args.data_dir)
+    added = []
+    if complete and (publish_release or (data_dir / "ext_data" / TABLE).exists()):
+        added = publish(frame, data_dir)
     # Never replace an audited release with partial exports on a failed retry.
     destination = base if complete else base / "incomplete"
     for name, table in (
@@ -363,7 +411,10 @@ def main():
         split_check=split["status"],
         input_sha256=input_hashes,
         method="相邻登记日份额差 × 当日未复权单位净值，元。全基金字段只在份额范围有证据时填值。",
-        timing="历史回补；date 是份额登记/净值归属日。历史首次公布时刻未留存，不可视为当日盘中可用。",
+        timing=(
+            f"{LAST} 及以前为历史回补，之后在证据齐备后按日追加；date 是份额登记/净值归属日，"
+            "不可视为当日盘中可用。"
+        ),
     )
     _write(
         destination / "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2).encode()
@@ -372,9 +423,17 @@ def main():
         raise ValueError(
             f"Incomplete or conflicting data; see {destination}. Publication withheld."
         )
-    print(
-        f"{len(rows)} daily rows; {len(quarters)} quarter-end checks; split={split['status']}; complete={complete}"
-    )
+    return added
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--data-dir", type=Path, default=RESOURCES.resolve().parents[3] / "data")
+    parser.add_argument("--end", type=date.fromisoformat, default=LAST)
+    parser.add_argument("--publish", action="store_true")
+    args = parser.parse_args()
+    added = build(args.data_dir, args.end, publish_release=args.publish)
+    print(f"Ledger complete through {args.end}; newly published days: {added or 'none'}")
 
 
 if __name__ == "__main__":
