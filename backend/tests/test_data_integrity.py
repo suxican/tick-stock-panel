@@ -120,6 +120,44 @@ def test_close_final_snapshot_is_flagged(tmp_path):
     assert scan_recent_integrity(tmp_path, today=TODAY) == []
 
 
+def _write_rows(root, day: date, rows: list[tuple[str, int | None]]) -> None:
+    part = root / "kline_daily" / f"date={day.isoformat()}"
+    part.mkdir(parents=True, exist_ok=True)
+    n = len(rows)
+    pl.DataFrame({
+        "symbol": [s for s, _ in rows], "date": [day] * n,
+        "open": [10.0] * n, "high": [10.1] * n, "low": [9.9] * n, "close": [10.0] * n,
+        "volume": [100.0] * n, "amount": [1000.0] * n,
+        "quote_ts": pl.Series([q for _, q in rows], dtype=pl.Int64),
+    }).write_parquet(part / "part.parquet")
+
+
+def test_few_late_rows_do_not_hide_snapshot_rows(tmp_path):
+    """实测 11-02/11-05/11-11: 整日实时写入, 少数行 15:30 close_final, 多数 14:5x。
+
+    旧判据看分区最大戳(15:30)→误判干净; 应按行定位到 14:5x 的标的。
+    """
+    rows = [(f"60000{i}.SH", _ts_ms(FRIDAY, time(14, 55))) for i in range(5)]
+    rows += [("600009.SH", _ts_ms(FRIDAY, time(15, 30)))]
+    _write_rows(tmp_path, FRIDAY, rows)
+    _write_daily_partition(tmp_path, "kline_daily", TODAY, _ts_ms(TODAY, time(10, 0)))
+
+    issues = scan_recent_integrity(tmp_path, today=TODAY)
+    assert [(i.day, i.kind) for i in issues] == [(FRIDAY, "snapshot")]
+    assert issues[0].symbols == tuple(f"60000{i}.SH" for i in range(5))
+    assert di._quote_ts_min_ms(tmp_path / "kline_daily" / f"date={FRIDAY}") == _ts_ms(FRIDAY, time(14, 55))
+
+
+def test_snapshot_rows_already_covered_by_batch_rows_stay_clean(tmp_path):
+    # 同一标的既有实时残留又有权威 batch 行(null quote_ts) → 无害, 不重拉
+    _write_rows(tmp_path, FRIDAY, [
+        ("600001.SH", _ts_ms(FRIDAY, time(14, 55))), ("600001.SH", None),
+        ("600002.SH", None), ("600003.SH", _ts_ms(FRIDAY, time(15, 31))),
+    ])
+    _write_daily_partition(tmp_path, "kline_daily", TODAY, _ts_ms(TODAY, time(10, 0)))
+    assert scan_recent_integrity(tmp_path, today=TODAY) == []
+
+
 def test_zero_volume_live_residue_amid_batch_rows_is_clean(tmp_path):
     """盘后 batch 已覆盖主体数据时, 单个停牌实时残留不能误判整个分区。"""
     part = tmp_path / "kline_daily" / f"date={FRIDAY.isoformat()}"

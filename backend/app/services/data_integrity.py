@@ -208,13 +208,25 @@ def _partition_problem(
 
 
 def _quote_ts_max_ms(part_dir: Path) -> int | None:
-    """读单个日期分区的 max(quote_ts); 列不存在/全 null/无统计 → None。
+    """读单个日期分区的 max(quote_ts); 列不存在/全 null/无统计 → None。"""
+    return _quote_ts_stat_ms(part_dir, "max")
 
-    优先走 parquet 元数据 row-group statistics (不解压数据页),
-    statistics 缺失时回退 polars 列扫描。
+
+def _quote_ts_min_ms(part_dir: Path) -> int | None:
+    """读单个日期分区的 min(quote_ts) (null 不计); 列不存在/全 null → None。
+
+    快照判定的快速路径用最小值: 只要最早的实时戳不早于收盘线, 分区内就不可能
+    有盘中快照行。用最大值会被少量 15:30 close_final 行掩盖成千上万条 14:5x 行。
     """
+    return _quote_ts_stat_ms(part_dir, "min")
+
+
+def _quote_ts_stat_ms(part_dir: Path, which: str) -> int | None:
+    """max/min(quote_ts): 优先走 parquet row-group statistics (不解压数据页),
+    statistics 缺失时回退 polars 列扫描。"""
     import pyarrow.parquet as pq
 
+    pick = max if which == "max" else min
     candidates: list[int | None] = []
     files = sorted(part_dir.glob("*.parquet"))
     if not files:
@@ -226,25 +238,25 @@ def _quote_ts_max_ms(part_dir: Path) -> int | None:
             if "quote_ts" not in names:
                 continue
             idx = names.index("quote_ts")
-            file_max: int | None = None
+            file_value: int | None = None
+            stats_complete = True
             for rg in range(meta.num_row_groups):
                 stats = meta.row_group(rg).column(idx).statistics
-                if stats is not None and stats.max is not None:
-                    value = stats.max
-                    file_max = int(value) if file_max is None else max(file_max, int(value))
-            if file_max is None and meta.num_rows > 0:
+                value = getattr(stats, which, None) if stats is not None and stats.has_min_max else None
+                if value is None:
+                    # 该 row group 无统计(或全 null): 不能据其余 row group 下结论
+                    stats_complete = stats_complete and stats is not None and stats.null_count == meta.row_group(rg).num_rows
+                    continue
+                file_value = int(value) if file_value is None else pick(file_value, int(value))
+            if not stats_complete and meta.num_rows > 0:
                 # statistics 未写入 → 回退列扫描
-                file_max = (
-                    pl.scan_parquet(path)
-                    .select(pl.col("quote_ts").max())
-                    .collect()
-                    .item()
-                )
-            candidates.append(file_max)
+                expr = pl.col("quote_ts").max() if which == "max" else pl.col("quote_ts").min()
+                file_value = pl.scan_parquet(path).select(expr).collect().item()
+            candidates.append(file_value)
         except Exception as e:  # noqa: BLE001
             logger.debug("quote_ts scan skipped %s: %s", path, e)
     values = [v for v in candidates if v is not None]
-    return max(values) if values else None
+    return pick(values) if values else None
 
 
 def _is_snapshot(day: date, quote_ts_ms: int | None) -> bool:
@@ -259,7 +271,7 @@ def _is_snapshot(day: date, quote_ts_ms: int | None) -> bool:
 
 
 def _partition_snapshot_defects(
-    day: date, part_dir: Path, quote_ts_max_ms: int | None
+    day: date, part_dir: Path, quote_ts_min_ms: int | None
 ) -> set[str] | None:
     """分区级快照判定 → 缺陷 symbol 集合 (issue #514: 判坏下沉到 symbol 级)。
 
@@ -273,7 +285,14 @@ def _partition_snapshot_defects(
     - 空集合    : 分区干净 (残留 symbol 均已有权威行, 或仅零成交残留且权威行占多数);
     - 非空集合  : 恰好这些 symbol 在窗口内写了有成交实时行且无权威行 → 只修它们。
     """
-    if not _is_snapshot(day, quote_ts_max_ms):
+    # 快速路径: 最早的实时戳都不早于收盘线(或无实时戳) → 没有盘中快照行。
+    # 注意不能用最大值判定: 分区里少量 15:30 close_final 行会把全市场
+    # 14:5x 快照行"洗白"(实测 11-02/11-05/11-11 整日实时行被判干净)。
+    # 早于当日 0 点的戳(跨日残留)同样走下方逐行扫描, 由时间窗过滤。
+    if quote_ts_min_ms is None:
+        return set()
+    min_ts = datetime.fromtimestamp(int(quote_ts_min_ms) / 1000, tz=CN_TZ)
+    if min_ts.date() > day or (min_ts.date() == day and min_ts.time() >= CLOSE_CUTOFF):
         return set()
 
     start_ms = int(datetime.combine(day, dt_time.min, tzinfo=CN_TZ).timestamp() * 1000)
@@ -338,9 +357,9 @@ def _partition_snapshot_defects(
     return set()
 
 
-def _partition_is_snapshot(day: date, part_dir: Path, quote_ts_max_ms: int | None) -> bool:
+def _partition_is_snapshot(day: date, part_dir: Path, quote_ts_min_ms: int | None) -> bool:
     """整个分区是否仍是盘中快照 (旧布尔口径, 供既有调用方; 内部走 symbol 级判据)。"""
-    defects = _partition_snapshot_defects(day, part_dir, quote_ts_max_ms)
+    defects = _partition_snapshot_defects(day, part_dir, quote_ts_min_ms)
     return defects is None or bool(defects)
 
 
@@ -354,7 +373,7 @@ def inspect_daily_partition(data_dir: Path, table: str, day: date, *, deep: bool
     if problem:
         kind, reason, files, symbols = problem
         return IntegrityIssue(day, table, kind, symbols=symbols, reason=reason, files=files)
-    defects = _partition_snapshot_defects(day, part, _quote_ts_max_ms(part))
+    defects = _partition_snapshot_defects(day, part, _quote_ts_min_ms(part))
     if defects is None or defects:
         return IntegrityIssue(day, table, "snapshot", symbols=tuple(sorted(defects)) if defects else ())
     return None
