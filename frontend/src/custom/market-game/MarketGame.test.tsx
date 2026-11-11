@@ -70,6 +70,12 @@ async function input(label: string, value: string) {
   })
   await settle()
 }
+async function openProfile() {
+  const profile = [...host.querySelectorAll('details')].find(item => item.firstElementChild?.textContent?.startsWith('行为代理画像'))!
+  expect(profile.open).toBe(false)
+  await act(async () => profile.querySelector('summary')!.click())
+  await settle()
+}
 async function select(id: string) {
   const field = host.querySelector<HTMLSelectElement>('select[aria-label="历史计划"]')!
   await reveal(field)
@@ -102,7 +108,7 @@ it('registers a lazy independent route and matching navigation', () => {
 it('keeps supplemental research out of the primary views and fetches it only when opened', async () => {
   await render()
   await click('生成盘后计划')
-  expect([...host.querySelectorAll('[role="tab"]')].map(item => item.textContent)).toEqual(['博弈总览', '情绪与心理', '证据与复盘'])
+  expect([...host.querySelectorAll('[role="tab"]')].map(item => item.textContent)).toEqual(['今日结论', '情绪与假设', '复盘与证据'])
   expect(host.textContent).toContain('短线趋势回踩候选')
   expect(host.querySelector('section[aria-label="海外市场 · 计划冻结证据"]')).toBeNull()
   expect(calls.capital).not.toHaveBeenCalled()
@@ -153,7 +159,9 @@ it('starts with an explicit empty state and generates latest post-close using de
   expect(host.textContent).toContain('量价确认后才增加风险暴露')
   // limitations text is now inside an InfoTip; verify reason text is present instead
   expect(host.textContent).toContain('量价确认后才增加风险暴露')
-  await click('情绪与心理')
+  await click('情绪与假设')
+  expect(host.textContent).not.toContain('情绪与心理刻度尚未记录')
+  await openProfile()
   expect(host.textContent).toContain('情绪与心理刻度尚未记录')
   expect(host.textContent).toContain('另一种解释')
 })
@@ -228,7 +236,7 @@ it('keeps a late AI explanation attached to its original report', async () => {
   calls.explain.mockReturnValueOnce(new Promise(done => { resolve = done }))
   await render()
   await select('plan-one')
-  await click('情绪与心理')
+  await click('情绪与假设')
   await click('生成 AI 解读')
   await select('plan-two')
   await act(async () => resolve({ content: '仅属于旧报告的解释' }))
@@ -248,7 +256,7 @@ it('distinguishes observed zero returns from pending data without presenting a b
   await render()
   await click('生成盘后计划')
   expect(calls.evaluation).not.toHaveBeenCalled()
-  await click('证据与复盘')
+  await click('复盘与证据')
   await click('查看后续表现')
   expect(calls.evaluation).toHaveBeenCalledWith('plan-one')
   const section = host.querySelector('section[aria-label="后续观察"]')!
@@ -281,7 +289,7 @@ it('shows unavailable inputs with no candidates and disables AI instead of inven
   expect(host.textContent).toContain('暂不可分析')
   expect(host.textContent).toContain('数据不足，暂不形成情景计划')
   expect(host.querySelector('a')?.getAttribute('href')).toBe('/settings?tab=data-sources')
-  await click('情绪与心理')
+  await click('情绪与假设')
   const ai = [...host.querySelectorAll('button')].find(item => item.textContent === '生成 AI 解读')!
   expect(ai.disabled).toBe(true)
   expect(calls.explain).not.toHaveBeenCalled()
@@ -316,7 +324,9 @@ it('shows real psychology series with null gaps, exact percentile units and swit
   await render()
   await click('生成盘后计划')
   expect(host.querySelector('[data-chart]')).toBeNull()
-  await click('情绪与心理')
+  await click('情绪与假设')
+  expect(host.querySelector('[data-chart]')).toBeNull()
+  await openProfile()
   expect(host.textContent).toContain('较前日 0.0 分')
   expect(host.textContent).toContain('覆盖 80%')
   expect(host.textContent).toContain('分位 75%')
@@ -331,7 +341,7 @@ it('shows real psychology series with null gaps, exact percentile units and swit
   expect(panic.getAttribute('aria-valuetext')).toContain('无法评分')
   await act(async () => (panic.closest('button') as HTMLButtonElement).click())
   expect(host.querySelector('section[aria-label="恐慌压力解释"]')?.textContent).toContain('恐慌压力的观察事实')
-  await click('证据与复盘')
+  await click('复盘与证据')
   expect(host.querySelector('[data-chart]')).toBeNull()
   expect(host.textContent).toContain('输入版本 snapshot-1')
 })
@@ -361,7 +371,8 @@ it('keeps old reports readable without assuming risk parameters or a valid execu
   expect(host.textContent).toContain('有效交易日待核验')
   expect(host.textContent).toContain('占账户总资产，未扣除已有持仓')
   expect([...host.querySelectorAll('button')].find(item => item.textContent === '载入此报告的风险参数')!.disabled).toBe(true)
-  await click('情绪与心理')
+  await click('情绪与假设')
+  await openProfile()
   expect(host.textContent).toContain('情绪与心理刻度尚未记录')
   expect(host.querySelector('[data-chart]')).toBeNull()
 })
@@ -387,26 +398,25 @@ it('supports keyboard tab navigation without starting explanation or evaluation 
   await click('生成盘后计划')
   const tab = host.querySelector('[role="tab"][aria-selected="true"]')!
   await act(async () => tab.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })))
-  expect(host.querySelector('[role="tab"][aria-selected="true"]')!.textContent).toContain('情绪与心理')
+  expect(host.querySelector('[role="tab"][aria-selected="true"]')!.textContent).toContain('情绪与假设')
   expect(document.activeElement?.id).toBe('game-tab-psychology')
   expect(calls.explain).not.toHaveBeenCalled()
   expect(calls.evaluation).not.toHaveBeenCalled()
 })
 
-it('keeps the generation toolbar available after loading a report and allows manual collapse', async () => {
+it('collapses generation settings after loading a report while keeping the toolbar usable', async () => {
   await render()
   const settings = () => [...host.querySelectorAll('details')].find(item => item.firstElementChild?.textContent?.startsWith('生成设置'))!
   expect(settings().open).toBe(true)
   await click('生成盘后计划')
-  expect(settings().open).toBe(true)
-  await act(async () => settings().querySelector('summary')!.click())
+  // 载入报告后收起设置，生成按钮与历史计划仍在工具条上。
   expect(settings().open).toBe(false)
   await act(async () => settings().querySelector('summary')!.click())
   expect(settings().open).toBe(true)
   await input('组合压力预算（%）', '2')
   await click('生成盘后计划')
   expect(calls.analyze.mock.calls[1][0].risk.portfolio_risk_budget).toBe(.02)
-  await click('情绪与心理')
+  await click('情绪与假设')
   const conclusion = [...host.querySelectorAll('details')].find(item => item.firstElementChild?.textContent === '查看冻结的市场结论')!
   expect(conclusion.open).toBe(false)
   expect(conclusion.textContent).toContain('计划 plan-one：')
@@ -438,7 +448,7 @@ it('shows one frozen sentiment line on the overview and full metrics on the psyc
   expect(strip.textContent).toContain('分位 88')
   expect(strip.textContent).toContain('亏钱门 81 分位：暂停新增')
   expect(strip.textContent).not.toContain('跌超5%家数占比')  // secondary metrics stay off the overview
-  await click('情绪与心理')
+  await click('情绪与假设')
   const panel = host.querySelector('section[aria-label="短线情绪"]')!
   expect(panel.textContent).toContain('81 分位 · 暂停新增')
   expect(panel.textContent).toContain('4.25%')
@@ -449,12 +459,12 @@ it('keeps legacy reports readable and states unavailable vendor sentiment plainl
   await render()
   await click('生成盘后计划')
   expect(host.querySelector('[aria-label="短线情绪"]')).toBeNull()
-  await click('情绪与心理')
+  await click('情绪与假设')
   expect(host.textContent).toContain('短线情绪未记录')
   const unavailable = { ...sentiment('none', null), status: 'unavailable' as const, reason: 'zzshare 情绪归档未覆盖行情日期', metrics: [], history: [],
     loss_gate: { score: null, level: 'unavailable' as const, components: [], caution: 60, veto: 80 } }
   calls.analyze.mockResolvedValue({ ...report('plan-two'), sentiment: unavailable })
-  await click('博弈总览')
+  await click('今日结论')
   await click('生成盘后计划')
   expect(host.querySelector('[aria-label="短线情绪"]')?.textContent).toContain('暂不可用：zzshare 情绪归档未覆盖行情日期')
 })
@@ -469,4 +479,11 @@ it('labels 1.4.0 candidates as an observation list and the cap as the market gat
   expect(host.textContent).not.toContain('短线趋势回踩候选')
   expect(host.textContent).toContain('市场闸门上限')
   expect(host.textContent).toContain('不分配')
+  // 观察模式不再逐股、逐情景重复“不分配”的仓位列。
+  const list = host.querySelector('section[aria-label="候选观察名单"]')!
+  expect(list.textContent).not.toContain('单股上限')
+  expect(list.textContent).not.toContain('本计划仓位上限')
+  expect(host.querySelector('section[aria-label="结论依据"]')?.textContent).toContain('选股层回放未通过')
+  await click('查看假设')
+  expect(host.querySelector('[role="tab"][aria-selected="true"]')!.textContent).toContain('情绪与假设')
 })

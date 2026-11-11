@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { skipToken, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Activity, BrainCircuit, ClipboardList, RefreshCw, Scale, ShieldCheck, Sparkles, Timer } from 'lucide-react'
+import { Activity, BrainCircuit, ClipboardList, RefreshCw, Scale, Sparkles, Timer } from 'lucide-react'
 import { api, type MarketGameCandidate, type MarketGameEvaluation, type MarketGameReport, type MarketGameRisk } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
@@ -80,11 +80,19 @@ const riskFields = [
 ] as const
 type RiskDraft = Record<keyof MarketGameRisk, string>
 type View = 'overview' | 'psychology' | 'evidence'
+// 页签按用户问题排列：能否新增风险 → 为什么 → 判断是否可信。
 const views = [
-  { id: 'overview', label: '博弈总览', icon: Activity },
-  { id: 'psychology', label: '情绪与心理', icon: BrainCircuit },
-  { id: 'evidence', label: '证据与复盘', icon: ClipboardList },
+  { id: 'overview', label: '今日结论', icon: Activity },
+  { id: 'psychology', label: '情绪与假设', icon: BrainCircuit },
+  { id: 'evidence', label: '复盘与证据', icon: ClipboardList },
 ] as const
+// Selden《股市心理博弈》第五章“持仓即偏见”的自检问题，只作提示，不参与规则计算。
+const selfChecks = [
+  '如果现在空仓，是否仍会在确认区间内买入，而不是因为已经关注它而想买',
+  '开盘已高于确认区间上沿时不追；条件未全部满足时不执行',
+  '跌破失效价时能否退出：T+1、跌停和跳空都可能让实际亏损超过预算',
+]
+const tagClass = 'shrink-0 rounded border border-border px-1.5 py-0.5 text-[11px] text-secondary'
 
 function SupplementalResearch({ report }: { report: MarketGameReport }) {
   const [open, setOpen] = useState(false)
@@ -133,30 +141,31 @@ function Candidate({ candidate, onOpen, observation }: { candidate: MarketGameCa
     ['压力参考价', price(candidate.pressure_price ?? null)],
     ['参考盈亏比', candidate.reward_risk_ratio == null ? '—' : candidate.reward_risk_ratio.toFixed(2)],
   ] as const
-  return <article className="min-w-0 py-4 first:pt-0">
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <button type="button" onClick={onOpen} className="min-h-10 rounded-sm text-[16px] leading-6 font-semibold text-foreground underline decoration-border underline-offset-4 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">{candidate.name}</button>
-        <span className="font-mono text-xs text-secondary">{candidate.symbol}</span>
-        <span className="text-sm text-secondary">{candidate.sector} · {candidate.role}</span>
-      </div>
-      <span className="text-sm text-secondary">{modeLabels[candidate.mode] ?? candidate.mode} · 持有不超过 {candidate.holding_days} 个交易日</span>
-    </div>
-    <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-3 text-sm sm:grid-cols-4">
-      <div><dt className="text-secondary">参考收盘价</dt><dd className="mt-1 font-mono">{price(candidate.reference_price)}</dd></div>
-      <div><dt className="text-secondary">确认参考区间</dt><dd className="mt-1 font-mono">{price(candidate.trigger_low)} – {price(candidate.trigger_high)}</dd></div>
-      <div><dt className="text-secondary">失效参考价</dt><dd className="mt-1 font-mono">{price(candidate.invalidation_price)}</dd></div>
-      <div><dt className="text-secondary">单股新增上限</dt><dd className="mt-1 font-mono">{observation ? '不分配' : pct(candidate.max_position)}</dd></div>
-    </dl>
-    <details className="mt-2 text-sm">
-      <summary className="min-h-10 cursor-pointer py-2 font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">查看依据、触发与退出</summary>
-      <dl className="mt-1 flex flex-wrap gap-x-6 gap-y-2 text-xs">{sizing.map(([label, value]) => <div key={label}><dt className="inline text-secondary">{label} </dt><dd className="inline font-mono">{value}</dd></div>)}</dl>
-      <div className="mt-3 grid gap-4 text-secondary md:grid-cols-2">
-        {([['入选依据', candidate.evidence], ...(!structured ? [['触发条件', candidate.trigger], ['失效条件', candidate.invalidation]] as const : []), ['退出规则', candidate.exit_rules]] as const).map(([label, items]) => <div key={label}><h3 className="mb-1 font-medium text-foreground">{label}</h3><Lines items={[...items]} /></div>)}
-        {structured && <>{(['entry', 'cancel'] as const).map(phase => <div key={phase}><h3 className="mb-1 font-medium text-foreground">{phase === 'entry' ? '入场：全部满足' : '取消：任一成立'}</h3><Lines items={candidate.conditions!.filter(item => item.phase === phase).map(item => item.description)} /></div>)}<p className="text-xs md:col-span-2">条件为冻结定义，尚未接入实时核验，不代表已触发或成交。</p></>}
-      </div>
-    </details>
-  </article>
+  const columns = observation ? 5 : 6
+  return <tbody className="border-b border-border/60 last:border-b-0">
+    <tr className="align-baseline">
+      <td className="pt-3 pr-4">
+        <button type="button" onClick={onOpen} className="min-h-8 rounded-sm text-left font-semibold text-foreground underline decoration-border underline-offset-4 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">{candidate.name}</button>
+        <span className="ml-2 font-mono text-xs text-secondary">{candidate.symbol}</span>
+      </td>
+      <td className="pt-3 pr-4 text-secondary">{candidate.sector} · {candidate.role}</td>
+      <td className="pt-3 pr-4 font-mono">{price(candidate.reference_price)}</td>
+      <td className="whitespace-nowrap pt-3 pr-4 font-mono">{price(candidate.trigger_low)} – {price(candidate.trigger_high)}</td>
+      <td className="pt-3 pr-4 font-mono">{price(candidate.invalidation_price)}</td>
+      {!observation && <td className="pt-3 font-mono">{pct(candidate.max_position)}</td>}
+    </tr>
+    <tr><td colSpan={columns} className="pb-2">
+      <details className="text-sm">
+        <summary className="min-h-8 cursor-pointer py-1.5 text-xs text-secondary focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">依据、触发与退出 · {modeLabels[candidate.mode] ?? candidate.mode} · 持有不超过 {candidate.holding_days} 个交易日</summary>
+        <dl className="mt-1 flex flex-wrap gap-x-6 gap-y-2 text-xs">{sizing.map(([label, value]) => <div key={label}><dt className="inline text-secondary">{label} </dt><dd className="inline font-mono">{value}</dd></div>)}</dl>
+        <div className="mt-3 grid gap-4 text-secondary md:grid-cols-2">
+          {([['入选依据', candidate.evidence], ...(!structured ? [['触发条件', candidate.trigger], ['失效条件', candidate.invalidation]] as const : []), ['退出规则', candidate.exit_rules]] as const).map(([label, items]) => <div key={label}><h3 className="mb-1 font-medium text-foreground">{label}</h3><Lines items={[...items]} /></div>)}
+          {structured && <>{(['entry', 'cancel'] as const).map(phase => <div key={phase}><h3 className="mb-1 font-medium text-foreground">{phase === 'entry' ? '入场：全部满足' : '取消：任一成立'}</h3><Lines items={candidate.conditions!.filter(item => item.phase === phase).map(item => item.description)} /></div>)}<p className="text-xs md:col-span-2">条件为冻结定义，尚未接入实时核验，不代表已触发或成交。</p></>}
+          <div className="md:col-span-2"><h3 className="mb-1 font-medium text-foreground">下单前自检</h3><Lines items={selfChecks} /></div>
+        </div>
+      </details>
+    </td></tr>
+  </tbody>
 }
 
 function Observation({ data }: { data: MarketGameEvaluation }) {
@@ -203,87 +212,160 @@ function EvidenceDetails({ report }: { report: MarketGameReport }) {
   </section>
 }
 
-function ReportBody({ report, view, onOpen }: { report: MarketGameReport; view: View; onOpen: (candidate: MarketGameCandidate) => void }) {
+function ReportBadges({ report }: { report: MarketGameReport }) {
+  return <div className="flex flex-wrap items-center gap-2 text-xs">
+    <span className="rounded bg-elevated px-2 py-1 font-medium">{qualityLabels[report.quality]}</span>
+    {report.research_only && <span className="rounded border border-border px-2 py-1 font-medium">研究阶段计划</span>}
+    <span className="text-secondary">行情归属 {report.as_of}</span>
+    <ReportBasis report={report} />
+    {report.quality === 'unavailable' && <a className="inline-flex min-h-8 items-center underline underline-offset-4" href="/settings?tab=data-sources">检查数据源配置</a>}
+  </div>
+}
+
+function Conclusion({ report, observation }: { report: MarketGameReport; observation: boolean }) {
   const { allocation, market_state: market } = report
-  // 1.4.0 起候选未通过个股层回放验证，只作观察；旧报告保持原口径。
-  const observation = isObservationRule(report.rule_version)
   const vetoes = market.risk_vetoes ?? []
   // 后端原因链中风险否决优先于其他原因：存在否决时 allocation.reason 与否决列表重复，仅数据不可用时仍需单独说明。
-  const showReason = !vetoes.length || report.quality === 'unavailable'
+  // 摘要常已包含同一原因句，重复时不再单列。
+  const reasonInSummary = report.summary.includes(allocation.reason.replace(/[。.]$/, ''))
+  const showReason = (!vetoes.length || report.quality === 'unavailable') && !reasonInSummary
   const ladder = [market.max_boards != null && `最高连板 ${market.max_boards} 板`, market.promotion_rate != null && `晋级率 ${pct(market.promotion_rate)}`].filter(Boolean).join(' · ')
-  const facts = [...new Set(report.hypotheses.flatMap(hypothesis => hypothesis.facts))]
-  return <>
-    <div className="rounded-card border border-border bg-surface/80 px-4 py-3">
-      <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span className="rounded bg-elevated px-2 py-1 font-medium">{qualityLabels[report.quality]}</span>
-        {report.research_only && <span className="rounded border border-border px-2 py-1 font-medium">研究阶段计划</span>}
-        <span className="text-secondary">行情归属 {report.as_of}</span>
-        <ReportBasis report={report} />
-        {report.quality === 'unavailable' && <a className="inline-flex min-h-8 items-center underline underline-offset-4" href="/settings?tab=data-sources">检查数据源配置</a>}
-      </div>
-      {view === 'overview' ? <><h2 className="mt-2 max-w-prose text-sm font-semibold leading-relaxed">{report.summary}</h2><p className="mt-1 max-w-prose text-xs leading-relaxed text-secondary">{market.change}</p></> : <details className="mt-1 text-xs"><summary className="min-h-7 cursor-pointer py-1 text-secondary">查看冻结的市场结论</summary><p className="mt-1 max-w-prose leading-relaxed">{report.summary}</p><p className="mt-1 max-w-prose leading-relaxed text-secondary">{market.change}</p></details>}
-      <ReportWindow report={report} />
+  const caps = [
+    ...(observation ? [] : [['模型新增上限', allocation.total_cap]] as const),
+    ['单股新增上限', allocation.single_cap], ['板块新增上限', allocation.sector_cap], ['单笔风险预算', allocation.risk_per_trade],
+    ['组合压力预算', allocation.portfolio_risk_budget], ['估算压力损失', allocation.estimated_stress_loss],
+  ] as const
+  return <section aria-label="今日结论" className="rounded-card border border-border bg-surface/80 px-4 py-3">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <h2 className="flex items-center gap-1 text-xs font-medium text-secondary">{observation ? '市场闸门上限' : '本计划新增敞口'}<InfoTip title="仓位口径与风险提示">
+        {observation && <p>选股规则在 2020–2026 个股层回放中 3 日超额为负，名单只供观察；该上限是市场层闸门，可作为其他打法的仓位参考。</p>}
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-1">{caps.map(([label, value]) => <div key={label} className="flex justify-between gap-2"><dt>{label}</dt><dd className="font-mono text-foreground">{pct(value)}</dd></div>)}</dl>
+        <p>上限以账户总资产为分母，未扣除已有持仓，不代表账户目标总仓。</p>
+        <p>胜率与情景概率尚未校准；压力预算不保证最大损失，此处不推断账户余额或执行交易。</p>
+      </InfoTip></h2>
+      <ReportBadges report={report} />
     </div>
-    <dl className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-      {([['趋势', market.trend], ['周期', market.phase], ['情绪', market.emotion], ['拥挤程度', market.crowding]] as const).map(([label, value]) => <div key={label} className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1 rounded-card border border-border bg-surface/80 px-3 py-2">
+    <div className="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+      <p className="font-mono text-3xl font-semibold">{observation ? pct(allocation.total_cap) : `${pct(allocation.min)} – ${pct(allocation.max)}`}</p>
+      {vetoes.length > 0 && <span className="text-sm font-semibold text-amber-700 dark:text-warning">暂停新增仓位</span>}
+      <span className="text-xs text-secondary">占账户总资产，未扣除已有持仓</span>
+    </div>
+    <p className="mt-2 max-w-prose text-sm font-medium leading-relaxed">{report.summary}</p>
+    <p className="mt-1 max-w-prose text-xs leading-relaxed text-secondary">{market.change}</p>
+    {vetoes.length > 0 && <section aria-label="新增风险限制" className="mt-2 text-sm text-secondary"><Lines items={vetoes} /></section>}
+    {showReason && <p className="mt-2 max-w-prose text-xs leading-relaxed text-secondary">{allocation.reason}</p>}
+    <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-1 border-t border-border pt-2 text-sm">
+      {([['趋势', market.trend], ['周期', market.phase], ['情绪', market.emotion], ['拥挤', market.crowding]] as const).map(([label, value]) => <div key={label} className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
         <dt className="text-xs text-secondary">{label}</dt>
-        <dd className={cn('break-words text-sm font-semibold', conclusionColors[value] ?? 'text-secondary')}>{value}</dd>
-        {label === '周期' && (ladder || market.phase_basis) && <dd className="flex w-full items-center text-xs text-secondary">{ladder || '周期依据'}{market.phase_basis && <InfoTip title="周期依据" className="h-5 w-5"><p>{market.phase_basis}</p></InfoTip>}</dd>}
+        <dd className={cn('font-semibold', conclusionColors[value] ?? 'text-secondary')}>{value}</dd>
+        {label === '周期' && (ladder || market.phase_basis) && <dd className="flex items-center text-xs text-secondary">{ladder}{market.phase_basis && <InfoTip title="周期依据" className="h-5 w-5"><p>{market.phase_basis}</p></InfoTip>}</dd>}
       </div>)}
     </dl>
-    {view === 'overview' && <SentimentStrip sentiment={report.sentiment} />}
+    <ReportWindow report={report} />
+  </section>
+}
 
-    {view === 'overview' && <>
-    <section aria-label="新增敞口与压力预算" className="rounded-card border border-border bg-surface/80 p-4">
-      <h2 className="flex items-center gap-1.5 text-sm font-semibold"><ShieldCheck aria-hidden className="h-4 w-4 text-accent" />本计划新增敞口<InfoTip title="仓位口径与风险提示">
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-1">{([['单股新增上限', allocation.single_cap], ['板块新增上限', allocation.sector_cap], ['单笔风险预算', allocation.risk_per_trade], ['组合压力预算', allocation.portfolio_risk_budget]] as const).map(([label, value]) => <div key={label} className="flex justify-between gap-2"><dt>{label}</dt><dd className="font-mono text-foreground">{pct(value)}</dd></div>)}</dl>
-        <p>上限以账户总资产为分母，未扣除已有持仓，不代表账户目标总仓。</p>
-        <p>胜率与情景概率尚未校准；行为解释是可证伪的假设。压力预算不保证最大损失，此处不推断账户余额或执行交易。</p>
-      </InfoTip></h2>
-      <div className="mt-2 flex flex-wrap items-end gap-x-8 gap-y-3">
-        <div><p className="font-mono text-2xl font-semibold">{pct(allocation.min)} – {pct(allocation.max)}</p><p className="mt-1 text-xs text-secondary">占账户总资产，未扣除已有持仓</p></div>
-        <dl className="flex flex-wrap gap-x-6 gap-y-2 text-xs">{([[observation ? '市场闸门上限' : '模型新增上限', allocation.total_cap], ['估算压力损失', allocation.estimated_stress_loss]] as const).map(([label, value]) => <div key={label}><dt className="text-secondary">{label}</dt><dd className="mt-1 font-mono text-sm">{pct(value)}</dd></div>)}</dl>
-      </div>
-      {vetoes.length > 0 && <section aria-label="新增风险限制" className="mt-3 border-t border-border pt-3 text-sm">
-        <h3 className="mb-1 font-semibold text-amber-700 dark:text-warning">暂停新增仓位</h3>
-        <div className="text-secondary"><Lines items={vetoes} /></div>
-      </section>}
-      {showReason && <p className="mt-3 max-w-prose text-xs leading-relaxed text-secondary">{allocation.reason}</p>}
-    </section>
-    <Section title={observation ? '候选观察名单' : '短线趋势回踩候选'} tip={<>{observation && <p>选股规则在 2020–2026 个股层回放中 3 日超额为负，名单只供观察，不分配仓位；市场闸门上限供其他打法参考。</p>}<p>价格为报告生成时的参考值，须复核可交易性。个股详情展示当前数据，不是本报告时点的历史回放。</p></>}>
-      {report.candidates.length ? <div className="divide-y divide-border">{report.candidates.map(candidate => <Candidate key={candidate.symbol} candidate={candidate} observation={observation} onOpen={() => onOpen(candidate)} />)}</div> : <p className="text-sm text-secondary">本计划没有可列出的候选。</p>}
-    </Section>
-    <Section title="板块观察">
-      {report.sectors.length ? <div className="overflow-x-auto"><table className="w-full min-w-[480px] text-left text-sm">
+function BasisRow({ label, tag, children }: { label: string; tag?: string; children: ReactNode }) {
+  return <div className="flex flex-wrap items-center gap-x-4 gap-y-1 py-2.5">
+    <span className="w-24 shrink-0 font-medium">{label}</span>
+    {/* 窄屏时标签跟随名称，内容单独占一行；宽屏时内容居中、标签靠右。 */}
+    {tag && <span className={cn(tagClass, 'ml-auto sm:order-last')}>{tag}</span>}
+    <div className="min-w-0 basis-full text-xs text-secondary sm:flex-1 sm:basis-0">{children}</div>
+  </div>
+}
+
+function ConclusionBasis({ report, observation, onExplore }: { report: MarketGameReport; observation: boolean; onExplore: () => void }) {
+  const vetoes = report.market_state.risk_vetoes ?? []
+  const matched = report.hypotheses.filter(item => item.status === 'matched').map(item => item.title)
+  const watching = report.hypotheses.filter(item => item.status === 'watch').map(item => item.title)
+  return <section aria-label="结论依据" className="rounded-card border border-border bg-surface/80 px-4 py-0.5 text-sm">
+    <div className="divide-y divide-border">
+      <BasisRow label="风险否决" tag="研究阈值">{vetoes.length ? `${vetoes.length} 项触发，见上方` : '未触发'}</BasisRow>
+      <BasisRow label="亏钱效应门" tag="样本内验证">{report.sentiment ? <SentimentStrip sentiment={report.sentiment} /> : '旧报告未记录'}</BasisRow>
+      <BasisRow label="行为假设" tag={observation ? '选股层回放未通过' : undefined}>
+        <span className="inline-flex flex-wrap items-center gap-x-3">
+          {matched.length ? `符合当前证据：${matched.join('、')}` : watching.length ? `等待确认：${watching.join('、')}` : '暂无成立的假设'}
+          <button type="button" onClick={onExplore} className="min-h-8 text-accent underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">查看假设</button>
+        </span>
+      </BasisRow>
+    </div>
+  </section>
+}
+
+function CandidateList({ report, observation, onOpen }: { report: MarketGameReport; observation: boolean; onOpen: (candidate: MarketGameCandidate) => void }) {
+  const title = observation ? '候选观察名单' : '短线趋势回踩候选'
+  const headers = ['个股', '板块 · 角色', '参考收盘', '确认区间', '失效价', ...(observation ? [] : ['单股上限'])]
+  const scenarioHeaders = ['窗口', '情景', '确认条件', '应对', ...(observation ? [] : ['本计划仓位上限'])]
+  return <section aria-label={title} className="rounded-card border border-border bg-surface/80 px-4 pt-3">
+    <h2 className="flex flex-wrap items-center gap-x-2 text-sm font-semibold">{title}{observation && <span className="font-normal text-secondary">· 仅观察，不分配仓位</span>}<InfoTip title={`${title}说明`}><p>价格为报告生成时的参考值，须复核可交易性。个股详情展示当前数据，不是本报告时点的历史回放。</p></InfoTip></h2>
+    {report.candidates.length ? <div className="mt-1 overflow-x-auto"><table className="w-full min-w-[640px] text-left text-sm">
+      <caption className="sr-only">{title}及其参考价格</caption>
+      <thead className="text-xs text-secondary"><tr>{headers.map(label => <th key={label} scope="col" className="py-2 pr-4 font-medium">{label}</th>)}</tr></thead>
+      {report.candidates.map(candidate => <Candidate key={candidate.symbol} candidate={candidate} observation={observation} onOpen={() => onOpen(candidate)} />)}
+    </table></div> : <p className="py-3 text-sm text-secondary">本计划没有可列出的候选。</p>}
+    <details className="border-t border-border text-sm">
+      <summary className="min-h-10 cursor-pointer py-2 text-xs font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">板块观察<span className="ml-2 font-normal text-secondary">{report.sectors.length} 个</span></summary>
+      {report.sectors.length ? <div className="overflow-x-auto pb-3"><table className="w-full min-w-[480px] text-left text-sm">
         <caption className="sr-only">候选板块及其观察依据</caption>
-        <thead className="border-b border-border text-secondary"><tr>{['板块', '平均涨跌幅', '上涨占比', '状态'].map(label => <th key={label} scope="col" className="py-2 pr-4 font-medium">{label}</th>)}</tr></thead>
+        <thead className="border-b border-border text-xs text-secondary"><tr>{['板块', '平均涨跌幅', '上涨占比', '状态'].map(label => <th key={label} scope="col" className="py-2 pr-4 font-medium">{label}</th>)}</tr></thead>
         <tbody>{report.sectors.map(sector => <tr key={sector.name} className="border-b border-border/60"><td className="py-2 pr-4 font-medium">{sector.name}</td><td className="py-2 pr-4 font-mono">{pct(sector.avg_return)}</td><td className="py-2 pr-4 font-mono">{pct(sector.breadth)}</td><td className="py-2"><span className="inline-flex items-center">{sector.status}{sector.reason && <InfoTip title={`${sector.name} · 观察依据`}><p>{sector.reason}</p></InfoTip>}</span></td></tr>)}</tbody>
-      </table></div> : <p className="text-sm text-secondary">当前数据未形成可关注的板块。</p>}
-    </Section>
-    <Section title="未来 1–3 个交易日" tip={<p>按条件逐日复核。先满足触发条件，再考虑对应仓位；情景未确认时不执行。</p>}>
-      {report.scenarios.length ? <div className="overflow-x-auto"><table className="w-full min-w-[680px] text-left text-sm">
-        <caption className="sr-only">未来交易日情景与仓位条件</caption>
-        <thead className="border-b border-border text-secondary"><tr>{['窗口', '情景', '确认条件', '应对', '本计划仓位上限'].map(label => <th key={label} scope="col" className="py-2 pr-4 font-medium">{label}</th>)}</tr></thead>
-        <tbody>{report.scenarios.map((scenario, index) => <tr key={`${scenario.horizon}-${index}`} className="border-b border-border/60 align-top"><td className="whitespace-nowrap py-3 pr-4">{scenario.label}</td><td className="py-3 pr-4">{scenario.scenario}</td><td className="max-w-xs py-3 pr-4 leading-relaxed">{scenario.condition}</td><td className="max-w-xs py-3 pr-4 leading-relaxed">{scenario.action}</td><td className="py-3 font-mono">{pct(scenario.max_position)}</td></tr>)}</tbody>
-      </table></div> : <p className="text-sm text-secondary">数据不足，暂不形成情景计划。</p>}
-    </Section>
-    </>}
+      </table></div> : <p className="pb-3 text-sm text-secondary">当前数据未形成可关注的板块。</p>}
+    </details>
+    <details className="border-t border-border text-sm">
+      <summary className="min-h-10 cursor-pointer py-2 text-xs font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">逐日复核条件<span className="ml-2 font-normal text-secondary">未来 1–3 个交易日，情景未确认时不执行</span></summary>
+      {report.scenarios.length ? <div className="overflow-x-auto pb-3"><table className="w-full min-w-[600px] text-left text-sm">
+        <caption className="sr-only">未来交易日情景与确认条件</caption>
+        <thead className="border-b border-border text-xs text-secondary"><tr>{scenarioHeaders.map(label => <th key={label} scope="col" className="py-2 pr-4 font-medium">{label}</th>)}</tr></thead>
+        <tbody>{report.scenarios.map((scenario, index) => <tr key={`${scenario.horizon}-${index}`} className="border-b border-border/60 align-top"><td className="whitespace-nowrap py-3 pr-4">{scenario.label}</td><td className="py-3 pr-4">{scenario.scenario}</td><td className="max-w-xs py-3 pr-4 leading-relaxed">{scenario.condition}</td><td className="max-w-xs py-3 pr-4 leading-relaxed">{scenario.action}</td>{!observation && <td className="py-3 font-mono">{pct(scenario.max_position)}</td>}</tr>)}</tbody>
+      </table></div> : <p className="pb-3 text-sm text-secondary">数据不足，暂不形成情景计划。</p>}
+    </details>
+  </section>
+}
 
+function Hypotheses({ report, ai }: { report: MarketGameReport; ai: ReactNode }) {
+  const facts = [...new Set(report.hypotheses.flatMap(hypothesis => hypothesis.facts))]
+  return <section aria-label="行为与博弈假设" className="min-w-0 rounded-card border border-border bg-surface/80 p-4">
+    <h2 className="flex items-center gap-1 text-sm font-semibold">行为与博弈假设<InfoTip title="行为与博弈假设说明"><p>把可观察事实、心理解释和另一种可能放在一起，避免把上涨或下跌自动解释为操纵。</p></InfoTip></h2>
+    <div className="mt-2 divide-y divide-border">{report.hypotheses.map(hypothesis => <details key={hypothesis.id} open={hypothesis.status === 'matched'} className="py-1 first:pt-0">
+      <summary className="min-h-10 cursor-pointer py-2 text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">{hypothesis.title}<span className="ml-3 font-normal text-secondary">{hypothesisLabels[hypothesis.status]}</span></summary>
+      <div className="grid gap-x-6 gap-y-3 pb-3 text-sm text-secondary md:grid-cols-2">
+        <div className="md:col-span-2"><h3 className="mb-1 font-medium text-foreground">行为解释</h3><p className="leading-relaxed">{hypothesis.interpretation}</p><h3 className="mb-1 mt-2 font-medium text-foreground">另一种解释</h3><p className="leading-relaxed">{hypothesis.alternative}</p></div>
+        <div><h3 className="mb-1 font-medium text-foreground">确认条件</h3><Lines items={hypothesis.confirm} /></div>
+        <div><h3 className="mb-1 font-medium text-foreground">推翻条件</h3><Lines items={hypothesis.invalidation} /></div>
+      </div>
+    </details>)}</div>
+    {!report.hypotheses.length && <p className="text-sm text-secondary">暂无证据充分的行为假设。</p>}
+    {facts.length > 0 && <details className="mt-1 border-t border-border text-sm"><summary className="min-h-9 cursor-pointer py-2 text-secondary focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">依据的市场事实 · {facts.length} 项</summary><div className="pb-2 text-xs text-secondary"><Lines items={facts} /></div></details>}
+    <div className="mt-2 border-t border-border pt-3">{ai}</div>
+  </section>
+}
+
+/** 四维画像不直接驱动仓位，默认收起；展开后才挂载图表。 */
+function ProxyProfile({ report }: { report: MarketGameReport }) {
+  const [open, setOpen] = useState(false)
+  return <details open={open} onToggle={event => setOpen(event.currentTarget.open)} className="border-t border-border pt-1">
+    <summary className="min-h-10 cursor-pointer py-2 text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">行为代理画像<span className="ml-3 text-xs font-normal text-secondary">四维市场行为分位，不直接决定仓位</span></summary>
+    {open && <div className="space-y-3 pb-3"><PsychologyPanel psychology={report.psychology} /></div>}
+  </details>
+}
+
+function ReportBody({ report, view, onOpen, onView, ai }: { report: MarketGameReport; view: View; onOpen: (candidate: MarketGameCandidate) => void; onView: (view: View) => void; ai: ReactNode }) {
+  // 1.4.0 起候选未通过个股层回放验证，只作观察；旧报告保持原口径。
+  const observation = isObservationRule(report.rule_version)
+  if (view === 'overview') return <>
+    <Conclusion report={report} observation={observation} />
+    <ConclusionBasis report={report} observation={observation} onExplore={() => onView('psychology')} />
+    <CandidateList report={report} observation={observation} onOpen={onOpen} />
+  </>
+  return <>
+    <div className="rounded-card border border-border bg-surface/80 px-4 py-2">
+      <ReportBadges report={report} />
+      <details className="mt-1 text-xs"><summary className="min-h-7 cursor-pointer py-1 text-secondary">查看冻结的市场结论</summary><p className="mt-1 max-w-prose leading-relaxed">{report.summary}</p><p className="mt-1 max-w-prose leading-relaxed text-secondary">{report.market_state.change}</p></details>
+    </div>
     {view === 'psychology' && <>
-    <SentimentPanel key={`sentiment-${report.id}`} sentiment={report.sentiment} />
-    <PsychologyPanel key={report.id} psychology={report.psychology} />
-    <Section title="行为与博弈假设" tip={<p>把可观察事实、心理解释和另一种可能放在一起，避免把上涨或下跌自动解释为操纵。</p>}>
-      <div className="divide-y divide-border">{report.hypotheses.map(hypothesis => <details key={hypothesis.id} open={hypothesis.status === 'matched'} className="py-1 first:pt-0">
-        <summary className="min-h-10 cursor-pointer py-2 text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">{hypothesis.title}<span className="ml-3 font-normal text-secondary">{hypothesisLabels[hypothesis.status]}</span></summary>
-        <div className="grid gap-x-6 gap-y-3 pb-3 text-sm text-secondary md:grid-cols-2">
-          <div className="md:col-span-2"><h3 className="mb-1 font-medium text-foreground">行为解释</h3><p className="leading-relaxed">{hypothesis.interpretation}</p><h3 className="mb-1 mt-2 font-medium text-foreground">另一种解释</h3><p className="leading-relaxed">{hypothesis.alternative}</p></div>
-          <div><h3 className="mb-1 font-medium text-foreground">确认条件</h3><Lines items={hypothesis.confirm} /></div>
-          <div><h3 className="mb-1 font-medium text-foreground">推翻条件</h3><Lines items={hypothesis.invalidation} /></div>
-        </div>
-      </details>)}</div>
-      {!report.hypotheses.length && <p className="text-sm text-secondary">暂无证据充分的行为假设。</p>}
-      {facts.length > 0 && <details className="mt-1 border-t border-border text-sm"><summary className="min-h-9 cursor-pointer py-2 text-secondary focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">依据的市场事实 · {facts.length} 项</summary><div className="pb-2 text-xs text-secondary"><Lines items={facts} /></div></details>}
-    </Section>
+      <SentimentPanel key={`sentiment-${report.id}`} sentiment={report.sentiment} />
+      <Hypotheses report={report} ai={ai} />
+      <ProxyProfile key={report.id} report={report} />
     </>}
   </>
 }
@@ -298,6 +380,8 @@ export function MarketGame() {
   const [observe, setObserve] = useState(false)
   const [view, setView] = useState<View>('overview')
   const [riskLoaded, setRiskLoaded] = useState(false)
+  // 首次进入展开生成设置；载入报告后收起，让结论占据首屏。
+  const [settingsOpen, setSettingsOpen] = useState(true)
   const history = useQuery({ queryKey: QK.marketGameReports, queryFn: api.marketGameReports, retry: false })
   const reportQuery = useQuery({ queryKey: QK.marketGameReport(selectedId), queryFn: () => api.marketGameReport(selectedId), enabled: !!selectedId, staleTime: Infinity, retry: false })
   const report = reportQuery.data?.id === selectedId ? reportQuery.data : undefined
@@ -314,7 +398,7 @@ export function MarketGame() {
   const explain = useMutation({ mutationFn: (id: string) => api.marketGameExplain(id), onSuccess: (result, id) => client.setQueryData(QK.marketGameExplanation(id), result) })
   const explaining = explain.isPending && explain.variables === selectedId
   const explainError = explain.isError && explain.variables === selectedId
-  useEffect(() => { setPreview(null); setObserve(false); setRiskLoaded(false) }, [selectedId])
+  useEffect(() => { setPreview(null); setObserve(false); setRiskLoaded(false); if (selectedId) setSettingsOpen(false) }, [selectedId])
 
   function restoreRisk() {
     if (!report?.requested_risk) return
@@ -331,8 +415,8 @@ export function MarketGame() {
     generate.reset()
     setValidation('')
   }
-  function submit(event: FormEvent) {
-    event.preventDefault()
+  function submit(event?: FormEvent) {
+    event?.preventDefault()
     if (generate.isPending) return
     const invalid = riskFields.some(field => !risk[field.key].trim() || !Number.isFinite(Number(risk[field.key])) || Number(risk[field.key]) < field.min || Number(risk[field.key]) > field.max)
       || !Number.isInteger(Number(risk.max_candidates))
@@ -346,8 +430,23 @@ export function MarketGame() {
   return <>
     <PageHeader title="超短线博弈" titleExtra={<Scale className="h-4 w-4 text-accent" />} subtitle={<span className="hidden lg:inline">市场状态 · 行为假设 · 条件计划</span>} className="pl-14 md:pl-5" />
     <div className="mx-auto max-w-[1440px] space-y-3 px-4 py-3 sm:px-5">
-      <details open className="rounded-card border border-border bg-surface/80 px-3">
-        <summary className="min-h-9 cursor-pointer py-2 text-xs font-medium">生成设置<span className="ml-3 font-normal text-secondary">{asOf || '最新盘后'} · 新增仓位上限 {risk.total_cap}%</span></summary>
+      <div className="rounded-card border border-border bg-surface/80 px-3 pt-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <label htmlFor="market-game-history" className="sr-only">历史计划</label>
+          <select id="market-game-history" aria-label="历史计划" className={cn(inputClass, 'min-w-0 flex-1 sm:max-w-md')} value={selectedId} disabled={generate.isPending} onChange={event => {
+            const id = event.target.value
+            setSelectedId(id)
+            setPreview(null)
+            generate.reset()
+          }}>
+            <option value="">选择已归档计划</option>
+            {report && !history.data?.reports.some(item => item.id === report.id) && <option value={report.id}>{report.as_of} · {time(report.created_at)}</option>}
+            {history.data?.reports.map(item => <option key={item.id} value={item.id}>{item.as_of} · {time(item.created_at)} · {item.research_only ? '研究计划' : qualityLabels[item.quality]}</option>)}
+          </select>
+          <button type="button" onClick={() => submit()} disabled={generate.isPending} className={cn(button, 'border-accent bg-accent/10 font-medium hover:bg-accent/20')}><RefreshCw className={cn('h-4 w-4', generate.isPending && 'animate-spin motion-reduce:animate-none')} />{generate.isPending ? '生成中…' : '生成盘后计划'}</button>
+        </div>
+      <details open={settingsOpen} onToggle={event => setSettingsOpen(event.currentTarget.open)}>
+        <summary className="min-h-9 cursor-pointer py-2 text-xs font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">生成设置<span className="ml-3 font-normal text-secondary">{asOf || '最新盘后'} · 新增仓位上限 {risk.total_cap}%</span></summary>
       <form noValidate onSubmit={submit} className="space-y-2 pb-2">
         <fieldset disabled={generate.isPending} className="space-y-2">
           <legend className="sr-only">盘后分析参数</legend>
@@ -358,20 +457,6 @@ export function MarketGame() {
               <p>指定历史日期仅按当时可核验的信息研究，缺少历史板块成员时不生成个股候选。</p>
             </InfoTip>
             <button type="button" onClick={() => changeDate('')} className={button}>最新盘后</button>
-            <button type="submit" disabled={generate.isPending} className={cn(button, 'border-accent bg-accent/10 font-medium hover:bg-accent/20')}><RefreshCw className={cn('h-4 w-4', generate.isPending && 'animate-spin motion-reduce:animate-none')} />{generate.isPending ? '生成中…' : '生成盘后计划'}</button>
-            <div className="flex w-full min-w-0 items-center gap-2 sm:ml-auto sm:w-auto">
-              <label htmlFor="market-game-history" className="shrink-0 text-xs font-medium">历史计划</label>
-              <select id="market-game-history" aria-label="历史计划" className={cn(inputClass, 'w-full min-w-0 sm:w-80')} value={selectedId} disabled={generate.isPending} onChange={event => {
-                const id = event.target.value
-                setSelectedId(id)
-                setPreview(null)
-                generate.reset()
-              }}>
-                <option value="">选择已归档计划</option>
-                {report && !history.data?.reports.some(item => item.id === report.id) && <option value={report.id}>{report.as_of} · {time(report.created_at)}</option>}
-                {history.data?.reports.map(item => <option key={item.id} value={item.id}>{item.as_of} · {time(item.created_at)} · {item.research_only ? '研究计划' : qualityLabels[item.quality]}</option>)}
-              </select>
-            </div>
           </div>
           <details className="border-t border-border">
             <summary className="min-h-8 cursor-pointer py-2 text-xs font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">风险参数<span className="ml-3 font-normal text-secondary">控制新计划上限</span></summary>
@@ -382,9 +467,10 @@ export function MarketGame() {
             {report && <div className="flex flex-wrap items-center gap-2 pb-3"><button type="button" className={button} disabled={!report.requested_risk} onClick={restoreRisk}>载入此报告的风险参数</button><p role="status" className="text-xs text-secondary">{riskLoaded ? '已载入原参数；重新生成会使用所选日期的数据，不等于重放原快照。' : report.requested_risk ? '' : '这份旧报告未保存原始参数，无法载入。'}</p></div>}
           </details>
         </fieldset>
-        {validation && <p role="alert" className="text-sm text-foreground">{validation}</p>}
       </form>
       </details>
+      {validation && <p role="alert" className="pb-2 text-sm text-foreground">{validation}</p>}
+      </div>
 
       {(history.isLoading || history.isError) && <div className="flex flex-wrap items-center gap-3">
         {history.isLoading && <span role="status" className="text-xs text-secondary">正在读取历史…</span>}
@@ -405,15 +491,14 @@ export function MarketGame() {
           }} className={cn('inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-[5px] px-3 text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent', view === id ? 'bg-accent text-white' : 'text-secondary hover:bg-elevated hover:text-foreground')}><Icon className="h-3.5 w-3.5" />{label}</button>)}
         </div>
         <div role="tabpanel" id={`game-panel-${view}`} aria-labelledby={`game-tab-${view}`} className="space-y-3">
-        <ReportBody report={report} view={view} onOpen={candidate => setPreview({ symbol: candidate.symbol, name: candidate.name })} />
-        {view === 'psychology' && <>
-        <Section title="AI 解读" tip={<p>可选。解释已保存的证据和条件，不修改规则结论、候选或仓位。</p>}>
-          <button type="button" className={button} disabled={explaining || report.quality === 'unavailable'} onClick={() => explain.mutate(report.id)}><Sparkles className="h-4 w-4" />{explaining ? '解读生成中…' : '生成 AI 解读'}</button>
-          {report.quality === 'unavailable' && <p className="mt-2 text-sm text-secondary">输入不足，暂不生成 AI 解读。</p>}
+        <ReportBody report={report} view={view} onView={setView} onOpen={candidate => setPreview({ symbol: candidate.symbol, name: candidate.name })} ai={<>
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" className={button} disabled={explaining || report.quality === 'unavailable'} onClick={() => explain.mutate(report.id)}><Sparkles className="h-4 w-4" />{explaining ? '解读生成中…' : '生成 AI 解读'}</button>
+            <span className="text-xs text-secondary">{report.quality === 'unavailable' ? '输入不足，暂不生成 AI 解读。' : '可选，只挑选复核重点，不修改结论、候选或仓位。'}</span>
+          </div>
           {explainError && <p role="alert" className="mt-3 text-sm">解读失败：{message(explain.error)}。规则计划仍可查看。</p>}
           {explanation.data?.content && <div className="mt-4 max-w-prose break-words"><MarkdownRenderer content={explanation.data.content} /></div>}
-        </Section>
-        </>}
+        </>} />
         {view === 'evidence' && <>
         <Section title="后续观察" tip={<p>观察收益不等于触发或实盘收益。这里只对照候选后续收盘变化，不假设成交，也不计算策略胜率。</p>}>
           <button type="button" className={button} disabled={evaluation.isFetching} onClick={() => { if (observe) void evaluation.refetch(); else setObserve(true) }}>{evaluation.isFetching ? '读取中…' : observe ? '刷新后续表现' : '查看后续表现'}</button>

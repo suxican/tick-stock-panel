@@ -40,16 +40,15 @@ function Basis({ sentiment }: { sentiment: MarketGameSentiment }) {
   </InfoTip>
 }
 
-/** 总览页一行：只放赚钱/亏钱效应、面类计数和亏钱门结论，细节进浮窗。 */
+/** 结论依据中的一行：只放赚钱/亏钱效应、面类计数和亏钱门结论，细节进浮窗；外框由所在行提供。 */
 export function SentimentStrip({ sentiment }: { sentiment?: MarketGameSentiment | null }) {
   if (!sentiment) return null
-  if (sentiment.status === 'unavailable') return <p role="status" aria-label="短线情绪" className="flex flex-wrap items-center gap-x-2 rounded-card border border-border bg-surface/80 px-3 py-2 text-xs text-secondary">
-    <span className="font-medium text-foreground">短线情绪</span>暂不可用：{sentiment.reason}<Basis sentiment={sentiment} />
+  if (sentiment.status === 'unavailable') return <p role="status" aria-label="短线情绪" className="flex flex-wrap items-center gap-x-2 text-xs text-secondary">
+    暂不可用：{sentiment.reason}<Basis sentiment={sentiment} />
   </p>
   const byId = new Map(sentiment.metrics.map(metric => [metric.id, metric]))
   const gate = gateLabels[sentiment.loss_gate.level]
-  return <div role="group" aria-label="短线情绪" className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-card border border-border bg-surface/80 px-3 py-2 text-xs">
-    <span className="font-medium text-foreground">短线情绪</span>
+  return <div role="group" aria-label="短线情绪" className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
     {STRIP_IDS.map(id => byId.get(id)).filter((metric): metric is Metric => !!metric).map(metric => <span key={metric.id} className="text-secondary">{metric.label} <span className="font-mono text-foreground">{formatValue(metric)}</span>（{rank(metric.percentile)}）</span>)}
     <span className={cn('font-medium', gate.tone)}>亏钱门{sentiment.loss_gate.score == null ? '' : ` ${sentiment.loss_gate.score.toFixed(0)} 分位`}：{gate.text}</span>
     <Basis sentiment={sentiment} />
