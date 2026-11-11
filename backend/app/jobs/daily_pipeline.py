@@ -1222,7 +1222,10 @@ async def _stream_review_with_retry(repo, quote_service, depth_service) -> tuple
         content_parts = []  # 每次重试重新累积
         failed = False
         try:
-            async for evt_json in recap_market_stream(repo, quote_service, depth_service):
+            app_state = _get_app_state()
+            sector_service = getattr(app_state, "sector_monitor_service", None) if app_state else None
+            async for evt_json in recap_market_stream(repo, quote_service, depth_service,
+                                                      sector_service=sector_service):
                 evt = json.loads(evt_json)
                 t = evt.get("type")
 
@@ -1278,6 +1281,10 @@ def _maybe_push_review(content: str, meta: dict) -> None:
         channels = preferences.get_review_push_channels()
         if not channels:
             return
+        # 持仓联动涉及个人持仓, 不外发到群机器人/邮件
+        from app.services.market_recap import strip_holdings_section
+
+        content = strip_holdings_section(content)
 
         emotion = f"{meta.get('emotion_label') or ''}".strip()
         as_of = meta.get("as_of") or ""

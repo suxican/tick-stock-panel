@@ -43,7 +43,7 @@ _SYSTEM_PROMPT = """你是一位有 15 年 A 股短线与波段实战经验的�
 
 读者会同时看到页面上的数据面板(核心指标今日/昨日/5日均对比表、成交额与涨停走势图、涨停主线表、连板梯队),所以**正文不复述面板数字**,只写判断、因果和计划。
 
-## 输出结构(严格按以下 5 节,Markdown,不加标题行和其他章节,正文 400-800 字)
+## 输出结构(严格按以下各节,有持仓输入时 6 节、否则 5 节,Markdown,不加标题行和其他章节,正文 400-800 字)
 
 ## 🎯 定调
 一行:**【周期:<阶段> · 状态:偏强/中性/偏弱】** + 一句核心矛盾(不超过 40 字)。周期优先采用输入的"情绪周期"阶段;你判断不同时,在句中给出理由。盘中快照须注明"盘中"。
@@ -58,6 +58,9 @@ _SYSTEM_PROMPT = """你是一位有 15 年 A 股短线与波段实战经验的�
 
 ## 🗺️ 明日剧本
 表格 `| 情景 | 触发条件 | 应对 |`,2-3 行(强于预期/符合预期/弱于预期),在情景名后用"(主判断)"标出你认为最可能的一个。触发条件只能用输入"明日剧本可用的触发指标"里的指标,表格中写中文含义(如"开盘半小时成交额 ≥ 5500亿"),不写英文 metric 名;优先用开盘半小时成交额(开盘后即可验证);阈值必须参照该表的今日值与前5日均给出,不得凭空设定。应对写参与方向与参与强度(如"主线核心加大参与""只做分歧转一致""降低参与度、以观望为主"),不点名推荐买入具体个股。
+
+## 📦 持仓联动
+仅当输入含"持仓联动"时输出本节,否则整节省略。页面已展示持仓表与程序条件,本节只做解释,2-4 句:哪些持仓与今天的主线判断同向、哪些最弱,明日剧本的各情景分别会怎样影响它们。**不得新增或改动价位、数量和操作动作**,提到条件时只能原样引用输入中的条件;标注"只看市场联动"的持仓只谈联动,不谈仓位处理。
 
 ## ⛔ 失效条件
 1-3 条列表,出现即说明今天的定调错了。
@@ -185,7 +188,7 @@ def _build_emotion_block(overview: dict) -> str:
 def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context: str = "",
                        bench_context: str = "", snapshot_context: str = "",
                        prev_plan: dict | None = None, plan_check_context: str = "",
-                       plan_vocab_context: str = "") -> str:
+                       plan_vocab_context: str = "", holdings_context: str = "") -> str:
     """构建用户消息:复盘日期 + 近期对比/周期/梯队/主线(快照) + 市场数据精简切片
     + 龙虎榜(可选) + 盘前风向标(可选) + 上一篇剧本 + 新闻 + 关注点。"""
     as_of = overview.get("as_of") or "今日"
@@ -233,6 +236,8 @@ def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context
         parts.extend(["", "## 上一交易日复盘的剧本(待验证)", _prev_plan_text(prev_plan)])
     if plan_vocab_context:
         parts.extend(["", plan_vocab_context])
+    if holdings_context:
+        parts.extend(["", holdings_context])
 
     if news:
         news_lines = []
@@ -284,6 +289,17 @@ def _extract_plan_sections(content: str) -> str:
             current.append(line)
     text = "\n\n".join("\n".join(sec).strip() for sec in sections)
     return text[:_PREV_PLAN_MAX_CHARS]
+
+
+def strip_holdings_section(content: str) -> str:
+    """去掉「📦 持仓联动」二级小节(推送外发前调用, 个人持仓不出本机)。"""
+    out, skipping = [], False
+    for line in (content or "").splitlines(keepends=True):
+        if line.startswith("## "):
+            skipping = "持仓联动" in line
+        if not skipping:
+            out.append(line)
+    return "".join(out)
 
 
 def _load_reports() -> list[dict]:
@@ -379,8 +395,12 @@ async def recap_market_stream(
     as_of: date | None = None,
     focus: str = "",
     news: list[dict] | None = None,
+    sector_service=None,
 ) -> AsyncIterator[str]:
     """流式大盘复盘:yield 出每个 NDJSON 事件。
+
+    sector_service: 板块成员服务(app.state.sector_monitor_service), 持仓联动用于
+    判断批次持仓所属板块; 缺失时持仓板块关联降级, 复盘主流程不受影响。
 
     Args:
         repo: KlineRepository(必填)。
@@ -403,6 +423,7 @@ async def recap_market_stream(
     emo = overview.get("emotion") or {}
 
     # 数据快照: 近期对比/周期/梯队/主线, 同时供 prompt 与前端结构化面板; 失败只降级
+    from app.services.market_recap_holdings import holdings_prompt_block
     from app.services.market_recap_plan import plan_check_prompt_block, plan_vocabulary_block
     from app.services.market_recap_snapshot import build_recap_snapshot, snapshot_prompt_block
 
@@ -413,6 +434,18 @@ async def recap_market_stream(
         snapshot = None
     reports = _load_reports()
     attach_plan_check(snapshot, repo, reports)
+    if snapshot:
+        # 批次提醒持仓 × 盘面: 条件由程序给出, 失败只降级为无持仓段
+        from app.market_time import cn_now
+        from app.services.market_recap_holdings import build_holdings_linkage
+
+        try:
+            snapshot["holdings"] = build_holdings_linkage(
+                repo, snapshot, sector_service=sector_service, quote_service=quote_service, now=cn_now(),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("holdings linkage failed for %s: %s", as_of_str, e)
+            snapshot["holdings"] = None
 
     # 2. meta 事件(前端据此先渲染信号灯/看板与数据面板)
     yield json.dumps({
@@ -447,6 +480,7 @@ async def recap_market_stream(
                 (snapshot or {}).get("plan_check"), (snapshot or {}).get("plan_stats"),
             ),
             plan_vocab_context=plan_vocabulary_block(snapshot),
+            holdings_context=holdings_prompt_block((snapshot or {}).get("holdings")),
         )
         got_content = False
         async for delta in stream_ai_text(

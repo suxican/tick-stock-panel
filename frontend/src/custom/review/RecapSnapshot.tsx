@@ -7,7 +7,8 @@
  */
 import { useMemo } from 'react'
 import type { EChartsOption } from 'echarts'
-import type { RecapPlanCheck, RecapPlanStatus, RecapSnapshot, RecapSnapshotMetric } from '@/lib/api'
+import { Link } from 'react-router-dom'
+import type { RecapHoldings, RecapPlanCheck, RecapPlanStatus, RecapSnapshot, RecapSnapshotMetric } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { priceColorClass } from '@/lib/format'
 import { useChartTheme } from '@/lib/theme'
@@ -286,6 +287,89 @@ function PlanCheck({ check, stats }: { check: RecapPlanCheck | null | undefined;
   )
 }
 
+const PNL_TEXT = { deep_loss: '深套', loss: '浮亏', flat: '持平', profit: '浮盈', unknown: '' } as const
+const REL_TEXT = { stronger: '跑赢', weaker: '跑输', inline: '同步', unknown: '' } as const
+
+function HoldingsLinkage({ holdings, onOpenStock }: { holdings: RecapHoldings; onOpenStock?: (symbol: string) => void }) {
+  // 多只持仓共有的数据原因(如日线未定版)只在表下提示一次
+  const notes = Array.from(new Set([...holdings.warnings, ...holdings.rows.flatMap(r => r.warnings)])).slice(0, 3)
+  return (
+    <div className="min-w-0 space-y-1.5">
+      <div className="flex flex-wrap items-baseline gap-x-3 text-[11px]">
+        <span className="text-muted">持仓联动(批次提醒 · 条件由程序给出)</span>
+        {holdings.market_only > 0 && (
+          <span className="text-secondary">
+            {holdings.market_only} 只缺建仓日或失效条件, 只看市场联动 ·{' '}
+            <Link to="/lots" className="text-accent hover:underline">去补全</Link>
+          </span>
+        )}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-[12px]">
+          <thead>
+            <tr className="text-[11px] text-muted">
+              <th className="py-1 pr-2 text-left font-normal">持仓</th>
+              <th className="px-2 py-1 text-right font-normal">今日</th>
+              <th className="px-2 py-1 text-left font-normal">联动</th>
+              <th className="px-2 py-1 text-right font-normal">距成本</th>
+              <th className="py-1 pl-2 text-left font-normal">条件</th>
+            </tr>
+          </thead>
+          <tbody>
+            {holdings.rows.map(r => (
+              <tr key={r.symbol} className="border-t border-border/40 align-top">
+                <td className="whitespace-nowrap py-1.5 pr-2">
+                  <button type="button" onClick={() => onOpenStock?.(r.symbol)} className="text-foreground hover:text-accent">{r.name}</button>
+                  {r.mode === 'market' && (
+                    <span className="ml-1 rounded bg-elevated px-1 text-[10px] text-muted" title={`缺${r.missing.join('、')}`}>只看联动</span>
+                  )}
+                </td>
+                <td className={cn('px-2 py-1.5 text-right font-mono tabular-nums', priceColorClass(r.stock_pct))}>
+                  {r.stock_pct == null ? '—' : `${r.stock_pct > 0 ? '+' : ''}${r.stock_pct.toFixed(2)}%`}
+                </td>
+                <td className="px-2 py-1.5">
+                  <div className="flex flex-wrap gap-1">
+                    {r.mainline && (
+                      <span className="rounded bg-bull/10 px-1.5 py-0.5 text-[11px] text-bull">
+                        主线 {r.mainline.name} 第{r.mainline.rank} · {r.mainline.streak}日
+                      </span>
+                    )}
+                    {r.hot.map(h => (
+                      <span key={h.name} className="rounded bg-elevated/60 px-1.5 py-0.5 text-[11px] text-secondary">
+                        {h.name} <span className={cn('font-mono', priceColorClass(h.pct))}>{h.pct > 0 ? '+' : ''}{h.pct.toFixed(2)}%</span>
+                      </span>
+                    ))}
+                    {r.sector && (
+                      <span className="px-0.5 py-0.5 text-[11px] text-muted">
+                        {r.sector.name} {r.sector.pct > 0 ? '+' : ''}{r.sector.pct.toFixed(2)}%{REL_TEXT[r.relative] && ` · ${REL_TEXT[r.relative]}`}
+                      </span>
+                    )}
+                    {!r.mainline && !r.hot.length && !r.sector && <span className="text-[11px] text-muted">未进入今日热点</span>}
+                  </div>
+                </td>
+                <td className={cn('whitespace-nowrap px-2 py-1.5 text-right font-mono tabular-nums', priceColorClass(r.pnl_pct))}>
+                  {r.pnl_pct == null ? '—' : `${r.pnl_pct > 0 ? '+' : ''}${r.pnl_pct.toFixed(1)}%`}
+                  {PNL_TEXT[r.pnl_state] && <span className="ml-1 font-sans text-[10px] text-muted">{PNL_TEXT[r.pnl_state]}</span>}
+                </td>
+                <td className="py-1.5 pl-2 text-[11px]">
+                  {r.conditions.length ? r.conditions.map((c, i) => (
+                    <div key={i}><span className="font-mono text-foreground">{c.label}</span> <span className="text-secondary">→ {c.meaning}</span></div>
+                  )) : <span className="text-muted">技术位不可用</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {notes.length > 0 && (
+        <ul className="space-y-0.5 text-[11px] text-muted">
+          {notes.map(n => <li key={n}>· {n}</li>)}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 export function RecapSnapshotPanel({ snapshot, onOpenStock }: { snapshot: RecapSnapshot; onOpenStock?: (symbol: string) => void }) {
   const { phase } = snapshot
   return (
@@ -314,6 +398,9 @@ export function RecapSnapshotPanel({ snapshot, onOpenStock }: { snapshot: RecapS
         <Mainlines snapshot={snapshot} onOpenStock={onOpenStock} />
         <Ladder snapshot={snapshot} onOpenStock={onOpenStock} />
       </div>
+      {snapshot.holdings && snapshot.holdings.rows.length > 0 && (
+        <HoldingsLinkage holdings={snapshot.holdings} onOpenStock={onOpenStock} />
+      )}
     </section>
   )
 }

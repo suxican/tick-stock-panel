@@ -1020,6 +1020,37 @@ export interface RecapSnapshot {
   plan_check?: RecapPlanCheck | null
   /** 历次核验汇总: 主判断命中 / 剧本覆盖(仅统计已定型的核验) */
   plan_stats?: { primary_total: number; primary_hits: number; covered_total: number; covered: number } | null
+  /** 批次提醒持仓联动; 无批次时为 null */
+  holdings?: RecapHoldings | null
+}
+
+/** 复盘「持仓联动」: 批次提醒持仓 × 盘面; 条件由程序给出 */
+export interface RecapHoldingRow {
+  symbol: string
+  name: string
+  /** full=已登记建仓日与失效条件; market=只看市场联动 */
+  mode: 'full' | 'market'
+  missing: string[]
+  close: number | null
+  price_date: string | null
+  pnl_pct: number | null
+  pnl_state: 'deep_loss' | 'loss' | 'flat' | 'profit' | 'unknown'
+  age_days: number | null
+  trend: 'up' | 'down' | 'range' | 'unknown'
+  relative: 'stronger' | 'weaker' | 'inline' | 'unknown'
+  stock_pct: number | null
+  sector: { name: string; pct: number } | null
+  hot: { name: string; side: 'leading' | 'lagging'; pct: number }[]
+  mainline: { name: string; rank: number; streak: number } | null
+  conditions: { metric: string; op: string; value: number; label: string; meaning: string }[]
+  warnings: string[]
+}
+
+export interface RecapHoldings {
+  as_of: string | null
+  rows: RecapHoldingRow[]
+  market_only: number
+  warnings: string[]
 }
 
 export type RecapPlanStatus = 'hit' | 'miss' | 'pending'

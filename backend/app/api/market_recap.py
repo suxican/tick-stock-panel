@@ -102,7 +102,10 @@ async def analyze_market(request: Request, req: AnalyzeRequest):
 
     async def stream_gen():
         async for chunk in with_heartbeat(
-            recap_market_stream(repo, quote_service, depth_service, as_of, req.focus),
+            recap_market_stream(
+                repo, quote_service, depth_service, as_of, req.focus,
+                sector_service=getattr(request.app.state, "sector_monitor_service", None),
+            ),
         ):
             yield chunk + "\n"
 

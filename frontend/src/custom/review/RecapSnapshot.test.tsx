@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { RecapSnapshot } from '@/lib/api'
 import { RecapSnapshotPanel, stripPlanBlock } from './RecapSnapshot'
@@ -126,4 +127,48 @@ it('strips the plan block, including a half-streamed fence', () => {
   expect(stripPlanBlock('正文\n```plan\n{"scen')).toBe('正文\n')
   expect(stripPlanBlock('正文\n```pl')).toBe('正文\n')
   expect(stripPlanBlock('正文')).toBe('正文')
+})
+
+it('renders holdings linkage with market-only mode and program conditions', () => {
+  const onOpenStock = vi.fn()
+  act(() => root.render(
+    <MemoryRouter>
+      <RecapSnapshotPanel onOpenStock={onOpenStock} snapshot={{
+        ...snapshot,
+        holdings: {
+          as_of: '2026-11-11', market_only: 1,
+          warnings: [],
+          rows: [{
+            symbol: '600522.SH', name: '中天科技', mode: 'market', missing: ['建仓日', '失效条件'],
+            close: 24.65, price_date: '2026-11-11', pnl_pct: -57.5, pnl_state: 'deep_loss', age_days: null,
+            trend: 'down', relative: 'weaker', stock_pct: 4.01,
+            sector: { name: '通信线缆及配套', pct: 6.25 },
+            hot: [{ name: '光纤概念', side: 'leading', pct: 4.42 }],
+            mainline: { name: '特斯拉概念', rank: 1, streak: 3 },
+            conditions: [{ metric: 'close', op: '>=', value: 26.8, label: '收盘 ≥ 26.80(压力)', meaning: '站上压力, 联动走强' }],
+            warnings: ['最近20个完整交易日日线缺失、重复或未核准'],
+          }, {
+            symbol: '000657.SZ', name: '中钨高新', mode: 'market', missing: ['建仓日'],
+            close: 41.79, price_date: '2026-11-11', pnl_pct: -36.7, pnl_state: 'deep_loss', age_days: null,
+            trend: 'unknown', relative: 'unknown', stock_pct: 2.18, sector: null, hot: [], mainline: null,
+            conditions: [], warnings: ['最近20个完整交易日日线缺失、重复或未核准'],
+          }],
+        },
+      }} />
+    </MemoryRouter>,
+  ))
+  const text = host.textContent ?? ''
+  expect(text).toContain('1 只缺建仓日或失效条件, 只看市场联动')
+  expect(text).toContain('只看联动')
+  expect(text).toContain('主线 特斯拉概念 第1 · 3日')
+  expect(text).toContain('通信线缆及配套 +6.25% · 跑输')
+  expect(text).toContain('-57.5%深套')
+  expect(text).toContain('收盘 ≥ 26.80(压力) → 站上压力, 联动走强')
+  expect(text).toContain('未进入今日热点')
+  expect(text).toContain('技术位不可用')
+  // 共同的数据原因只提示一次
+  expect(text.split('最近20个完整交易日日线缺失').length - 1).toBe(1)
+  expect(host.querySelector('a[href="/lots"]')).not.toBeNull()
+  act(() => Array.from(host.querySelectorAll('button')).find(b => b.textContent === '中天科技')!.click())
+  expect(onOpenStock).toHaveBeenCalledWith('600522.SH')
 })
