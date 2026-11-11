@@ -85,7 +85,7 @@ export function EmotionScoreConfigDialog({ onClose }: { onClose: () => void }) {
       const res = await api.emotionScoreConfigUpdate(draft)
       setPayload(res)
       setDraft(clone(res.config))
-      toast('情绪评分口径已保存', 'success')
+      toast('盘面温度口径已保存', 'success')
       onClose()
     } catch (e) {
       setError(String(e))
@@ -115,7 +115,7 @@ export function EmotionScoreConfigDialog({ onClose }: { onClose: () => void }) {
         {/* 头部 */}
         <div className="flex items-center gap-2.5 border-b border-border px-5 py-3.5">
           <Sigma className="h-4 w-4 shrink-0 text-accent" />
-          <h3 className="text-sm font-medium text-foreground">情绪评分 · 计算方式</h3>
+          <h3 className="text-sm font-medium text-foreground">盘面温度 · 计算方式</h3>
           {payload?.customized && (
             <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-medium leading-none text-accent">
               已自定义

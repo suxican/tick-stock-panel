@@ -7,6 +7,7 @@
 
 数据来源:services.market_overview_builder.build_market_overview
 (与 GET /api/overview/market 同源,保证复盘与看板数据口径一致)。
+情绪分只用 overview["regime_state"](regime 口径, 与 Regime 页同值), 不用看板「盘面温度」emotion。
 
 流式协议(与 stock_analyzer / financial_analyzer 一致,前端解析无差异):
     {"type":"meta", "as_of", "emotion_score", "emotion_label", "summary", "snapshot"}
@@ -170,16 +171,22 @@ def _build_sector_block(rank: dict, label: str) -> str:
     )
 
 
+_SUBSCORE_LABELS = {"profit": "赚钱", "speculation": "投机", "resilience": "抗跌", "trend": "趋势"}
+
+
+def _regime_state(overview: dict) -> dict:
+    """复盘唯一情绪分: 总览的 regime 口径状态(见 services.regime_state)。"""
+    return overview.get("regime_state") or {}
+
+
 def _build_emotion_block(overview: dict) -> str:
-    emo = overview.get("emotion") or {}
-    radar = overview.get("radar") or []
-    score = emo.get("score", 50)
-    label = emo.get("label", "—")
-    lines = [f"- 情绪温度: {score} ({label})"]
-    # 雷达"量能"维来自个股平均量比, 与成交额口径不一致, 不提供给模型
-    dims = "、".join(
-        f"{r.get('label')}{r.get('value',0)}" for r in radar if r.get("label") != "量能"
-    )
+    rs = _regime_state(overview)
+    if rs.get("score") is None:
+        return "(暂无)"
+    basis = "盘中估算, 收盘后以盘后计算为准" if rs.get("source") == "estimate" else "盘后口径"
+    lines = [f"- 情绪分: {rs['score']} ({rs.get('label') or '—'}, {basis})"]
+    subs = rs.get("subscores") or {}
+    dims = "、".join(f"{label}{subs[k]}" for k, label in _SUBSCORE_LABELS.items() if subs.get(k) is not None)
     if dims:
         lines.append(f"- 情绪分项: {dims}")
     return "\n".join(lines)
@@ -369,7 +376,7 @@ def _recap_summary(overview: dict) -> str:
     指数用简称(上/深/创/科),与前端摘要条一致,避免列表里全称放不下。
     """
     indices = overview.get("indices") or []
-    emo = overview.get("emotion") or {}
+    rs = _regime_state(overview)
     lim = overview.get("limit") or {}
     amt = overview.get("amount") or {}
     total_amount = (amt.get("total") or 0) / 1e8
@@ -379,7 +386,7 @@ def _recap_summary(overview: dict) -> str:
         for i in indices[:4]
     ) or "指数缺失"
     return (
-        f"{idx_str} | 情绪{emo.get('score',50)}({emo.get('label','—')}) | "
+        f"{idx_str} | 情绪{rs.get('score', '—')}({rs.get('label') or '—'}) | "
         f"涨停{lim.get('limit_up',0)} | 成交{total_amount:.0f}亿"
     )
 
@@ -420,7 +427,7 @@ async def recap_market_stream(
         }, ensure_ascii=False)
         return
 
-    emo = overview.get("emotion") or {}
+    rs = _regime_state(overview)
 
     # 数据快照: 近期对比/周期/梯队/主线, 同时供 prompt 与前端结构化面板; 失败只降级
     from app.services.market_recap_holdings import holdings_prompt_block
@@ -451,8 +458,8 @@ async def recap_market_stream(
     yield json.dumps({
         "type": "meta",
         "as_of": as_of_str,
-        "emotion_score": emo.get("score", 50),
-        "emotion_label": emo.get("label", "—"),
+        "emotion_score": rs.get("score"),
+        "emotion_label": rs.get("label") or "—",
         "summary": _recap_summary(overview),
         "snapshot": snapshot,
     }, ensure_ascii=False)

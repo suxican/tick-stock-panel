@@ -70,9 +70,9 @@ function EmotionRadarCard({ ctx }: { ctx: WidgetCtx }) {
           <SectionTitle
             icon={Sparkles}
             title="情绪雷达"
-            hint={`情绪评分 ${ctx.score}`}
+            hint={`盘面温度 ${ctx.score}`}
             onConfig={() => setConfigOpen(true)}
-            configTitle="配置情绪评分的计算方式"
+            configTitle="配置盘面温度的计算方式"
           />
           <EmotionRadar radar={ctx.data.radar} score={ctx.score} />
         </>,

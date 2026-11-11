@@ -38,7 +38,7 @@ import {
 
 // ================================================================
 // 涨跌幅格式化(注意单位差异)
-// overview 的 indices.change_pct / breadth.up_pct / seal_rate / *_pct / emotion.score
+// overview 的 indices.change_pct / breadth.up_pct / seal_rate / *_pct / regime_state.score
 //   都是【已是百分比值】(如 1.2 表示 1.2%),直接 toFixed 即可,不要 *100。
 // ================================================================
 function fmtPctAlready(v: number | null | undefined, digits = 2, withSign = false): string {
@@ -276,7 +276,7 @@ export function ReviewPage() {
       <PageHeader
         title="AI 复盘"
         titleExtra={<Sparkles className="h-4 w-4 text-accent" />}
-        subtitle={`${displayDate}${data?.emotion ? ` · 情绪 ${data.emotion.label}` : ''}`}
+        subtitle={`${displayDate}${data?.regime_state ? ` · 情绪 ${data.regime_state.label}` : ''}`}
         right={
           <div className="flex items-center gap-1">
             <button
@@ -746,7 +746,9 @@ function parseIndexPcts(indexSegment: string): { name: string; pctStr: string; p
 }
 
 function MarketSummaryBar({ data }: { data: OverviewMarket }) {
-  const score = data.emotion?.score ?? null
+  // 情绪分只用 regime 口径(与市场环境页、AI 复盘同值), 不用看板的盘面温度
+  const rs = data.regime_state
+  const score = rs?.score ?? null
   const emoColor = scoreColor(score)
   const indices = (data.indices ?? []).slice(0, 4)
 
@@ -761,8 +763,10 @@ function MarketSummaryBar({ data }: { data: OverviewMarket }) {
           {score ?? '—'}
         </span>
         <div className="leading-tight">
-          <div className="text-[11px] font-medium text-foreground">{data.emotion?.label ?? '情绪'}</div>
-          <div className="text-[9px] text-secondary">情绪温度</div>
+          <div className="text-[11px] font-medium text-foreground">{rs?.label ?? '情绪'}</div>
+          <div className="text-[9px] text-secondary" title={rs?.source === 'estimate' ? '当日尚未完成盘后计算, 按同一公式用实时数据估算' : undefined}>
+            {rs?.source === 'estimate' ? '情绪分 · 盘中估算' : '情绪分'}
+          </div>
         </div>
       </div>
 

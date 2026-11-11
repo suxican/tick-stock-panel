@@ -426,6 +426,7 @@ def build_market_overview(
             "activity": {"avg_turnover": 0, "high_turnover": 0, "high_vol_ratio": 0, "vol_ratio": 1},
             "radar": [],
             "emotion": {"score": 50, "label": "暂无"},
+            "regime_state": None,
             "top_gainers": [],
             "top_losers": [],
             "turnover_leaders": [],
@@ -591,6 +592,28 @@ def build_market_overview(
     emotion_score = emotion["score"]
     emotion_label = emotion["label"]
 
+    # 情绪分(regime 口径, 复盘/看板头部唯一来源): 当日已入 regime_history 取表值, 否则同公式估算。
+    # 上方 emotion 是看板「盘面温度」(6 维可配置), 不再作为情绪分使用。
+    from app.services import regime_state
+
+    regime_state_info = regime_state.resolve_regime_state(
+        getattr(getattr(repo, "store", None), "data_dir", None),
+        as_of,
+        regime_state.overview_metrics(
+            up_pct=up_pct,
+            down_pct=down_pct,
+            avg_pct=avg_pct,
+            median_pct=median_pct,
+            strong_up_pct=strong_up / total * 100 if total else 0,
+            strong_down_pct=strong_down_pct,
+            limit_up=limit_up,
+            broken=broken,
+            max_boards=max_boards,
+            index_change_pct=regime_state.index_change_pct(indices),
+            above_ma20_pct=above_ma20 / total * 100 if total else 0,
+        ),
+    )
+
     return _json_safe({
         "as_of": str(as_of),
         "quote_status": status,
@@ -629,6 +652,7 @@ def build_market_overview(
         },
         "radar": radar,
         "emotion": {"score": emotion_score, "label": emotion_label},
+        "regime_state": regime_state_info,
         "top_gainers": _top_rows(rows, "change_pct", True),
         "top_losers": _top_rows(rows, "change_pct", False),
         "turnover_leaders": _top_rows(rows, "amount", True),

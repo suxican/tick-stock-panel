@@ -266,7 +266,7 @@ export function Dashboard() {
               background: `${scoreColor(score)}14`,
             }}
           >
-            {data.emotion.label} · {score}
+            盘面温度 {score} · {data.emotion.label}
           </span>
         </div>
         <div className="flex items-center gap-3 text-[11px] text-muted">

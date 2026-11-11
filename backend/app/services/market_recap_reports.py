@@ -15,7 +15,7 @@
   "focus": "",                # 用户追加的关心点(可为空)
   "content": "# ...markdown", # 报告正文
   "summary": "三大指数齐涨...",  # 一句话摘要
-  "emotion_score": 68,        # 情绪分(0-100, 复盘生成时的市场情绪雷达均分)
+  "emotion_score": 68,        # 情绪分(0-100, regime 口径, 见 services.regime_state; 旧报告为看板雷达均分)
   "emotion_label": "偏暖",     # 情绪标签(强势/偏暖/震荡/偏冷/冰点)
   "snapshot": {...} | null,   # 复盘数据快照(market_recap_snapshot), 旧报告无此字段;
                               #   含 plan_check(对上一篇剧本的系统核验) / plan_stats

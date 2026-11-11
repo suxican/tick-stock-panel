@@ -676,7 +676,13 @@ export interface OverviewMarket {
   trend: { above_ma5: number; above_ma20: number; above_ma60: number; above_ma5_pct: number; above_ma20_pct: number; above_ma60_pct: number; new_high: number; new_low: number }
   activity: { avg_turnover: number; high_turnover: number; high_vol_ratio: number; vol_ratio: number }
   radar: { key: string; label: string; value: number }[]
+  /** 看板「盘面温度」: 6 维可配置, 仅看板使用 */
   emotion: { score: number; label: string }
+  /** 情绪分(regime 口径, 与市场环境页同值): 当日已入表为 regime, 否则为盘中估算 */
+  regime_state?: {
+    score: number; state: string; label: string; source: 'regime' | 'estimate'; date: string
+    subscores: Partial<Record<'profit' | 'speculation' | 'resilience' | 'trend', number>>
+  } | null
   top_gainers: MarketSnapshotRow[]
   top_losers: MarketSnapshotRow[]
   turnover_leaders: MarketSnapshotRow[]
