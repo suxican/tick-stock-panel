@@ -1100,6 +1100,21 @@ export interface MarketGameOverseasContext {
   limitations: string[]
 }
 
+/** 离线校准的可信度摘要；ew_1 为次日全市场等权涨幅（小数），diff 为信号组减对照组。 */
+export interface MarketGameCalibrationSegment { n: number; mean: number | null; control_n: number; control_mean: number | null; diff: number | null }
+export interface MarketGameCalibrationRow {
+  group: string; control: string; label: string; kind: 'rule' | 'shadow'
+  card?: string; definition?: string
+  train: MarketGameCalibrationSegment; test: MarketGameCalibrationSegment
+  verdict: 'consistent' | 'inconsistent' | 'insufficient'
+}
+export type MarketGameCalibration = { status: 'missing' } | {
+  schema_version: 1; status: string; metric: 'ew_1'; min_days: number; scope: string | null
+  rule_version: string | null; start: string | null; end: string | null; split: string
+  sentiment_days: number | null; created_at: string; archive: string; skipped_archives: number
+  rows: MarketGameCalibrationRow[]; limitations: string[]
+}
+
 export interface MarketGameReport extends MarketGameSummary {
   cutoff: string
   input_version: string
@@ -5459,6 +5474,7 @@ export const api = {
     request<MarketGameReport>('/api/market-game/analyze', {
       method: 'POST', body: JSON.stringify(body), quiet: true, timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
     }),
+  marketGameCalibration: () => request<MarketGameCalibration>('/api/market-game/calibration', { quiet: true }),
   marketGameReports: () => request<{ reports: MarketGameSummary[] }>('/api/market-game/reports', { quiet: true }),
   marketGameReport: (id: string) => request<MarketGameReport>(`/api/market-game/reports/${encodeURIComponent(id)}`, { quiet: true }),
   marketGameExplain: (id: string) => request<{ content: string }>(`/api/market-game/reports/${encodeURIComponent(id)}/explain`, {

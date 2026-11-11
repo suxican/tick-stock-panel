@@ -229,6 +229,7 @@ export const QK = {
 
   // 冻结报告按唯一 ID 隔离，行情 SSE 不改写历史决策。
   marketGameReports:    ['market-game-reports'] as const,
+  marketGameCalibration: ['market-game-calibration'] as const,
   marketGameReport:     (id: string) => ['market-game-report', id] as const,
   marketGameExplanation: (id: string) => ['market-game-explanation', id] as const,
   marketGameEvaluation: (id: string) => ['market-game-evaluation', id] as const,

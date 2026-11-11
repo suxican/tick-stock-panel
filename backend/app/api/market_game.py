@@ -62,6 +62,11 @@ def analyze(request: Request, body: AnalyzeRequest):
     return _call(request, "generate", body.as_of, body.risk.model_dump())
 
 
+@router.get("/calibration")
+def calibration(request: Request):
+    return _call(request, "calibration")
+
+
 @router.get("/reports")
 def reports(request: Request):
     return {"reports": _call(request, "list_reports")}

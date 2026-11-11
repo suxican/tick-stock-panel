@@ -3,15 +3,15 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import type { MarketGameEvaluation, MarketGameReport, MarketGamePsychology } from '@/lib/api'
+import type { MarketGameCalibration, MarketGameEvaluation, MarketGameReport, MarketGamePsychology } from '@/lib/api'
 import { MarketGame } from './MarketGame'
 import extension from './extension'
 
-const calls = vi.hoisted(() => ({ analyze: vi.fn(), reports: vi.fn(), report: vi.fn(), explain: vi.fn(), evaluation: vi.fn(), capital: vi.fn(), model: vi.fn() }))
+const calls = vi.hoisted(() => ({ analyze: vi.fn(), reports: vi.fn(), report: vi.fn(), explain: vi.fn(), evaluation: vi.fn(), capital: vi.fn(), model: vi.fn(), calibration: vi.fn() }))
 vi.mock('@/lib/api', () => ({ api: {
   marketGameAnalyze: calls.analyze, marketGameReports: calls.reports, marketGameReport: calls.report,
   marketGameExplain: calls.explain, marketGameEvaluation: calls.evaluation,
-  marketGameCapital: calls.capital, marketGameModel: calls.model,
+  marketGameCapital: calls.capital, marketGameModel: calls.model, marketGameCalibration: calls.calibration,
 } }))
 vi.mock('@/components/StockPreviewDialog', () => ({ StockPreviewDialog: ({ symbol, triggerInfo }: {
   symbol: string; triggerInfo: { message: string }
@@ -29,6 +29,7 @@ beforeEach(() => {
   calls.report.mockImplementation(async (id: string) => report(id))
   calls.explain.mockResolvedValue({ content: '这是一份可选的解释。' })
   calls.capital.mockRejectedValue(new Error('尚无资金观察'))
+  calls.calibration.mockResolvedValue({ status: 'missing' })
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -486,4 +487,52 @@ it('labels 1.4.0 candidates as an observation list and the cap as the market gat
   expect(host.querySelector('section[aria-label="结论依据"]')?.textContent).toContain('选股层回放未通过')
   await click('查看假设')
   expect(host.querySelector('[role="tab"][aria-selected="true"]')!.textContent).toContain('情绪与假设')
+})
+
+function calibration(): MarketGameCalibration {
+  const segment = (n: number, value: number | null) => ({ n, mean: value, control_n: 400, control_mean: 0, diff: value })
+  return {
+    schema_version: 1, status: 'ready', metric: 'ew_1', min_days: 30, scope: 'in_sample_market_proxy', rule_version: '1.4.0',
+    start: '2020-01-02', end: '2026-11-06', split: '2023-01-01', sentiment_days: 1500, created_at: '2026-11-11T14:25:27+08:00',
+    archive: 'cal_20261111T142527_1a66e965.json', skipped_archives: 0, limitations: ['样本内研究'],
+    rows: [
+      { group: 'gate:veto', control: 'gate:none', label: '亏钱门 · 暂停新增', kind: 'rule', train: segment(102, -.0027), test: segment(128, -.0011), verdict: 'consistent' },
+      { group: 'risk:short_index_risk', control: 'baseline', label: '指数短期风险否决', kind: 'rule', train: segment(135, -.0007), test: segment(158, .0003), verdict: 'inconsistent' },
+      { group: 'shadow:volume_stall', control: 'shadow:volume_advance', label: '放量滞涨', kind: 'shadow', card: 'C1-4 浮动供给雪球', definition: '趋势上行且放量滞涨', train: segment(5, null), test: segment(8, null), verdict: 'insufficient' },
+    ],
+  }
+}
+
+it('shows archived credibility on the evidence tab and drives the basis tags', async () => {
+  calls.calibration.mockResolvedValue(calibration())
+  await render()
+  await click('生成盘后计划')
+  const basis = host.querySelector('section[aria-label="结论依据"]')!
+  expect(basis.textContent).toContain('样本内方向一致')
+  expect(basis.textContent).toContain('样本内方向不一致')
+  await click('复盘与证据')
+  const panel = host.querySelector('section[aria-label="规则可信度"]')!
+  expect(panel.textContent).toContain('2020-01-02 至 2026-11-06 · 分段 2023-01-01')
+  expect(panel.textContent).toContain('-0.27% → -0.11%')
+  expect(panel.textContent).toContain('102/400 · 128/400')
+  expect(panel.textContent).toContain('影子检验 · 不参与规则')
+  expect(panel.textContent).toContain('C1-4 浮动供给雪球')
+  expect(panel.textContent).toContain('— → —')  // missing differences are never shown as zero
+  expect(calls.calibration).toHaveBeenCalledTimes(1)  // overview and evidence share one cached read
+})
+
+it('explains a missing archive and isolates calibration errors from the plan', async () => {
+  await render()
+  await click('生成盘后计划')
+  expect(host.querySelector('section[aria-label="结论依据"]')!.textContent).toContain('未校准')
+  await click('复盘与证据')
+  const panel = () => host.querySelector('section[aria-label="规则可信度"]')!
+  expect(panel().textContent).toContain('尚无校准归档')
+  expect(panel().textContent).toContain('--archive')
+  client.removeQueries({ queryKey: ['market-game-calibration'] })
+  calls.calibration.mockRejectedValue(new Error('boom'))
+  await click('今日结论')
+  await click('复盘与证据')
+  expect(panel().textContent).toContain('校准归档读取失败')
+  expect(host.textContent).toContain('输入版本 snapshot-1')
 })

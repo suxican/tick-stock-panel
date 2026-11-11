@@ -148,7 +148,7 @@ user_data / strategies / pools → 用户定义与配置 → 各业务模块
 | `holding_analysis/` | `state.json`：持仓研究画像、报告和采纳计划，由 [holding_analysis_store.py](../backend/app/services/holding_analysis_store.py) 保存；最多保留 100 条报告，计划内保留采纳证据。此存储不直接修改实际库存或成交记录。 |
 | `huichun/` | 参数及版本、`snapshot.json` 任务状态、扫描/研究结果、`tracking.json` 跟踪与 `market_calendar.json` 日历等，由 [huichun_mode.py](../backend/app/services/huichun_mode.py) 随扫描、研究、用户操作更新；配置及跟踪不可从行情恢复。 |
 | `lots/` | `lot_*.json` 买入批次、止盈止损与到期提醒输入，由 [lots.py](../backend/app/strategy/lots.py) 保存并派生监控规则；不是完整会计台账。 |
-| `market_game/` | `mg_<id>.json` 不可覆盖的博弈报告和当时快照，另有评估、解释、资金及模型旁文件，由 [market_game_reports.py](../backend/app/services/market_game_reports.py) 保存。无自动保留上限，删除会损失预测验真证据。 |
+| `market_game/` | `mg_<id>.json` 不可覆盖的博弈报告和当时快照，另有评估、解释、资金及模型旁文件，由 [market_game_reports.py](../backend/app/services/market_game_reports.py) 保存。无自动保留上限，删除会损失预测验真证据。`calibration/cal_<时间>_<随机>.json` 是离线校准 `--archive` 追加的规则可信度摘要，由 [market_game_credibility.py](../backend/app/services/market_game_credibility.py) 写入、页面只读最新一份；可重新运行校准生成，删除只会让页面显示“尚无校准归档”。 |
 | `monitor_rules/` | `<rule_id>.json` 价格、日期、信号监控规则，由 [monitor_rules.py](../backend/app/strategy/monitor_rules.py) 在用户编辑或规则派生时更新；删除改变提醒行为。 |
 | `position_t/` | `ledger.sqlite3` 做 T 的账户、持仓、信号、计划、执行、订单、通知和事件记录，由 [position_t_store.py](../backend/app/services/position_t_store.py) 事务更新；操作台账不可从行情重建。 |
 | `removed_integrations/` | 本地按集成名与批次留存的移除材料；当前未找到统一读写或自动恢复契约。保留到确认不再需要，不能仅凭名称承诺可一键恢复。 |

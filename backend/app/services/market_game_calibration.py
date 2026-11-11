@@ -63,12 +63,20 @@ def index_metrics(indices: pl.DataFrame, days: list[date]) -> dict:
     frame = frame.with_columns(*expressions,
         (pl.col('close') > pl.col('close').rolling_mean(20).over('symbol'))
         .cast(pl.Float64).alias('index_above_ma20'),
+        # A closing high needs a complete lookback; any gap makes the flag null.
+        (pl.col('close') >= pl.col('close').rolling_max(NEW_HIGH_WINDOW).over('symbol'))
+        .cast(pl.Float64).alias('_new_high'),
+    ).with_columns(
+        # Highs in the sessions strictly before the signal day.
+        pl.col('_new_high').shift(1).rolling_max(RECENT_HIGH_SESSIONS).over('symbol')
+        .alias('index_recent_highs'),
     )
     keys = ['index_return', 'index_ret5', 'index_ret20', 'index_above_ma20']
     frame = frame.group_by('date').agg(*[
         pl.when(pl.col(key).count() == len(CORE_INDEX_SYMBOLS))
         .then(pl.col(key).mean()).alias(key) for key in keys
-    ])
+    ], pl.when(pl.col('index_recent_highs').count() == len(CORE_INDEX_SYMBOLS))
+        .then(pl.col('index_recent_highs').sum()).alias('index_recent_highs'))
     return {row.pop('date'): row for row in frame.to_dicts()}
 
 
@@ -86,7 +94,7 @@ def prepare_history(regime: pl.DataFrame, *, premiums: dict | None = None,
         day = row['date']
         if not isinstance(day, date):
             raise ValueError('环境历史日期类型无效')
-        supplement = premiums.get(day, {})
+        supplement, index_row = premiums.get(day, {}), indices.get(day, {})
         amount = _number(row.get('total_amount'), 0)
         average = _number(row.get('avg_turnover'), 0)
         # avg_turnover is regime_builder's mean amount, not a turnover ratio.
@@ -105,11 +113,73 @@ def prepare_history(regime: pl.DataFrame, *, premiums: dict | None = None,
             'limit_down': row.get('limit_down'), 'max_boards': row.get('max_consecutive'),
             'promotion_rate': row.get('promo_rate'), 'amount_ratio': amount_ratio,
             'previous_limit_premium': supplement.get('previous_limit_premium'),
-            **indices.get(day, {}),
+            **index_row,
         })
-        rows.append({'date': day.isoformat(), **metrics, 'ew_return': _number(supplement.get('ew_return'))})
+        # Shadow inputs stay outside _metrics: they must not change complete_inputs or coverage.
+        rows.append({'date': day.isoformat(), **metrics, 'ew_return': _number(supplement.get('ew_return')),
+                     'index_recent_highs': _number(index_row.get('index_recent_highs'), 0)})
         amounts.append(amount)
     return rows
+
+
+# Shadow groups test Selden's qualitative claims with thresholds fixed before
+# running; they never feed rules, reports or allocation. Each has a control so
+# the comparison is signal versus a like-for-like day, not versus everything.
+HEAT_AMOUNT_RATIO = 1.2  # same threshold as the rule's heat check
+EASE_WINDOW = 20
+EASE_MIN_DAYS = 5
+EASE_DOWN_RATIO = .8
+EASE_UP_RATIO = 1.25
+DROP_THRESHOLD = -.015
+DROP_LOOKBACK = 5
+NEW_HIGH_WINDOW = 60
+RECENT_HIGH_SESSIONS = 5
+RECENT_HIGH_MIN_INDICES = 2
+
+SHADOW_DEFINITIONS = [
+    {'group': 'shadow:volume_stall', 'control': 'shadow:volume_advance', 'label': '放量滞涨',
+     'card': 'C1-4 浮动供给雪球', 'definition':
+     f'趋势上行且成交额倍数≥{HEAT_AMOUNT_RATIO}，中位涨跌幅≤0；对照组为同条件下中位涨跌幅>0'},
+    {'group': 'shadow:ease_down', 'control': 'shadow:ease_up', 'label': '跌易涨难',
+     'card': 'C7-4 识读技术位置', 'definition':
+     f'趋势上行；近{EASE_WINDOW}个交易日上涨日与下跌日“|中位涨跌幅|÷成交额倍数”均值之比<{EASE_DOWN_RATIO}，'
+     f'各方向至少{EASE_MIN_DAYS}天；对照组为该比值>{EASE_UP_RATIO}'},
+    {'group': 'shadow:first_drop_after_high', 'control': 'shadow:drop_no_high', 'label': '新高后首次急跌',
+     'card': 'C1-5 健康回调的陷阱', 'definition':
+     f'核心四指数当日均值≤{DROP_THRESHOLD:.1%}且此前{DROP_LOOKBACK}日无同级别下跌，'
+     f'此前{RECENT_HIGH_SESSIONS}日内至少{RECENT_HIGH_MIN_INDICES}只创{NEW_HIGH_WINDOW}日收盘新高；'
+     '对照组为同样首次急跌但无指数新高'},
+]
+
+
+def _shadow_keys(rows: list[dict], index: int, trend: str) -> list[str]:
+    """Only rows up to and including the signal day; missing inputs join neither side."""
+    current, keys = rows[index], []
+    ratio, median = current['amount_ratio'], current['median_return']
+    if trend == '上行' and ratio is not None and median is not None and ratio >= HEAT_AMOUNT_RATIO:
+        keys.append('shadow:volume_stall' if median <= 0 else 'shadow:volume_advance')
+    if trend == '上行' and index + 1 >= EASE_WINDOW:
+        up, down = [], []
+        for row in rows[index + 1 - EASE_WINDOW:index + 1]:
+            r, m = row['amount_ratio'], row['median_return']
+            if r is None or m is None or r <= 0 or m == 0:
+                continue
+            (up if m > 0 else down).append(abs(m) / r)
+        if len(up) >= EASE_MIN_DAYS and len(down) >= EASE_MIN_DAYS and sum(down) > 0:
+            ease = (sum(up) / len(up)) / (sum(down) / len(down))
+            if ease < EASE_DOWN_RATIO:
+                keys.append('shadow:ease_down')
+            elif ease > EASE_UP_RATIO:
+                keys.append('shadow:ease_up')
+    drop, highs = current['index_return'], current.get('index_recent_highs')
+    prior = rows[max(0, index - DROP_LOOKBACK):index]
+    if (drop is not None and drop <= DROP_THRESHOLD and highs is not None and len(prior) == DROP_LOOKBACK
+            and all(row['index_return'] is not None and row['index_return'] > DROP_THRESHOLD for row in prior)):
+        if highs >= RECENT_HIGH_MIN_INDICES:
+            keys.append('shadow:first_drop_after_high')
+        elif highs == 0:
+            keys.append('shadow:drop_no_high')
+    return keys
 
 
 def _quantile(values: list[float], q: float) -> float | None:
@@ -181,12 +251,14 @@ def calibrate_history(regime: pl.DataFrame, *, premiums: dict | None = None,
                             and state['phase'] not in {'退潮', '冰点'})
         if entry_observable:
             keys.append('entry_observable')
+        shadow = _shadow_keys(rows, index, state['trend'])
+        keys.extend(shadow)
         if split is not None:
             suffix = '@train' if current['date'] < split.isoformat() else '@test'
             keys.extend([key + suffix for key in keys])
         observation = {'date': current['date'], 'phase': state['phase'],
                        'matches': matches, 'complete_inputs': complete, 'gate': gate_level,
-                       'entry_observable': entry_observable, **outcomes}
+                       'entry_observable': entry_observable, 'shadow': shadow, **outcomes}
         observations.append(observation)
         for key in keys:
             group_days.setdefault(key, []).append(observation)
@@ -216,7 +288,10 @@ def calibrate_history(regime: pl.DataFrame, *, premiums: dict | None = None,
             'ew为次日全市场等权涨幅（剔除单日绝对涨跌超过35%的记录）；premium_1为次日昨日涨停股等权收盘涨幅，封板买不进，属于不可成交代理。',
             'gate组来自本地zzshare情绪归档的逐日回放，只与更早交易日比较分位；供应商历史可能事后修订，未获时点认证。',
             'split只按日期把各组拆成train/test两段，用于检查方向是否一致，不做阈值拟合。',
+            'shadow组检验书中定性命题，阈值在运行前固定，只与各自对照组比较；不进入规则、报告或仓位。',
+            '多组同时检验存在多重比较风险；单组方向一致不构成规则依据，需另行提升规则版本验证。',
         ],
+        'shadow_definitions': SHADOW_DEFINITIONS,
         'split': split.isoformat() if split else None,
         'sentiment_days': len(sentiment or {}),
     }

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app.market_time import cn_now, cn_today
 from app.services.market_game_capital_service import CapitalBusyError, CapitalObservationService
+from app.services.market_game_credibility import CalibrationArchive
 from app.services.market_game_ecology import analyze_ecology
 from app.services.market_game_evaluation import evaluate_observations
 from app.services.market_game_execution_models import ExecutionPolicy
@@ -42,6 +43,7 @@ class MarketGameService:
         self._generating = False
         self.capital_observations = CapitalObservationService(repo, self.store, data_dir)
         self.model_evaluations = MarketGameModelService(repo, self.store)
+        self.calibration_archive = CalibrationArchive(data_dir)
 
     def generate(self, as_of: date | None, risk: dict | None = None) -> dict:
         from app.services.market_game import analyze_snapshot
@@ -126,6 +128,10 @@ class MarketGameService:
 
     def get_report(self, report_id: str) -> dict:
         return GameReport.model_validate(self.store.get(report_id)).model_dump(mode="json")
+
+    def calibration(self) -> dict:
+        """Read-only: calibration is an explicit offline batch, never run from the API."""
+        return self.calibration_archive.latest() or {"status": "missing"}
 
     def evaluate(self, report_id: str) -> dict:
         report = self.get_report(report_id)

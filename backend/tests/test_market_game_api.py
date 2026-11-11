@@ -91,3 +91,24 @@ def test_model_refresh_errors_are_sanitized(exception, status):
         raise exception("private/path/token")
     response = client_for(SimpleNamespace(evaluate_model=refresh)).post("/api/market-game/reports/example/evaluate-model")
     assert response.status_code == status and "private" not in response.text
+
+
+def test_calibration_reads_latest_archive_or_reports_missing(tmp_path):
+    from app.services.market_game_credibility import CalibrationArchive
+    from app.services.market_game_service import MarketGameService
+
+    service = MarketGameService(SimpleNamespace(), data_dir=tmp_path)
+    client = client_for(service)
+    assert client.get("/api/market-game/calibration").json() == {"status": "missing"}
+    CalibrationArchive(tmp_path).save({"status": "ready", "split": "2023-01-01", "groups": [], "limitations": []})
+    body = client.get("/api/market-game/calibration").json()
+    assert body["schema_version"] == 1 and body["metric"] == "ew_1"
+    assert {row["verdict"] for row in body["rows"]} == {"insufficient"}
+    assert not client.post("/api/market-game/calibration").is_success  # read-only
+
+
+def test_calibration_storage_errors_do_not_leak_paths():
+    def fail():
+        raise OSError("private/path/secret")
+    response = client_for(SimpleNamespace(calibration=fail)).get("/api/market-game/calibration")
+    assert response.status_code == 503 and "private/path" not in response.text

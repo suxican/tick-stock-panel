@@ -14,6 +14,7 @@ import { OverseasPanel } from './OverseasPanel'
 import { ModelPanel } from './ModelPanel'
 import { InfoTip } from './InfoTip'
 import { SentimentPanel, SentimentStrip } from './SentimentPanel'
+import { CredibilityPanel, calibrationTag, useCalibration } from './CredibilityPanel'
 
 const button = 'inline-flex min-h-10 items-center justify-center gap-2 rounded-btn border border-border px-3 py-2 text-sm text-foreground transition-colors hover:bg-elevated focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50'
 const inputClass = 'min-h-10 rounded-btn border border-border bg-surface px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50'
@@ -276,12 +277,13 @@ function BasisRow({ label, tag, children }: { label: string; tag?: string; child
 
 function ConclusionBasis({ report, observation, onExplore }: { report: MarketGameReport; observation: boolean; onExplore: () => void }) {
   const vetoes = report.market_state.risk_vetoes ?? []
+  const calibration = useCalibration().data
   const matched = report.hypotheses.filter(item => item.status === 'matched').map(item => item.title)
   const watching = report.hypotheses.filter(item => item.status === 'watch').map(item => item.title)
   return <section aria-label="结论依据" className="rounded-card border border-border bg-surface/80 px-4 py-0.5 text-sm">
     <div className="divide-y divide-border">
-      <BasisRow label="风险否决" tag="研究阈值">{vetoes.length ? `${vetoes.length} 项触发，见上方` : '未触发'}</BasisRow>
-      <BasisRow label="亏钱效应门" tag="样本内验证">{report.sentiment ? <SentimentStrip sentiment={report.sentiment} /> : '旧报告未记录'}</BasisRow>
+      <BasisRow label="风险否决" tag={calibrationTag(calibration, 'risk:short_index_risk')}>{vetoes.length ? `${vetoes.length} 项触发，见上方` : '未触发'}</BasisRow>
+      <BasisRow label="亏钱效应门" tag={calibrationTag(calibration, 'gate:veto')}>{report.sentiment ? <SentimentStrip sentiment={report.sentiment} /> : '旧报告未记录'}</BasisRow>
       <BasisRow label="行为假设" tag={observation ? '选股层回放未通过' : undefined}>
         <span className="inline-flex flex-wrap items-center gap-x-3">
           {matched.length ? `符合当前证据：${matched.join('、')}` : watching.length ? `等待确认：${watching.join('、')}` : '暂无成立的假设'}
@@ -500,6 +502,7 @@ export function MarketGame() {
           {explanation.data?.content && <div className="mt-4 max-w-prose break-words"><MarkdownRenderer content={explanation.data.content} /></div>}
         </>} />
         {view === 'evidence' && <>
+        <CredibilityPanel />
         <Section title="后续观察" tip={<p>观察收益不等于触发或实盘收益。这里只对照候选后续收盘变化，不假设成交，也不计算策略胜率。</p>}>
           <button type="button" className={button} disabled={evaluation.isFetching} onClick={() => { if (observe) void evaluation.refetch(); else setObserve(true) }}>{evaluation.isFetching ? '读取中…' : observe ? '刷新后续表现' : '查看后续表现'}</button>
           {observe && evaluation.isError && <p role="alert" className="mt-3 text-sm">后续行情读取失败：{message(evaluation.error)}</p>}

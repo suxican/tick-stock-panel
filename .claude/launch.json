@@ -6,6 +6,13 @@
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["--dir", "frontend", "dev"],
       "port": 3011
+    },
+    {
+      "name": "backend",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "--directory", "backend", "--no-sync", "python", "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "3018"],
+      "port": 3018,
+      "autoPort": false
     }
   ]
 }
