@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import math
 import os
 import re
@@ -24,6 +25,8 @@ import polars as pl
 from app.services.ext_data import ExtConfig, ExtConfigStore
 from app.services.index_const import CORE_INDEX_NAMES, CORE_INDEX_SYMBOLS
 from app.services.screener import ScreenerService
+
+logger = logging.getLogger(__name__)
 
 # ================================================================
 # 常量(核心指数清单单一权威: app.services.index_const)
@@ -274,9 +277,29 @@ def _leader_sort_key(row: dict) -> float:
     return value if value is not None else float("-inf")
 
 
-def _dimension_rank(rows: list[dict], repo, kind: str, limit: int = 5, level: int | None = None) -> dict:
+def _dimension_rank(rows: list[dict], repo, kind: str, limit: int = 5, level: int | None = None,
+                    member_filter: dict | None = None) -> dict:
+    """板块涨幅榜(成分股等权涨幅)。member_filter 给定时套用主线同款成员数/黑名单过滤。"""
+    return _rank_groups(_dimension_groups(rows, repo, kind, level), limit, member_filter)
+
+
+def _rank_groups(items: list[dict], limit: int = 5, member_filter: dict | None = None) -> dict:
+    if member_filter is not None:
+        black = set(member_filter.get("blacklist") or ())
+        items = [
+            it for it in items
+            if member_filter["min_members"] <= it["count"] <= member_filter["max_members"]
+            and it["name"] not in black
+        ]
+    leading = sorted(items, key=lambda x: x["avg_pct"], reverse=True)[:limit]
+    lagging = sorted(items, key=lambda x: x["avg_pct"])[:limit]
+    return {"leading": leading, "lagging": lagging}
+
+
+def _dimension_groups(rows: list[dict], repo, kind: str, level: int | None = None) -> list[dict]:
+    """按概念/行业聚合全部板块(等权涨幅/成员数/领涨股), 不排序不截断。"""
     if not rows:
-        return {"leading": [], "lagging": []}
+        return []
 
     quote_map: dict[str, dict] = {}
     for row in rows:
@@ -333,10 +356,7 @@ def _dimension_rank(rows: list[dict], repo, kind: str, limit: int = 5, level: in
                 "change_pct": _finite(leader.get("change_pct")),
             },
         })
-
-    leading = sorted(items, key=lambda x: x["avg_pct"], reverse=True)[:limit]
-    lagging = sorted(items, key=lambda x: x["avg_pct"])[:limit]
-    return {"leading": leading, "lagging": lagging}
+    return items
 
 
 # ================================================================
@@ -433,6 +453,7 @@ def build_market_overview(
             "active_leaders": [],
             "concept_rank": {"leading": [], "lagging": []},
             "industry_rank": {"leading": [], "lagging": []},
+            "mainlines": {"source": None, "items": []},
         }
 
     df = svc._load_enriched_for_date(as_of)
@@ -554,14 +575,34 @@ def build_market_overview(
     avg_vol_ratio = sum(vol_ratios) / len(vol_ratios) if vol_ratios else 1
     high_vol_ratio = sum(1 for v in vol_ratios if v >= 1.5)
 
-    concept_rank = _dimension_rank(rows, repo, "concept")
-    industry_rank = _dimension_rank(rows, repo, "industry", level=2)
+    # 板块涨幅榜: 套用主线同款成员数/黑名单过滤, 剔除宽基标签与两三只股票的小概念霸榜
+    from app.services.market_mainline import _resolve_filter_config, mainline_for_day
+
+    member_filter = _resolve_filter_config(None)
+    concept_groups = _dimension_groups(rows, repo, "concept")
+    concept_rank = _rank_groups(concept_groups, member_filter=member_filter)
+    industry_rank = _rank_groups(_dimension_groups(rows, repo, "industry", level=2), member_filter=member_filter)
+
+    # 涨停主线(唯一主线口径): 当日已入 mainline_history 取表值, 否则用当日行情同公式补算
+    try:
+        mainline_rows, mainline_source = mainline_for_day(repo, as_of, rows)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("overview mainline failed for %s: %s", as_of, e)
+        mainline_rows, mainline_source = [], None
+    names_by_symbol = {str(r.get("symbol") or ""): r.get("name") or "" for r in rows}
+    groups_by_name = {g["name"]: g for g in concept_groups}
+    mainlines = [{
+        **m,
+        "leader_name": names_by_symbol.get(m.get("leader_symbol") or "") or m.get("leader_symbol"),
+        "avg_pct": (groups_by_name.get(m["member"]) or {}).get("avg_pct"),
+    } for m in mainline_rows]
 
     strong_diff_pct = (strong_up - strong_down) / total * 100 if total else 0
     high_vol_pct = high_vol_ratio / total * 100 if total else 0
     strong_down_pct = strong_down / total * 100 if total else 0
     tier2_count = sum(t["count"] for t in tiers if t["boards"] >= 2)
-    mainline_items = [*concept_rank["leading"][:3], *industry_rank["leading"][:3]]
+    # 盘面温度「主线」维: 取涨停主线前 3 名(而非涨幅榜)的成分股表现
+    mainline_items = [groups_by_name[m["member"]] for m in mainline_rows[:3] if m["member"] in groups_by_name]
     mainline_avg = max([_finite(item.get("avg_pct")) or 0 for item in mainline_items], default=0)
     mainline_cover_pct = max([(_finite(item.get("count")) or 0) / total * 100 for item in mainline_items], default=0) if total else 0
 
@@ -659,4 +700,5 @@ def build_market_overview(
         "active_leaders": _top_rows(rows, "turnover_rate", True),
         "concept_rank": concept_rank,
         "industry_rank": industry_rank,
+        "mainlines": {"source": mainline_source, "items": mainlines},
     })

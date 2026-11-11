@@ -9,8 +9,9 @@
 - regime_history: 逐日成交额/涨跌家数/涨跌停/炸板/封板率/最高连板/晋级率/情绪周期阶段。
   同一张表提供全部日期, 保证"今日 vs 昨日 vs 前 5 日均"是同一口径; 今日尚未入表
   (盘中或盘后管道未跑) 时用总览数据按相同字段补一行, 并标注 today_source=overview。
-- mainline_history: 逐日涨停主线排名, 用于主线持续天数。
-- 总览 overview: 连板梯队个股名单、涨跌幅居前/居后板块。
+- 总览 overview: 复盘日涨停主线(唯一主线口径, 见 market_mainline.mainline_for_day)、
+  连板梯队个股名单、板块涨幅榜(仅作异动参考, 标注是否属于主线)。
+- mainline_history: 复盘日之前的逐日涨停主线排名, 只用于主线持续天数。
 - enriched 缓存: 昨日涨停股今日表现 (缓存不覆盖时略过)。
 
 所有分支失败都只降级为缺字段, 不影响复盘主流程。
@@ -174,41 +175,39 @@ def _phase_info(days: list[dict]) -> dict | None:
 
 # ───────────────────────── 主线 / 梯队 ─────────────────────────
 
-def _name_map(repo, symbols: list[str]) -> dict[str, str]:
-    getter = getattr(repo, "get_name_map", None)
-    if not symbols or getter is None:
-        return {}
-    try:
-        return getter(symbols) or {}
-    except Exception:  # noqa: BLE001
-        return {}
+def _overview_mainlines(overview: dict) -> list[dict]:
+    """总览的涨停主线(唯一主线来源, 按 rank 升序, 前 MAINLINE_STREAK_RANK 名)。"""
+    items = (overview.get("mainlines") or {}).get("items") or []
+    return sorted((m for m in items if m.get("member")), key=lambda m: int(m.get("rank") or 0))
 
 
-def _mainlines(repo, data_dir, as_of: date) -> list[dict]:
-    """复盘日涨停主线前 N + 连续进入前 MAINLINE_STREAK_RANK 的天数。"""
-    try:
-        from app.services.market_mainline import load_mainline_history
+def _mainlines(data_dir, as_of: date, overview: dict) -> list[dict]:
+    """复盘日涨停主线前 N(取自总览, 与看板同源) + 连续进入前 MAINLINE_STREAK_RANK 的天数。
 
-        df = load_mainline_history(data_dir, "concept")
-    except Exception as e:  # noqa: BLE001
-        logger.debug("recap snapshot: mainline history unavailable: %s", e)
+    持续天数: 复盘日本身计 1 天, 再向前数 mainline_history 中连续上榜的交易日。
+    """
+    items = _overview_mainlines(overview)
+    if not items:
         return []
-    if df.is_empty() or "date" not in df.columns:
-        return []
-    df = df.filter(pl.col("date") <= as_of)
-    today = df.filter(pl.col("date") == as_of).sort("rank").head(MAINLINE_TOP)
-    if today.is_empty():
-        return []
-    dates = sorted(df["date"].unique().to_list(), reverse=True)[:SERIES_DAYS]
-    top_by_day = {
-        d: set(df.filter((pl.col("date") == d) & (pl.col("rank") <= MAINLINE_STREAK_RANK))["member"].to_list())
-        for d in dates
-    }
-    rows = today.to_dicts()
-    names = _name_map(repo, [r["leader_symbol"] for r in rows if r.get("leader_symbol")])
+    top_by_day: dict = {}
+    dates: list = []
+    if data_dir is not None:
+        try:
+            from app.services.market_mainline import load_mainline_history
+
+            df = load_mainline_history(data_dir, "concept")
+            if not df.is_empty() and "date" in df.columns:
+                df = df.filter(pl.col("date") < as_of)
+                dates = sorted(df["date"].unique().to_list(), reverse=True)[:SERIES_DAYS - 1]
+                top_by_day = {
+                    d: set(df.filter((pl.col("date") == d) & (pl.col("rank") <= MAINLINE_STREAK_RANK))["member"].to_list())
+                    for d in dates
+                }
+        except Exception as e:  # noqa: BLE001
+            logger.debug("recap snapshot: mainline history unavailable: %s", e)
     out = []
-    for r in rows:
-        streak = 0
+    for r in items[:MAINLINE_TOP]:
+        streak = 1
         for d in dates:
             if r["member"] not in top_by_day.get(d, set()):
                 break
@@ -219,20 +218,26 @@ def _mainlines(repo, data_dir, as_of: date) -> list[dict]:
             "rank": int(r.get("rank") or 0),
             "limit_up": int(r.get("limit_up_count") or 0),
             "max_boards": int(r.get("max_boards") or 0),
-            "leader": {"symbol": sym, "name": names.get(sym) or sym} if sym else None,
+            "leader": {"symbol": sym, "name": r.get("leader_name") or sym} if sym else None,
             "streak": streak,
         })
     return out
 
 
 def _sector_moves(overview: dict) -> dict:
-    """涨跌幅居前/居后板块(概念 + 行业), 供主线表下方的一行速览。"""
+    """板块涨幅榜(概念 + 行业, 成分股等权涨幅)速览; 进入涨停主线前列的标 mainline。
+
+    涨幅榜只作异动参考, 主线判断以涨停主线为准。
+    """
+    mainline_names = {m["member"] for m in _overview_mainlines(overview)}
+
     def pick(kind_key: str, side: str, n: int) -> list[dict]:
         items = ((overview.get(kind_key) or {}).get(side) or [])[:n]
         return [{
             "name": it.get("name"),
             "pct": (_num(it.get("avg_pct")) or 0) * 100,
             "leader": (it.get("leader") or {}).get("name"),
+            "mainline": it.get("name") in mainline_names,
         } for it in items]
 
     return {
@@ -311,7 +316,8 @@ def build_recap_snapshot(repo, overview: dict, *, now: datetime | None = None) -
         "phase": _phase_info(days),
         "metrics": _build_metrics(days),
         "dates": [d["date"] for d in days],
-        "mainlines": _mainlines(repo, data_dir, as_of) if data_dir else [],
+        "mainlines": _mainlines(data_dir, as_of, overview),
+        "mainline_source": (overview.get("mainlines") or {}).get("source"),
         "sectors": _sector_moves(overview),
         "ladder": _ladder(overview),
         "prev_limit_up": _prev_limit_up_perf(repo, as_of, prev_date),
@@ -381,7 +387,8 @@ def snapshot_prompt_block(snapshot: dict | None) -> str:
 
     mainlines = snapshot.get("mainlines") or []
     if mainlines:
-        lines = ["## 涨停主线(按涨停家数与梯队评分排名)"]
+        live = "; 复盘日主线尚未盘后入库, 按实时涨停数据同公式补算" if snapshot.get("mainline_source") == "live" else ""
+        lines = [f"## 涨停主线(唯一主线口径, 按涨停家数与梯队评分排名{live})"]
         for m in mainlines:
             leader = (m.get("leader") or {}).get("name") or "—"
             lines.append(

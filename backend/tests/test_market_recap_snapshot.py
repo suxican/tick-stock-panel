@@ -130,24 +130,53 @@ def test_intraday_flag_only_for_today_before_close():
 
 
 # ---------------------------------------------------------------- 主线持续天数
+def _overview_with_mainlines(source="history"):
+    ov = _overview()
+    ov["mainlines"] = {"source": source, "items": [
+        {"member": "A", "rank": 1, "score": 90.0, "limit_up_count": 10, "ge2_count": 3, "max_boards": 4,
+         "leader_symbol": "000001.SZ", "leader_name": "龙一", "avg_pct": 0.03},
+        {"member": "B", "rank": 2, "score": 60.0, "limit_up_count": 6, "ge2_count": 1, "max_boards": 2,
+         "leader_symbol": None, "leader_name": None, "avg_pct": 0.01},
+        {"member": "CPO", "rank": 8, "score": 30.0, "limit_up_count": 3, "ge2_count": 0, "max_boards": 1,
+         "leader_symbol": None, "leader_name": None, "avg_pct": 0.04},
+    ]}
+    return ov
+
+
 def test_mainline_streak_counts_consecutive_top_rank_days(tmp_path):
+    """当日主线取自总览(与看板同源); 历史表只用于向前数连续上榜天数。"""
     rows = []
-    for i, d in enumerate(DAYS[-4:]):
-        # A 连续 4 日前 10; B 前两日跌出前 10 后回归
+    for i, d in enumerate(DAYS[-4:-1]):
+        # A 此前连续 3 日前 10; B 只有昨日在前 10
         rows.append({"date": d, "kind": "concept", "member": "A", "rank": 1, "limit_up_count": 10,
                      "max_boards": 4, "leader_symbol": "000001.SZ", "score": 90.0})
-        rows.append({"date": d, "kind": "concept", "member": "B", "rank": 2 if i >= 2 else 20,
+        rows.append({"date": d, "kind": "concept", "member": "B", "rank": 2 if i == 2 else 20,
                      "limit_up_count": 6, "max_boards": 2, "leader_symbol": None, "score": 60.0})
+    # 复盘日历史行与总览不同: 必须以总览为准, 不读历史的当日排名
+    rows.append({"date": AS_OF, "kind": "concept", "member": "历史当日", "rank": 1, "limit_up_count": 1,
+                 "max_boards": 1, "leader_symbol": None, "score": 1.0})
     p = mainline_path(tmp_path)
     p.parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(rows).write_parquet(p)
 
-    s = snap.build_recap_snapshot(_repo(tmp_path, {"000001.SZ": "龙一"}), _overview(), now=AFTER_CLOSE)
+    s = snap.build_recap_snapshot(_repo(tmp_path), _overview_with_mainlines(), now=AFTER_CLOSE)
     by = {m["name"]: m for m in s["mainlines"]}
+    assert "历史当日" not in by
     assert by["A"]["streak"] == 4
     assert by["A"]["leader"] == {"symbol": "000001.SZ", "name": "龙一"}
     assert by["B"]["streak"] == 2
     assert by["B"]["leader"] is None
+    assert s["mainline_source"] == "history"
+
+
+def test_sectors_mark_mainline_and_prompt_notes_live_source(tmp_path):
+    ov = _overview_with_mainlines(source="live")
+    ov["concept_rank"]["leading"].append({"name": "冷门", "avg_pct": 0.05, "leader": {"name": "冷一"}})
+    s = snap.build_recap_snapshot(_repo(tmp_path), ov, now=AFTER_CLOSE)
+    flags = {it["name"]: it["mainline"] for it in s["sectors"]["leading"]}
+    assert flags == {"CPO": True, "冷门": False}
+    text = snap.snapshot_prompt_block(s)
+    assert "唯一主线口径" in text and "同公式补算" in text
 
 
 # ---------------------------------------------------------------- prompt 文本

@@ -683,6 +683,11 @@ export interface OverviewMarket {
     score: number; state: string; label: string; source: 'regime' | 'estimate'; date: string
     subscores: Partial<Record<'profit' | 'speculation' | 'resilience' | 'trend', number>>
   } | null
+  /** 涨停主线(唯一主线口径): history=盘后已入库, live=实时同公式补算 */
+  mainlines?: {
+    source: 'history' | 'live' | null
+    items: { member: string; rank: number; score: number; limit_up_count: number; ge2_count: number; max_boards: number; leader_symbol: string | null; leader_name: string | null; avg_pct: number | null }[]
+  }
   top_gainers: MarketSnapshotRow[]
   top_losers: MarketSnapshotRow[]
   turnover_leaders: MarketSnapshotRow[]
@@ -1016,9 +1021,12 @@ export interface RecapSnapshot {
     leader: { symbol: string; name: string } | null
     streak: number
   }[]
+  /** 复盘日涨停主线来源: history=盘后已入库; live=按实时涨停同公式补算; 旧报告无此字段 */
+  mainline_source?: 'history' | 'live' | null
+  /** 板块涨幅榜(仅作异动参考); mainline=属于涨停主线前列 */
   sectors: {
-    leading: { name: string; pct: number; leader: string | null }[]
-    lagging: { name: string; pct: number; leader: string | null }[]
+    leading: { name: string; pct: number; leader: string | null; mainline?: boolean }[]
+    lagging: { name: string; pct: number; leader: string | null; mainline?: boolean }[]
   }
   ladder: { boards: number; count: number; stocks: { symbol: string; name: string }[] }[]
   prev_limit_up: { count: number; avg_pct: number; up_ratio: number } | null

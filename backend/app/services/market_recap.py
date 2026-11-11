@@ -55,7 +55,7 @@ _SYSTEM_PROMPT = """你是一位有 15 年 A 股短线与波段实战经验的�
 - 没有上一篇复盘时只写一句"无上一交易日复盘可验证"。
 
 ## 🔥 主线与龙头
-表格 `| 方向 | 阶段 | 龙头/梯队 | 判断 |`,最多 4 行。阶段用 首日/发酵/高潮/分歧/退潮(结合"连续 N 日位列前10")。判断不超过 25 字,说清资金是否确认(龙虎榜)、有无补涨或掉队。表后一行"退潮/流出方向:……"。
+表格 `| 方向 | 阶段 | 龙头/梯队 | 判断 |`,最多 4 行。方向只取输入"涨停主线"中的主线;板块涨幅榜里未标【主线】的板块只能写进表后的异动说明,不得列为主线。阶段用 首日/发酵/高潮/分歧/退潮(结合"连续 N 日位列前10")。判断不超过 25 字,说清资金是否确认(龙虎榜)、有无补涨或掉队。表后一行"退潮/流出方向:……"。
 
 ## 🗺️ 明日剧本
 表格 `| 情景 | 触发条件 | 应对 |`,2-3 行(强于预期/符合预期/弱于预期),在情景名后用"(主判断)"标出你认为最可能的一个。触发条件只能用输入"明日剧本可用的触发指标"里的指标,表格中写中文含义(如"开盘半小时成交额 ≥ 5500亿"),不写英文 metric 名;优先用开盘半小时成交额(开盘后即可验证);阈值必须参照该表的今日值与前5日均给出,不得凭空设定。应对写参与方向与参与强度(如"主线核心加大参与""只做分歧转一致""降低参与度、以观望为主"),不点名推荐买入具体个股。
@@ -154,15 +154,22 @@ def _build_breadth_block(overview: dict) -> str:
     return "\n".join(lines)
 
 
-def _build_sector_block(rank: dict, label: str) -> str:
-    """板块排名精简块(领涨/领跌 top5)。"""
+def _mainline_names(overview: dict) -> set[str]:
+    return {m.get("member") for m in (overview.get("mainlines") or {}).get("items") or [] if m.get("member")}
+
+
+def _build_sector_block(rank: dict, label: str, mainline_names: set[str] | None = None) -> str:
+    """板块涨幅榜精简块(领涨/领跌 top5); 属于涨停主线前列的标【主线】。"""
     if not rank:
         return f"### {label}\n(暂无数据)"
+    mainline_names = mainline_names or set()
+
     def _fmt(items):
         if not items:
             return "—"
         return "、".join(
-            f"{it.get('name')}({(it.get('avg_pct') or 0)*100:+.2f}%,领涨:{it.get('leader',{}).get('name','—')})"
+            f"{it.get('name')}{'【主线】' if it.get('name') in mainline_names else ''}"
+            f"({(it.get('avg_pct') or 0)*100:+.2f}%,领涨:{it.get('leader',{}).get('name','—')})"
             for it in items[:5]
         )
     return (
@@ -213,10 +220,8 @@ def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context
         "## 市场情绪",
         _build_emotion_block(overview),
         "",
-        "## 概念板块排名",
-        _build_sector_block(overview.get("concept_rank"), "概念"),
-        "",
-        "## 行业板块排名",
+        "## 板块涨幅榜(成分股等权涨幅, 仅作异动参考; 主线以「涨停主线」为准)",
+        _build_sector_block(overview.get("concept_rank"), "概念", _mainline_names(overview)),
         _build_sector_block(overview.get("industry_rank"), "行业"),
     ])
 

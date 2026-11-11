@@ -173,6 +173,42 @@ def compute_mainline_range(repo, data_dir: Path, start: date, end: date,
     if not enriched_dir.exists():
         return pl.DataFrame()
 
+    limit_rows = (
+        pl.scan_parquet(enriched_dir / "**" / "*.parquet")
+        .select(["date", "symbol", "consecutive_limit_ups", "amount"])
+        .filter(
+            (pl.col("date") >= start) & (pl.col("date") <= end)
+            & (pl.col("consecutive_limit_ups") >= 1)
+        )
+        .collect()
+    )
+    agg = rank_mainlines(repo, limit_rows, kind, filter_cfg=filter_cfg, exclude_st=exclude_st)
+    if "rank" not in agg.columns:
+        # 无涨停/无映射: 空表; 有聚合但无达标主线时保留列结构(与重构前一致)
+        return pl.DataFrame()
+    return (
+        agg.filter(pl.col("rank") <= _TOP_PER_DAY)
+        .with_columns(pl.lit(kind).alias("kind"))
+        .select([
+            "date", "kind", "member", "limit_up_count", "ge2_count",
+            "max_boards", "boards_sum", "rungs_filled", "leader_symbol",
+            "score", "rank",
+        ])
+        .sort(["date", "rank"])
+    )
+
+
+def rank_mainlines(repo, limit_rows: pl.DataFrame, kind: str = "concept",
+                   filter_cfg: dict | None = None,
+                   exclude_st: bool | None = None) -> pl.DataFrame:
+    """涨停股(date/symbol/consecutive_limit_ups/amount, 连板>=1) → 每日主线排名。
+
+    盘后回填(compute_mainline_range)与盘中补算(mainline_for_day)共用, 保证同一天
+    无论何时计算都是同一口径。返回全部达标主线(不截断), 含 score/rank。
+    """
+    if limit_rows.is_empty():
+        return pl.DataFrame()
+
     # _load_concept_map_df 恒返回 (map_df, count), 命中缓存不再返回裸 DataFrame (#186)
     map_df, _ = _load_concept_map_df(repo, kind)
     if map_df.is_empty():
@@ -186,18 +222,6 @@ def compute_mainline_range(repo, data_dir: Path, start: date, end: date,
         map_df = map_df.join(allowed, on=kind, how="semi")
         if map_df.is_empty():
             return pl.DataFrame()
-
-    limit_rows = (
-        pl.scan_parquet(enriched_dir / "**" / "*.parquet")
-        .select(["date", "symbol", "consecutive_limit_ups", "amount"])
-        .filter(
-            (pl.col("date") >= start) & (pl.col("date") <= end)
-            & (pl.col("consecutive_limit_ups") >= 1)
-        )
-        .collect()
-    )
-    if limit_rows.is_empty():
-        return pl.DataFrame()
 
     limit_rows = limit_rows.with_columns(pl.col("symbol").str.to_uppercase().alias("_sym_up"))
 
@@ -245,18 +269,50 @@ def compute_mainline_range(repo, data_dir: Path, start: date, end: date,
     )
 
     # 截面 rank 归一(0-1) → 加权主线分(0-100)。分母 max(n-1,1) 保证单概念日不除零。
-    agg = score_mainline_frame(agg)
-    result = (
-        agg.filter(pl.col("rank") <= _TOP_PER_DAY)
-        .with_columns(pl.lit(kind).alias("kind"))
-        .select([
-            "date", "kind", "member", "limit_up_count", "ge2_count",
-            "max_boards", "boards_sum", "rungs_filled", "leader_symbol",
-            "score", "rank",
-        ])
-        .sort(["date", "rank"])
-    )
-    return result
+    return score_mainline_frame(agg)
+
+
+_DAY_FIELDS = ("member", "rank", "score", "limit_up_count", "ge2_count", "max_boards", "leader_symbol")
+
+
+def mainline_for_day(repo, as_of: date, rows: list[dict], kind: str = "concept",
+                     top: int = 10) -> tuple[list[dict], str | None]:
+    """复盘日涨停主线前 top 名 —— 看板/复盘的唯一主线来源。
+
+    mainline_history 已有该日 → 取表值(source="history"); 否则用当日行情行
+    (含 symbol/consecutive_limit_ups/amount) 走同一 rank_mainlines 补算
+    (source="live")。无数据返回 ([], None)。
+    """
+    p = mainline_path(repo.store.data_dir)
+    if p.exists():
+        try:
+            day = (
+                pl.scan_parquet(p)
+                .filter((pl.col("kind") == kind) & (pl.col("date") == as_of) & (pl.col("rank") <= top))
+                .collect()
+            )
+            if not day.is_empty():
+                return day.sort("rank").select(list(_DAY_FIELDS)).to_dicts(), "history"
+        except Exception as e:  # noqa: BLE001
+            logger.warning("mainline_for_day: read history failed: %s", e)
+
+    limit = [
+        {
+            "date": as_of,
+            "symbol": str(r.get("symbol") or ""),
+            "consecutive_limit_ups": int(r.get("consecutive_limit_ups") or 0),
+            "amount": float(r.get("amount") or 0.0),
+        }
+        for r in rows
+        if r.get("symbol") and (r.get("consecutive_limit_ups") or 0) >= 1
+    ]
+    if not limit:
+        return [], None
+    agg = rank_mainlines(repo, pl.DataFrame(limit), kind)
+    if agg.is_empty():
+        return [], None
+    day = agg.filter(pl.col("rank") <= top).sort("rank").select(list(_DAY_FIELDS))
+    return day.to_dicts(), "live"
 
 
 def replace_mainline_range(data_dir: Path, start: date, end: date, kind: str, new_rows: pl.DataFrame) -> None:

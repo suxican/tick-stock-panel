@@ -3,7 +3,7 @@
  * AI 正文只写判断与计划, 数字统一在这里呈现, 避免模型转抄出错与重复。
  *
  * 区块: 周期状态条 / 核心指标对比表(含近 10 日迷你走势) / 成交额与涨停走势图 /
- *       涨停主线表 + 涨跌幅居前板块 / 连板梯队。
+ *       涨停主线表 + 板块涨幅榜(标注是否属于主线) / 连板梯队。
  */
 import { useMemo } from 'react'
 import type { EChartsOption } from 'echarts'
@@ -132,6 +132,7 @@ function TrendChart({ snapshot }: { snapshot: RecapSnapshot }) {
 
 function Mainlines({ snapshot, onOpenStock }: { snapshot: RecapSnapshot; onOpenStock?: (symbol: string) => void }) {
   const { mainlines, sectors } = snapshot
+  const live = snapshot.mainline_source === 'live'
   return (
     <div className="min-w-0 space-y-2">
       {mainlines.length > 0 ? (
@@ -139,7 +140,9 @@ function Mainlines({ snapshot, onOpenStock }: { snapshot: RecapSnapshot; onOpenS
           <table className="w-full text-[12px]">
             <thead>
               <tr className="text-[11px] text-muted">
-                <th className="py-1 pr-2 text-left font-normal">涨停主线</th>
+                <th className="py-1 pr-2 text-left font-normal" title={live ? '复盘日主线尚未盘后入库, 按实时涨停数据同公式计算' : undefined}>
+                  涨停主线{live && <span className="ml-1 text-[10px]">· 盘中</span>}
+                </th>
                 <th className="px-2 py-1 text-right font-normal">涨停</th>
                 <th className="px-2 py-1 text-right font-normal">最高</th>
                 <th className="px-2 py-1 text-left font-normal">龙头</th>
@@ -168,10 +171,10 @@ function Mainlines({ snapshot, onOpenStock }: { snapshot: RecapSnapshot; onOpenS
           </table>
         </div>
       ) : (
-        <div className="text-[11px] text-muted">复盘日涨停主线尚未计算(盘后管道完成后可用)</div>
+        <div className="text-[11px] text-muted">复盘日无达标涨停主线</div>
       )}
-      <SectorChips label="涨幅居前" items={sectors.leading} />
-      <SectorChips label="跌幅居前" items={sectors.lagging} />
+      <SectorChips label="板块领涨" items={sectors.leading} />
+      <SectorChips label="板块领跌" items={sectors.lagging} />
     </div>
   )
 }
@@ -182,7 +185,11 @@ function SectorChips({ label, items }: { label: string; items: RecapSnapshot['se
     <div className="flex flex-wrap items-center gap-1 text-[11px]">
       <span className="mr-1 text-muted">{label}</span>
       {items.map(s => (
-        <span key={s.name} className="rounded bg-elevated/60 px-1.5 py-0.5 text-secondary" title={s.leader ? `领涨: ${s.leader}` : undefined}>
+        <span
+          key={s.name}
+          className={cn('rounded px-1.5 py-0.5 text-secondary', s.mainline ? 'bg-accent/10 ring-1 ring-accent/30' : 'bg-elevated/60')}
+          title={[s.mainline ? '属于涨停主线' : '涨幅异动, 未进入涨停主线', s.leader ? `领涨: ${s.leader}` : ''].filter(Boolean).join(' · ')}
+        >
           {s.name} <span className={cn('font-mono', priceColorClass(s.pct))}>{s.pct > 0 ? '+' : ''}{s.pct.toFixed(2)}%</span>
         </span>
       ))}

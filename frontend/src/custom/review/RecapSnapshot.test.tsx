@@ -87,7 +87,19 @@ it('marks intraday snapshots and missing mainline data', () => {
   ))
   const text = host.textContent ?? ''
   expect(text).toContain('盘中快照 11:30')
-  expect(text).toContain('涨停主线尚未计算')
+  expect(text).toContain('无达标涨停主线')
+})
+
+it('labels live-computed mainlines and marks sector chips that belong to a mainline', () => {
+  act(() => root.render(<RecapSnapshotPanel snapshot={{
+    ...snapshot,
+    mainline_source: 'live',
+    sectors: { leading: [{ name: '特斯拉概念', pct: 3.2, leader: null, mainline: true }, { name: 'CPO', pct: 4.64, leader: '光一', mainline: false }], lagging: [] },
+  }} />))
+  expect(host.textContent).toContain('涨停主线· 盘中')
+  const chips = Array.from(host.querySelectorAll('span[title]'))
+  expect(chips.find(c => c.textContent?.startsWith('特斯拉概念'))?.getAttribute('title')).toContain('属于涨停主线')
+  expect(chips.find(c => c.textContent?.startsWith('CPO'))?.getAttribute('title')).toContain('未进入涨停主线')
 })
 
 it('renders the system plan check with hit-rate stats', () => {
