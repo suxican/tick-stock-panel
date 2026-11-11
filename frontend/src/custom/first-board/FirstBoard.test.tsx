@@ -1139,7 +1139,8 @@ it('shows the reference-day sentiment phase and mainlines, and filters candidate
   await render()
   const status = host.querySelector('section[aria-label="盯盘状态"]')!
   // 缺失的封板率显示为占位符，不显示为 0%。
-  expect(status.textContent).toContain('情绪阶段：主升高度 7 板 · 晋级 31% · 封板 —')
+  // 没有盘中梯队（旧后端）时，阶段标签附带昨日收盘梯队；缺失的封板率显示占位符而非 0%。
+  expect(status.textContent).toContain('情绪阶段（昨日）：主升高度 7 板 · 晋级 31% · 封板 —')
   expect(status.textContent).toContain('昨日主线：机器人')
   const tags = [...host.querySelectorAll('span')].filter(node => node.textContent === '主线')
   expect(tags).toHaveLength(1)
@@ -1169,6 +1170,21 @@ it('shows seal quality only for candidates at the limit price and keeps unknown 
   // 封成比为小数制 0.2，须显示为 20%。
   expect(host.textContent).toContain('封板质量：真封，涨停价上卖一无挂单；封单 1.32亿 元（12,000 手），封成比 20.00%，5 秒前更新')
   expect(host.textContent).toContain('封板质量：封单数据不可用，五档盘口封单数据未就绪')
+})
+it('shows the live ladder beside the closed-day phase, using the dashboard counts', async () => {
+  const base = snapshot()
+  calls.firstBoardSnapshot.mockResolvedValue({ ...base,
+    environment: { ...base.environment, date: '2026-11-10', phase: 'repair', phase_label: '修复', ladder: { max_consecutive: 7, promo_rate: .36, seal_rate: .82 } },
+    market_ladder: { as_of: '2026-11-11', observed_at: '2026-11-11T10:00:00+08:00', live: true, sealed_corrected: false, limit_up: 51, broken: 23, limit_down: 1,
+      max_consecutive: 4, first_board: 35, ge2_count: 16, seal_rate: .6892, promo_rate: .25, promo_pool: 48 } })
+  await render()
+  const status = host.querySelector('section[aria-label="盯盘状态"]')!
+  expect(status.textContent).toContain('情绪阶段（昨日）：修复')
+  // 有盘中数据时，昨日梯队只在悬停说明里，不与当日数字并列。
+  expect(status.textContent).not.toContain('高度 7 板')
+  expect(status.textContent).toContain('盘中梯队：高度 4 板 · 晋级 25% · 封板 69% · 涨停 51')
+  const chip = [...status.querySelectorAll<HTMLElement>('span[title]')].find(node => node.textContent?.startsWith('盘中梯队'))!
+  expect(chip.title).toContain('炸板 23 家，跌停 1 家')
 })
 it('hides sentiment and mainline chips for snapshots from an older backend', async () => {
   await render()

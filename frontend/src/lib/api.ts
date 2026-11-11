@@ -6735,6 +6735,12 @@ export interface FirstBoardSnapshot {
     phase?: FirstBoardPhase | null; phase_label?: string
     ladder?: Partial<Record<'max_consecutive' | 'first_board' | 'ge2_count' | 'promo_rate' | 'seal_rate' | 'limit_up' | 'limit_down' | 'broken_limit', number | null>>
   }
+  /** 当前行情的涨停梯队，口径同市场看板；比例为小数制，缺失为 null。旧后端缺省。 */
+  market_ladder?: {
+    as_of: string; observed_at: string; live: boolean; sealed_corrected: boolean
+    limit_up: number | null; broken: number | null; limit_down: number | null; max_consecutive: number | null
+    first_board: number | null; ge2_count: number | null; seal_rate: number | null; promo_rate: number | null; promo_pool: number | null
+  }
   mainlines?: { date?: string | null; status?: 'ready' | 'unavailable'; reason?: string; top_n?: number; items?: FirstBoardMainlineItem[] }
   /** role_hidden_count：因不属于所选角色而未列出的股票数，旧后端缺省。 */
   coverage: { candidate_count: number; symbol_count: number; quote_count: number; fresh_count: number; role_hidden_count?: number }

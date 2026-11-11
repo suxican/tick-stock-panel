@@ -16,7 +16,7 @@ from pathlib import Path
 import polars as pl
 
 from app.services.market_mainline import _industry_member, load_mainline_history
-from app.services.market_phase import PHASE_LABELS
+from app.services.market_phase import PHASE_LABELS, PROMO_MIN_POOL
 from app.services.regime_builder import STATE_LABELS, load_regime_history
 from app.services.rps_rotation import _load_concept_map_df
 
@@ -86,6 +86,62 @@ def load_environment(
         elif phase not in allowed_phases:
             result.update(allowed=False,
                           reason=f"参考交易日情绪阶段为{PHASE_LABELS[phase]}, 不在允许范围")
+    return result
+
+
+def previous_boards(history: pl.DataFrame, reference_date: date | None) -> dict[str, int] | None:
+    """参考交易日(T-1)收盘仍在连板的股票及板数, 供盘中晋级率; 缺列或缺日返回 None。"""
+    if (type(reference_date) is not date or history.is_empty()
+            or not {"symbol", "date", "consecutive_limit_ups"}.issubset(history.columns)):
+        return None
+    day = history.filter(pl.col("date") == reference_date)
+    if day.is_empty():
+        return None
+    boards = day.filter(pl.col("consecutive_limit_ups") >= 1).select("symbol", "consecutive_limit_ups")
+    return {symbol: int(value) for symbol, value in boards.iter_rows()}
+
+
+def live_ladder(current: pl.DataFrame, prior: dict[str, int] | None, *,
+                fake_up: int | None = None, fake_down: int | None = None) -> dict:
+    """当前行情的涨停梯队, 计数口径与市场看板一致(涨停含连板, 封板率=涨停/(涨停+炸板))。
+
+    fake_up/fake_down 为五档判定的假涨停/假跌停家数, 就绪时扣除(同看板)。
+    比例为小数制; 缺少炸板信号或昨日连板池时对应比例为 None, 不填零。
+    """
+    result = {key: None for key in ("limit_up", "broken", "limit_down", "max_consecutive", "first_board",
+                                     "ge2_count", "seal_rate", "promo_rate", "promo_pool")}
+    result["sealed_corrected"] = fake_up is not None
+    if current.is_empty() or "symbol" not in current.columns or "consecutive_limit_ups" not in current.columns:
+        return result
+
+    def flag(column: str) -> pl.Expr:
+        if column not in current.columns:
+            return pl.lit(False)
+        return pl.col(column).cast(pl.Boolean, strict=False).fill_null(False)
+
+    consec = pl.col("consecutive_limit_ups").cast(pl.Int64, strict=False).fill_null(0)
+    row = current.select(
+        (flag("signal_limit_up") | (consec > 0)).sum().alias("limit_up"),
+        flag("signal_broken_limit_up").sum().alias("broken"),
+        flag("signal_limit_down").sum().alias("limit_down"),
+        consec.max().alias("max_consecutive"),
+        (consec == 1).sum().alias("first_board"),
+        (consec >= 2).sum().alias("ge2_count"),
+    ).row(0, named=True)
+    limit_up = max(0, int(row["limit_up"]) - (fake_up or 0))
+    limit_down = max(0, int(row["limit_down"]) - (fake_down or 0))
+    broken = int(row["broken"]) if "signal_broken_limit_up" in current.columns else None
+    result.update(limit_up=limit_up, broken=broken, limit_down=limit_down,
+                  max_consecutive=int(row["max_consecutive"] or 0), first_board=int(row["first_board"]),
+                  ge2_count=int(row["ge2_count"]))
+    if broken is not None and limit_up + broken > 0:
+        result["seal_rate"] = limit_up / (limit_up + broken)
+    if prior is not None:
+        today = dict(current.select("symbol", consec.alias("_c")).iter_rows())
+        promoted = sum(1 for symbol, boards in prior.items() if today.get(symbol) == boards + 1)
+        result["promo_pool"] = len(prior)
+        # 与市场阶段同口径: 昨日连板池不足 10 家时晋级率不可比。
+        result["promo_rate"] = promoted / len(prior) if len(prior) >= PROMO_MIN_POOL else None
     return result
 
 

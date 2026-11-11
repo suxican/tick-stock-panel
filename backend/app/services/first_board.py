@@ -27,11 +27,13 @@ from app.services.first_board_context import (
     SECTOR_MIN_QUOTE_COVERAGE,
     SECTOR_PROXY_NOTE,
     evaluate_sector_peers,
+    live_ladder,
     load_environment,
     load_mainline_members,
     load_mainlines,
     load_sector_members,
     mainline_evidence,
+    previous_boards,
 )
 from app.services.first_board_data_status import build_data_status, radar_clocks
 from app.services.first_board_feedback import FirstBoardFeedback, empty_feedback, expire_feedback
@@ -228,6 +230,7 @@ class FirstBoardService:
         self._environment: dict = {}
         self._mainlines: dict = {}
         self._mainline_members: dict[str, list[dict]] = {}
+        self._previous_boards: dict[str, int] | None = None
         self._latest_prices: dict[str, float] = {}
         self._latest_quote_times: dict[str, str] = {}
         self._latest_limits: dict[str, float] = {}
@@ -478,6 +481,7 @@ class FirstBoardService:
             mainlines = {"date": None, "status": "unavailable", "reason": "主线读取失败, 归属待确认", "items": []}
             mainline_members = {}
         self._mainlines, self._mainline_members = mainlines, mainline_members
+        self._previous_boards = previous_boards(history, reference)
         self._candidates, self._environment, self._sectors = candidates, environment, sectors
         self._float_shares = float_shares
         self._prepared_key, self._prepared_at = key, time.monotonic()
@@ -863,9 +867,20 @@ class FirstBoardService:
             except Exception:  # noqa: BLE001 - optional radar must not disable the original buy gate
                 logger.warning("首板雷达暂不可用", exc_info=True)
                 radar = {}
-            # 只有已到涨停价的候选需要封单判定; 没有时不读盘口表。
-            sealed = (load_sealed(self._depth_service, as_of)
-                      if any(row["state"] == "sealed" for row in rows) else None)
+            # 封单表盘中仅为内存浅拷贝; 同时用于候选封板质量和全市场假涨停修正。
+            sealed = load_sealed(self._depth_service, as_of)
+            fake_down = None
+            if sealed["ready"]:
+                try:
+                    fake_down = sum(1 for item in self._depth_service.get_sealed_map(as_of, is_down=True).values()
+                                    if item.get("sealed") is False)
+                except Exception:  # noqa: BLE001 - 跌停修正失败只影响跌停家数
+                    logger.warning("首板跌停封单读取失败", exc_info=True)
+            ladder = live_ladder(current, self._previous_boards,
+                                 fake_up=sum(1 for item in sealed["entries"].values() if item.get("sealed") is False)
+                                 if sealed["ready"] else None,
+                                 fake_down=fake_down)
+            ladder.update(as_of=str(as_of), observed_at=now.isoformat(), live=live)
             status_inputs = {"clocks": radar_clocks(radar), "minute": dict(self._attention_input),
                              "membership_reason": self._attention_data.reason}
             messages: list[dict] = []
@@ -918,7 +933,7 @@ class FirstBoardService:
                         blocked.append(role_reason)
                     if excluded:
                         role_hidden.add((symbol, row["pattern"]))
-                    if sealed is not None and row["state"] == "sealed":
+                    if row["state"] == "sealed":
                         quality = seal_quality(sealed, symbol, price=row.get("price"),
                                                amount=row["evidence"].get("amount"), live=live)
                         row["seal_quality"] = quality
@@ -1043,6 +1058,7 @@ class FirstBoardService:
                     "rows": sorted(visible_rows, key=lambda row: (not row["can_buy"], row["symbol"], row["pattern"])),
                     "environment": dict(self._environment),
                     "mainlines": copy.deepcopy(self._mainlines),
+                    "market_ladder": ladder,
                     "yesterday_feedback": feedback,
                     "coverage": {"candidate_count": len(visible_rows),
                                  "symbol_count": len({row["symbol"] for row in visible_rows}),

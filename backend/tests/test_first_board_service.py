@@ -813,13 +813,14 @@ def test_seal_quality_is_attached_only_at_the_limit_price_and_never_gates_buys(s
                                              get_sealed_map=sealed_map)
     service.process_snapshot(quotes(), NOW.date(), now=NOW)
     row = service.snapshot()["rows"][0]
-    # 临近涨停时不读盘口表, 买入提示不受封单数据影响。
-    assert row["state"] == "approaching" and row["can_buy"] and "seal_quality" not in row and not calls
+    # 临近涨停的候选没有封板质量, 买入提示不受封单数据影响。
+    assert row["state"] == "approaching" and row["can_buy"] and "seal_quality" not in row
+    calls.clear()
 
     service.process_snapshot(quotes(raw_close=11.0, close=11.0, raw_high=11.0, change_pct=.1),
                              NOW.date(), now=NOW + timedelta(seconds=5))
     row = service.snapshot()["rows"][0]
-    assert row["state"] == "sealed" and calls == [False]
+    assert row["state"] == "sealed" and False in calls
     quality = row["seal_quality"]
     assert quality["status"] == "fake" and quality["vol_lots"] == 500
     assert quality["sealed_amount"] == pytest.approx(500 * 100 * 11.0)
@@ -832,3 +833,16 @@ def test_seal_quality_is_attached_only_at_the_limit_price_and_never_gates_buys(s
     service.process_snapshot(quotes(raw_close=11.0, close=11.0, raw_high=11.0, change_pct=.1),
                              NOW.date(), now=NOW + timedelta(seconds=10))
     assert service.snapshot()["rows"][0]["seal_quality"]["status"] == "unavailable"
+
+
+def test_snapshot_carries_live_ladder_with_dashboard_counting(service):
+    service._previous_boards = {SYMBOL: 1}
+    frame = quotes(raw_close=11.0, close=11.0, raw_high=11.0, change_pct=.1).with_columns(
+        pl.lit(2).alias("consecutive_limit_ups"), pl.lit(True).alias("signal_limit_up"),
+        pl.lit(False).alias("signal_broken_limit_up"), pl.lit(False).alias("signal_limit_down"))
+    service.process_snapshot(frame, NOW.date(), now=NOW)
+    ladder = service.snapshot()["market_ladder"]
+    assert ladder["limit_up"] == 1 and ladder["max_consecutive"] == 2 and ladder["seal_rate"] == 1.0
+    # 昨日连板池不足 10 家: 晋级率不可比, 只给出池大小。
+    assert ladder["promo_pool"] == 1 and ladder["promo_rate"] is None
+    assert ladder["live"] is True and ladder["as_of"] == str(NOW.date())

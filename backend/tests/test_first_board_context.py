@@ -271,3 +271,41 @@ def test_missing_mainline_history_is_unknown_not_a_miss(tmp_path, monkeypatch):
     assert mainlines["status"] == "unavailable" and mainlines["items"] == []
     assert context.mainline_evidence(mainlines, {}, "600001.SH")["hit"] is None
     assert context.load_mainlines(tmp_path, as_of=TODAY, reference_date=TODAY)["status"] == "unavailable"
+
+
+def ladder_frame(rows):
+    return pl.DataFrame(rows, schema={"symbol": pl.String, "consecutive_limit_ups": pl.Int64,
+                                      "signal_limit_up": pl.Boolean, "signal_broken_limit_up": pl.Boolean,
+                                      "signal_limit_down": pl.Boolean}, orient="row")
+
+
+def test_live_ladder_matches_dashboard_counting_and_promotion():
+    prior = {f"6000{i:02d}.SH": 1 for i in range(10)} | {"600099.SH": 3}
+    rows = [(f"6000{i:02d}.SH", 2 if i < 4 else 0, i < 4, i in (4, 5), False) for i in range(10)]
+    rows += [("600099.SH", 4, True, False, False), ("600100.SH", 1, True, False, False),
+             ("600101.SH", 0, False, False, True), ("600102.SH", None, None, None, None)]
+    ladder = context.live_ladder(ladder_frame(rows), prior)
+    assert (ladder["limit_up"], ladder["broken"], ladder["limit_down"]) == (6, 2, 1)
+    assert (ladder["max_consecutive"], ladder["first_board"], ladder["ge2_count"]) == (4, 1, 5)
+    assert ladder["seal_rate"] == pytest.approx(6 / 8)
+    # 11 只昨日连板中 4 只一进二、1 只三进四。
+    assert ladder["promo_pool"] == 11 and ladder["promo_rate"] == pytest.approx(5 / 11)
+    corrected = context.live_ladder(ladder_frame(rows), prior, fake_up=2, fake_down=1)
+    assert corrected["limit_up"] == 4 and corrected["limit_down"] == 0 and corrected["sealed_corrected"]
+
+
+def test_live_ladder_keeps_unknowns_instead_of_zero():
+    frame = pl.DataFrame({"symbol": ["600000.SH"], "consecutive_limit_ups": [1]})
+    ladder = context.live_ladder(frame, None)
+    # 用户删除炸板信号定义后: 炸板与封板率未知, 涨停仍按连板列计。
+    assert ladder["limit_up"] == 1 and ladder["broken"] is None and ladder["seal_rate"] is None
+    assert ladder["promo_rate"] is None and ladder["promo_pool"] is None
+    assert context.live_ladder(pl.DataFrame(), None)["limit_up"] is None
+
+
+def test_previous_boards_reads_only_the_reference_day():
+    history = pl.DataFrame({"symbol": ["600000.SH", "600001.SH", "600000.SH"],
+                            "date": [REFERENCE, REFERENCE, TODAY], "consecutive_limit_ups": [2, 0, 3]})
+    assert context.previous_boards(history, REFERENCE) == {"600000.SH": 2}
+    assert context.previous_boards(history, date(2026, 10, 1)) is None
+    assert context.previous_boards(history.drop("consecutive_limit_ups"), REFERENCE) is None

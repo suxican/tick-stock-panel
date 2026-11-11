@@ -41,6 +41,7 @@ export function LiveStatus({ data, retained }: { data: FirstBoardSnapshot; retai
   const showMessage = data.status !== 'ready'
   const env = data.environment
   const ladder = env.ladder
+  const live = data.market_ladder
   const whole = (value?: number | null) => value == null ? '—' : String(Math.round(value))
   const ratio = (value?: number | null) => value == null ? '—' : `${(value * 100).toFixed(0)}%`
   const mainlines = data.mainlines?.items ?? []
@@ -50,8 +51,12 @@ export function LiveStatus({ data, retained }: { data: FirstBoardSnapshot; retai
       <div className="flex flex-wrap items-center gap-2">
         {realtime && <Chip tone={realtime[0]} title={status?.realtime_reason ?? undefined}>{realtime[1]}</Chip>}
         <Chip tone={env.allowed ? 'ok' : 'bad'} title={env.reason}>市场环境：{env.label || '待确认'}{env.date ? `（${env.date}）` : ''}<span className="sr-only">{env.allowed ? '环境允许提示' : '环境暂不允许提示'}</span></Chip>
-        {env.phase_label && <Chip tone="neutral" title={ladder ? `参考交易日连板梯队：首板 ${whole(ladder.first_board)} 家，二板以上 ${whole(ladder.ge2_count)} 家，涨停 ${whole(ladder.limit_up)} 家，炸板 ${whole(ladder.broken_limit)} 家，跌停 ${whole(ladder.limit_down)} 家` : undefined}>
-          情绪阶段：{env.phase_label}{ladder && <span className="tabular-nums text-secondary">高度 {whole(ladder.max_consecutive)} 板 · 晋级 {ratio(ladder.promo_rate)} · 封板 {ratio(ladder.seal_rate)}</span>}
+        {/* 阶段是多日收盘平滑后的周期位置，只能取上一完成交易日；当日强弱看右侧盘中梯队。 */}
+        {env.phase_label && <Chip tone="neutral" title={ladder ? `${env.date ?? '参考交易日'} 收盘连板梯队：高度 ${whole(ladder.max_consecutive)} 板，晋级 ${ratio(ladder.promo_rate)}，封板 ${ratio(ladder.seal_rate)}；首板 ${whole(ladder.first_board)} 家，二板以上 ${whole(ladder.ge2_count)} 家，涨停 ${whole(ladder.limit_up)} 家，炸板 ${whole(ladder.broken_limit)} 家，跌停 ${whole(ladder.limit_down)} 家` : undefined}>
+          情绪阶段（昨日）：{env.phase_label}{ladder && !live && <span className="tabular-nums text-secondary">高度 {whole(ladder.max_consecutive)} 板 · 晋级 {ratio(ladder.promo_rate)} · 封板 {ratio(ladder.seal_rate)}</span>}
+        </Chip>}
+        {live && <Chip tone="neutral" title={`${live.live ? '盘中实时' : '最近行情'}（${live.as_of ?? ''}，快照 ${stamp(live.observed_at)}）：涨停 ${whole(live.limit_up)} 家，炸板 ${whole(live.broken)} 家，跌停 ${whole(live.limit_down)} 家；首板 ${whole(live.first_board)} 家，二板以上 ${whole(live.ge2_count)} 家；昨日连板 ${whole(live.promo_pool)} 家${live.sealed_corrected ? '；已按五档盘口扣除假涨停' : ''}。口径同市场看板。`}>
+          {live.live ? '盘中梯队' : '今日梯队'}：<span className="tabular-nums">高度 {whole(live.max_consecutive)} 板 · 晋级 {ratio(live.promo_rate)} · 封板 {ratio(live.seal_rate)} · 涨停 {whole(live.limit_up)}</span>
         </Chip>}
         {data.mainlines && <Chip tone="neutral" title={mainlines.length ? mainlines.map(item => `${item.kind === 'industry' ? '行业' : '概念'}第 ${item.rank}：${item.name}（涨停 ${whole(item.limit_up_count)} 家，最高 ${whole(item.max_boards)} 板）`).join('；') : data.mainlines.reason}>
           <span className="max-w-64 truncate">昨日主线：{mainlines.length ? (conceptLines.length ? conceptLines : mainlines).slice(0, 3).map(item => item.name).join('、') : '待确认'}</span>
