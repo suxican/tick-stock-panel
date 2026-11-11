@@ -262,6 +262,11 @@ foreach ($f in @($BackendOutLog, $BackendErrLog, $FrontendOutLog, $FrontendErrLo
     Remove-Item $f -Force -ErrorAction SilentlyContinue
 }
 
+# 子进程 stdin 指向空文件: 否则它们与本脚本共用控制台输入, vite 会绑定
+# 键盘快捷键并抢先读走按键 (含 Ctrl-C), 主循环的 ReadKey 收不到, Ctrl-C 失效。
+$ChildStdin = Join-Path $LogDir 'dev.stdin'
+Set-Content -Path $ChildStdin -Value $null -NoNewline
+
 $env:PYTHONUNBUFFERED = '1'
 # Start-Process 的 -ArgumentList 按空格拼接, 含空格的路径必须自带引号
 function Quote-Arg($value) {
@@ -383,6 +388,7 @@ try {
         -ArgumentList $BackendArgs `
         -WorkingDirectory $BackendDir `
         -RedirectStandardOutput $BackendOutLog `
+        -RedirectStandardInput  $ChildStdin `
         -RedirectStandardError  $BackendErrLog `
         -NoNewWindow -PassThru
 
@@ -395,6 +401,7 @@ try {
         -ArgumentList @('/c', $frontendCmd) `
         -WorkingDirectory $FrontendDir `
         -RedirectStandardOutput $FrontendOutLog `
+        -RedirectStandardInput  $ChildStdin `
         -RedirectStandardError  $FrontendErrLog `
         -NoNewWindow -PassThru
 
