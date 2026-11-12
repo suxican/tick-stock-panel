@@ -228,7 +228,7 @@ export const QK = {
   // AI 大盘复盘
   reviewReports:        ['review-reports'] as const,
   reviewIntradayCheck:  ['review-intraday-check'] as const,
-  reviewBellwethers:    ['review-bellwethers'] as const,
+  reviewBellwethers:    (scope: string, groupId?: string | null) => ['review-bellwethers', scope, groupId ?? ''] as const,
 
   // 冻结报告按唯一 ID 隔离，行情 SSE 不改写历史决策。
   marketGameReports:    ['market-game-reports'] as const,

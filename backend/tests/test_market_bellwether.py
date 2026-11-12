@@ -121,6 +121,15 @@ def test_verdict_follows_the_weakest_signals(signals, key):
     assert bw.verdict(signals)["key"] == key
 
 
+def test_one_stock_with_two_roles_counts_once():
+    both = [{"symbol": DRAGON, "roles": [{"key": "leader"}, {"key": "core"}], "signal": "strong"}]
+    assert bw.role_signals(both, ("leader", "core")) == {"leader": "strong", "core": "unknown"}
+    # 只靠一只股票不能凑出"两类走强"的进攻
+    assert bw.verdict(bw.role_signals(both, ("leader", "core")) | {"breadth": "unknown"})["key"] == "unknown"
+    shared = [*both, {"symbol": LEADER, "roles": [{"key": "core"}], "signal": "weak"}]
+    assert bw.role_signals(shared, ("leader", "core")) == {"leader": "strong", "core": "weak"}
+
+
 def test_role_signal_weak_half_wins_and_feedback_thresholds():
     items = [{"roles": [{"key": "leader"}], "signal": "strong"},
              {"roles": [{"key": "leader"}], "signal": "weak"},
@@ -269,4 +278,184 @@ def test_api_returns_snapshot_and_short_caches(env, monkeypatch):
     assert body["status"] == "ready" and body["items"][0]["symbol"] == DRAGON
     client.get("/api/market-recap/bellwethers")
     assert len(calls) == 1
+    bw.invalidate_cache()
+
+
+# ================================================================ 持仓 / 自选所属板块
+MINE, R1, R2, C1, C2, X1, NOMAP = (
+    "600101.SH", "600102.SH", "600103.SH", "600104.SH", "600105.SH", "600106.SH", "600107.SH")
+WIDE = [f"60020{i}.SH" for i in range(6)]
+FILTER = {"min_members": 1, "max_members": 5, "blacklist": []}
+
+
+def _user_prev() -> pl.DataFrame:
+    rows = {MINE: (0, 1e8, .01), R1: (2, 5e8, .10), R2: (0, 20e8, .03), C1: (0, 2e8, .02),
+            C2: (0, 1e8, .05), X1: (1, 3e8, .10), NOMAP: (0, 1e8, 0.)} | {w: (0, 1e8, 0.) for w in WIDE}
+    return pl.DataFrame({
+        "symbol": list(rows), "date": [REFERENCE] * len(rows),
+        "consecutive_limit_ups": [v[0] for v in rows.values()],
+        "amount": [v[1] for v in rows.values()], "change_pct": [v[2] for v in rows.values()],
+        "signal_limit_up": [v[0] >= 1 for v in rows.values()],
+        "signal_broken_limit_up": [False] * len(rows),
+    })
+
+
+def _raw_maps() -> dict[str, pl.DataFrame]:
+    concept = ([(s, "机器人") for s in (MINE, R1, R2, "600101")]
+               + [(s, "冷门") for s in (MINE, C1, C2)] + [(s, "第三") for s in (MINE, X1)]
+               + [(s, "宽基") for s in [MINE, *WIDE]])
+    industry = [(MINE, "电子-半导体-数字芯片"), (C1, "银行-国有大型银行-国有银行"),
+                ("600104", "银行-国有大型银行-国有银行")]
+    return {kind: pl.DataFrame({"_sym_up": [p[0] for p in pairs], kind: [p[1] for p in pairs]})
+            for kind, pairs in (("concept", concept), ("industry", industry))}
+
+
+def _maps() -> dict[str, pl.DataFrame]:
+    return {kind: bw.sector_map(frame, kind, FILTER) for kind, frame in _raw_maps().items()}
+
+
+RANKS = {("concept", "机器人"): 1}
+
+
+def _by_name(sectors):
+    return {sector["name"]: sector for sector in sectors}
+
+
+def _roles_of(sector):
+    return [(item["symbol"], [role["key"] for role in item["roles"]]) for item in sector["items"]]
+
+
+def test_sector_map_filters_broad_tags_and_truncates_industry():
+    maps = _maps()
+    assert "宽基" not in maps["concept"]["sector"].to_list()
+    assert sorted(maps["industry"]["sector"].unique().to_list()) == ["电子-半导体", "银行-国有大型银行"]
+
+
+def test_pick_user_sectors_ranks_by_mainline_then_limit_ups_and_caps_per_stock():
+    sectors, uncovered = bw.pick_user_sectors([MINE, C1, NOMAP, MINE.lower()], _user_prev(), _maps(), RANKS)
+    assert [s["name"] for s in sectors] == ["机器人", "第三", "冷门", "银行-国有大型银行", "电子-半导体"]
+    assert uncovered == [NOMAP]
+    named = _by_name(sectors)
+    # 代码别名不重复计成员
+    assert named["机器人"]["member_count"] == 3 and named["机器人"]["mainline_rank"] == 1
+    assert named["冷门"]["mine"] == [MINE, C1]
+    assert _roles_of(named["机器人"]) == [(R1, ["leader"]), (R2, ["core"])]
+    assert named["机器人"]["items"][0]["roles"][0]["detail"] == "昨日 2 板"
+    # 没有涨停的板块只给弱龙头, 不参与结论
+    assert _roles_of(named["冷门"]) == [(C2, ["weak_leader"]), (C1, ["core"])]
+    assert _roles_of(named["银行-国有大型银行"]) == [(C1, ["weak_leader", "core"])]
+    assert _roles_of(named["第三"]) == [(X1, ["leader", "core"])]
+
+
+def test_pick_user_sectors_total_cap_reports_uncovered_and_excludes_st_from_leaders(monkeypatch):
+    monkeypatch.setattr(bw, "MAX_USER_SECTORS", 1)
+    sectors, uncovered = bw.pick_user_sectors([MINE, C1, NOMAP], _user_prev(), _maps(), RANKS)
+    assert [s["name"] for s in sectors] == ["机器人"] and uncovered == [C1, NOMAP]
+    monkeypatch.setattr(bw, "MAX_USER_SECTORS", 8)
+    sectors, _ = bw.pick_user_sectors([MINE], _user_prev(), _maps(), RANKS, excluded=frozenset({R1}))
+    robot = _by_name(sectors)["机器人"]
+    assert robot["items"][0]["roles"][0]["key"] == "weak_leader" and robot["member_count"] == 2
+
+
+@pytest.mark.parametrize("perf,signal", [
+    ({"count": 9, "avg_pct": .012, "up_ratio": .65, "coverage": .9}, "strong"),
+    ({"count": 9, "avg_pct": -.001, "up_ratio": .7, "coverage": .9}, "weak"),
+    ({"count": 9, "avg_pct": .005, "up_ratio": .5, "coverage": .9}, "neutral"),
+    ({"count": 9, "avg_pct": .05, "up_ratio": .9, "coverage": .7}, "unknown"),
+    (None, "unknown"),
+])
+def test_breadth_signal_requires_coverage(perf, signal):
+    assert bw.breadth_signal(perf) == signal
+
+
+@pytest.mark.parametrize("change,avg,relative", [
+    (.03, .01, "stronger"), (-.01, .01, "weaker"), (.015, .01, "inline"),
+    (None, .01, "unknown"), (.01, None, "unknown"),
+])
+def test_relative_strength(change, avg, relative):
+    assert bw.relative_strength(change, avg) == relative
+
+
+@pytest.fixture
+def user_env(env, monkeypatch):
+    env.prev = _user_prev()
+    env.current = pl.DataFrame({
+        "symbol": [MINE, R1, R2, C1, C2, X1, NOMAP],
+        "name": ["我的股", "机器人龙", "机器人中军", "银行股", "冷门股", "第三龙", "无归属"],
+        "change_pct": [.02, .1, -.04, -.01, 0., .05, 0.],
+        "consecutive_limit_ups": [0, 3, 0, 0, 0, 0, 0],
+        "signal_limit_up": [False, True, False, False, False, False, False],
+        "signal_broken_limit_up": [False] * 7, "signal_limit_down": [False] * 7,
+    }).with_columns(pl.lit(_ms(NOON) - 5_000, dtype=pl.Int64).alias("quote_ts"))
+    raw = _raw_maps()
+    monkeypatch.setattr(bw, "_load_concept_map_df", lambda repo, kind: (raw[kind], 0))
+    monkeypatch.setattr(bw, "_filter_config", lambda: FILTER)
+    monkeypatch.setattr(bw, "_excluded_symbols", lambda data_dir: frozenset())
+    monkeypatch.setattr(bw, "load_mainlines", lambda data_dir, **kw: {"status": "ready", "items": [
+        {"kind": "concept", "name": "机器人", "rank": 1}]})
+    return env
+
+
+def test_user_snapshot_tracks_my_sectors(user_env):
+    snap = bw.build_user_snapshot(user_env.repo, "holdings", [MINE, C1, NOMAP], now=NOON)
+    assert snap["status"] == "ready" and snap["scope"] == "holdings" and snap["total"] == 3
+    assert snap["uncovered"] == [{"symbol": NOMAP, "name": "无归属"}]
+    robot = _by_name(snap["sectors"])["机器人"]
+    assert robot["breadth"] == {"count": 3, "avg_pct": pytest.approx(.08 / 3), "up_ratio": pytest.approx(2 / 3),
+                                "coverage": pytest.approx(1.0), "limit_up": 1}
+    assert [(i["name"], i["state"]) for i in robot["items"]] == [("机器人龙", "sealed"), ("机器人中军", "weak")]
+    assert robot["verdict"]["key"] == "divergence" and robot["verdict"]["signals"]["breadth"] == "strong"
+    assert robot["mine"] == [{"symbol": MINE, "name": "我的股", "change_pct": pytest.approx(.02),
+                              "state": "flat", "relative": "inline"}]
+    cold = _by_name(snap["sectors"])["冷门"]
+    # 弱龙头不计入结论
+    assert cold["verdict"]["signals"]["leader"] == "unknown" and cold["verdict"]["signals"]["breadth"] == "weak"
+
+
+def test_user_snapshot_stale_and_fail_closed(user_env):
+    user_env.current = user_env.current.with_columns(
+        pl.lit(_ms(NOON) - 300_000, dtype=pl.Int64).alias("quote_ts"))
+    snap = bw.build_user_snapshot(user_env.repo, "watchlist", [MINE], now=NOON)
+    assert snap["stale"] and all(s["verdict"]["key"] == "unknown" for s in snap["sectors"])
+    none = bw.build_user_snapshot(user_env.repo, "watchlist", [NOMAP], now=NOON)
+    assert none["status"] == "unavailable" and "板块归属" in none["reason"]
+    user_env.prev = None
+    gone = bw.build_user_snapshot(user_env.repo, "watchlist", [MINE], now=NOON)
+    assert gone["status"] == "unavailable" and gone["scope"] == "watchlist" and gone["sectors"] == []
+
+
+def test_load_user_symbols_from_lots_and_watchlist_groups(tmp_path, monkeypatch):
+    assert bw.load_user_symbols(tmp_path, "holdings") == ([], "还没有批次提醒持仓")
+    lots_dir = tmp_path / "user_data" / "lots"
+    lots_dir.mkdir(parents=True)
+    for lot_id, symbol in (("a1", "600101.sh"), ("a2", "600101.SH"), ("a3", "600104.SH")):
+        (lots_dir / f"lot_{lot_id}.json").write_text(
+            f'{{"id": "{lot_id}", "symbol": "{symbol}", "qty": 100, "cost_price": 10, "stop_pct": 5}}',
+            encoding="utf-8")
+    assert bw.load_user_symbols(tmp_path, "holdings") == ([MINE, C1], None)
+
+    from app.services import watchlist
+    monkeypatch.setattr(watchlist, "list_symbols", lambda: [
+        {"symbol": MINE, "group_ids": ["g1"]}, {"symbol": C1, "group_ids": []}])
+    monkeypatch.setattr(watchlist, "list_groups", lambda: [{"id": "g1", "name": "核心"}, {"id": "g2", "name": "空"}])
+    assert bw.load_user_symbols(tmp_path, "watchlist") == ([MINE, C1], None)
+    assert bw.load_user_symbols(tmp_path, "watchlist", "g1") == ([MINE], None)
+    assert bw.load_user_symbols(tmp_path, "watchlist", "g2") == ([], "该自选分组没有股票")
+    assert bw.load_user_symbols(tmp_path, "watchlist", "gx") == ([], "自选分组不存在")
+
+
+def test_api_scope_parameter(user_env, monkeypatch):
+    from app.api.market_recap import router
+
+    monkeypatch.setattr(bw, "load_user_symbols", lambda data_dir, scope, group_id=None: ([MINE], None))
+    real = bw.build_user_snapshot
+    monkeypatch.setattr(bw, "build_user_snapshot", lambda *a, **kw: real(*a, **{**kw, "now": NOON}))
+    bw.invalidate_cache()
+    app = FastAPI()
+    app.include_router(router)
+    app.state.repo = user_env.repo
+    client = TestClient(app)
+    body = client.get("/api/market-recap/bellwethers", params={"scope": "watchlist", "group_id": "g1"}).json()
+    assert body["scope"] == "watchlist" and body["sectors"][0]["name"] == "机器人"
+    assert client.get("/api/market-recap/bellwethers", params={"scope": "nope"}).status_code == 422
     bw.invalidate_cache()

@@ -30,8 +30,13 @@ from app.services.first_board_context import (
     load_mainlines,
     previous_boards,
 )
-from app.services.market_mainline import MEMBERSHIP_NOTE, load_risk_warning_symbols
+from app.services.market_mainline import (
+    MEMBERSHIP_NOTE,
+    filter_mainline_members,
+    load_risk_warning_symbols,
+)
 from app.services.market_recap_intraday import _sessions
+from app.services.rps_rotation import _load_concept_map_df
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +48,14 @@ FEEDBACK_WEAK_RATIO = 0.4       # 均涨为负或红盘率 <40% 为亏钱效应
 STALE_SECONDS = 120          # 连续竞价时段行情超过此秒数未更新即不下结论
 _CACHE_TTL = 5.0
 
-ROLE_LABELS = {"emotion": "情绪", "leader": "龙头", "core": "中军", "feedback": "昨日涨停反馈"}
+ROLE_LABELS = {"emotion": "情绪", "leader": "龙头", "weak_leader": "弱龙头", "core": "中军",
+               "feedback": "昨日涨停反馈", "breadth": "板块广度"}
 STATE_LABELS = {"sealed": "封板", "broken": "炸板", "strong": "强势", "flat": "震荡",
                 "weak": "走弱", "limit_down": "跌停", "unknown": "待确认"}
 VERDICT_LABELS = {"attack": "进攻", "divergence": "分歧", "retreat": "退潮", "unknown": "待确认"}
 _STATE_SIGNAL = {"sealed": "strong", "strong": "strong", "flat": "neutral", "broken": "weak",
                  "weak": "weak", "limit_down": "weak", "unknown": "unknown"}
-_PREV_COLUMNS = ["symbol", "date", "consecutive_limit_ups", "amount", "signal_limit_up",
+_PREV_COLUMNS = ["symbol", "date", "consecutive_limit_ups", "amount", "change_pct", "signal_limit_up",
                  "signal_broken_limit_up"]
 
 
@@ -154,6 +160,22 @@ def pool_performance(today: pl.DataFrame, pool: Iterable[str]) -> dict | None:
             "up_ratio": float((pct > 0).sum()) / pct.len()}
 
 
+def role_signals(items: list[dict], roles: tuple[str, ...]) -> dict[str, str]:
+    """各角色信号; 一只股票只计入它在 roles 中排最前的角色。
+
+    同一只股票兼任多个角色(如情绪龙头即主线龙头、板块龙头即中军)时, 若各算
+    一次, 单只股票就能凑出"两类走强"。
+    """
+    claimed: set[str] = set()
+    output = {}
+    for role in roles:
+        holders = [item for item in items if item["symbol"] not in claimed
+                   and any(entry["key"] == role for entry in item["roles"])]
+        claimed.update(item["symbol"] for item in holders)
+        output[role] = role_signal(holders, role)
+    return output
+
+
 def role_signal(items: list[dict], role: str) -> str:
     """某一角色的合并信号: 半数走弱即弱, 半数走强才强, 全部未知为未知。"""
     signals = [item["signal"] for item in items
@@ -207,7 +229,7 @@ def _excluded_symbols(data_dir: Path) -> frozenset[str]:
 
 
 def _unavailable(reason: str, now: datetime, as_of: date | None = None) -> dict:
-    return {"status": "unavailable", "reason": reason, "as_of": str(as_of) if as_of else None,
+    return {"scope": "market", "status": "unavailable", "reason": reason, "as_of": str(as_of) if as_of else None,
             "reference_date": None, "generated_at": now.strftime("%Y-%m-%dT%H:%M:%S"),
             "quote_time": None, "live": False, "stale": False,
             "verdict": verdict({}), "items": [], "feedback": {"limit_up": None, "broken": None},
@@ -233,20 +255,87 @@ def _flags(prev: pl.DataFrame, column: str) -> list[str] | None:
     return prev.filter(pl.col(column).fill_null(False))["symbol"].to_list()
 
 
-def build_snapshot(repo, *, quote_service=None, depth_service=None, now: datetime | None = None) -> dict:
-    """装配一次风向标快照; 任何关键输入缺失都返回 status=unavailable, 不用别的日期顶替。"""
-    now = now or cn_now()
+def _prepare(repo, quote_service, now: datetime) -> tuple[dict | None, tuple[str, date | None] | None]:
+    """当前行情 + 严格的上一交易日收盘; 缺任一项返回 (None, (原因, 观察日))。"""
     current, as_of = (quote_service.get_enriched_today() if quote_service is not None
                       else repo.get_enriched_latest())
     if type(as_of) is not date or current is None or current.is_empty() or "symbol" not in current.columns:
-        return _unavailable("暂无行情数据", now)
+        return None, ("暂无行情数据", None)
     sessions = _sessions(as_of)
     reference = max((day for day in sessions or [] if day < as_of), default=None)
     if not sessions or as_of not in sessions or reference is None:
-        return _unavailable("交易日历不可用, 无法确定上一交易日", now, as_of)
+        return None, ("交易日历不可用, 无法确定上一交易日", as_of)
     prev = repo.get_enriched_range(reference, reference, columns=_PREV_COLUMNS)
     if prev is None or prev.is_empty():
-        return _unavailable(f"缺少上一交易日({reference})的收盘数据, 暂无法选出风向标", now, as_of)
+        return None, (f"缺少上一交易日({reference})的收盘数据, 暂无法选出风向标", as_of)
+    live = as_of == now.astimezone(CN_TZ).date() and in_continuous_session(now)
+    stamp = _finite(current["quote_ts"].max()) if "quote_ts" in current.columns else None
+    quote_time = datetime.fromtimestamp(stamp / 1000, CN_TZ) if stamp else None
+    stale = live and (quote_time is None or (now - quote_time).total_seconds() > STALE_SECONDS)
+    return {"current": current, "as_of": as_of, "reference": reference, "prev": prev,
+            "live": live, "stale": stale, "quote_time": quote_time}, None
+
+
+def _quote_rows(current: pl.DataFrame, symbols: list[str]) -> dict[str, dict]:
+    """唯一报价行; 重复报价无法确定哪条有效, 整只按待确认处理。"""
+    rows: dict[str, dict] = {}
+    duplicated: set[str] = set()
+    for row in current.filter(pl.col("symbol").is_in(symbols)).iter_rows(named=True):
+        key = _symbol(row["symbol"])
+        if key in rows:
+            duplicated.add(key)
+        rows[key] = row
+    for key in duplicated:
+        rows.pop(key)
+    return rows
+
+
+def _names(repo, rows: dict[str, dict], symbols: list[str]) -> dict[str, str]:
+    names = {key: row.get("name") for key, row in rows.items() if row.get("name")}
+    missing = [symbol for symbol in symbols if symbol not in names]
+    if missing:
+        try:
+            names.update(repo.get_name_map(missing))
+        except Exception:  # noqa: BLE001 - 名称缺失时退回代码
+            logger.debug("bellwether: name map unavailable", exc_info=True)
+    return names
+
+
+def _track(entry: dict, rows: dict[str, dict], names: dict[str, str], sealed: dict | None) -> dict:
+    """名单中的一只 → 当前状态(展示与信号共用)。"""
+    symbol = entry["symbol"]
+    row = rows.get(symbol)
+    state = stock_state(row, (sealed or {}).get(symbol))
+    seal = (sealed or {}).get(symbol) or {}
+    return {
+        **entry, "name": names.get(symbol) or symbol,
+        "boards_today": int(_finite(row.get("consecutive_limit_ups")) or 0) if row else None,
+        "change_pct": _finite(row.get("change_pct")) if row else None,
+        "state": state, "signal": _STATE_SIGNAL[state],
+        "seal_vol": int(seal["vol"]) if state == "sealed" and _finite(seal.get("vol")) is not None else None,
+    }
+
+
+def _stamp(now: datetime, ctx: dict) -> dict:
+    quote_time = ctx["quote_time"]
+    return {"as_of": str(ctx["as_of"]), "reference_date": str(ctx["reference"]),
+            "generated_at": now.strftime("%Y-%m-%dT%H:%M:%S"),
+            "quote_time": quote_time.strftime("%Y-%m-%dT%H:%M:%S") if quote_time else None,
+            "live": ctx["live"], "stale": ctx["stale"]}
+
+
+def _stale_verdict(result: dict) -> dict:
+    return {**result, "key": "unknown", "label": VERDICT_LABELS["unknown"],
+            "reason": f"行情超过 {STALE_SECONDS // 60} 分钟未更新, 暂不下结论"}
+
+
+def build_snapshot(repo, *, quote_service=None, depth_service=None, now: datetime | None = None) -> dict:
+    """装配一次风向标快照; 任何关键输入缺失都返回 status=unavailable, 不用别的日期顶替。"""
+    now = now or cn_now()
+    ctx, failure = _prepare(repo, quote_service, now)
+    if ctx is None:
+        return _unavailable(failure[0], now, failure[1])
+    current, as_of, reference, prev = ctx["current"], ctx["as_of"], ctx["reference"], ctx["prev"]
 
     data_dir = repo.store.data_dir
     notes = []
@@ -263,38 +352,10 @@ def build_snapshot(repo, *, quote_service=None, depth_service=None, now: datetim
     selected = select_bellwethers(prev, mainlines, members, excluded=_excluded_symbols(data_dir))
 
     symbols = [item["symbol"] for item in selected]
-    rows: dict[str, dict] = {}
-    duplicated: set[str] = set()
-    for row in current.filter(pl.col("symbol").is_in(symbols)).iter_rows(named=True):
-        key = _symbol(row["symbol"])
-        if key in rows:
-            # 重复报价无法确定哪条有效, 整只按待确认处理
-            duplicated.add(key)
-        rows[key] = row
-    for key in duplicated:
-        rows.pop(key)
-    names = {key: row.get("name") for key, row in rows.items() if row.get("name")}
-    missing = [symbol for symbol in symbols if symbol not in names]
-    if missing:
-        try:
-            names.update(repo.get_name_map(missing))
-        except Exception:  # noqa: BLE001 - 名称缺失时退回代码
-            logger.debug("bellwether: name map unavailable", exc_info=True)
-
+    rows = _quote_rows(current, symbols)
+    names = _names(repo, rows, symbols)
     sealed = _sealed_map(depth_service, as_of)
-    items = []
-    for entry in selected:
-        symbol = entry["symbol"]
-        row = rows.get(symbol)
-        state = stock_state(row, (sealed or {}).get(symbol))
-        seal = (sealed or {}).get(symbol) or {}
-        items.append({
-            **entry, "name": names.get(symbol) or symbol,
-            "boards_today": int(_finite(row.get("consecutive_limit_ups")) or 0) if row else None,
-            "change_pct": _finite(row.get("change_pct")) if row else None,
-            "state": state, "signal": _STATE_SIGNAL[state],
-            "seal_vol": int(seal["vol"]) if state == "sealed" and _finite(seal.get("vol")) is not None else None,
-        })
+    items = [_track(entry, rows, names, sealed) for entry in selected]
 
     limit_pool, broken_pool = _flags(prev, "signal_limit_up"), _flags(prev, "signal_broken_limit_up")
     feedback = {
@@ -304,20 +365,13 @@ def build_snapshot(repo, *, quote_service=None, depth_service=None, now: datetim
     fake_up = sum(1 for value in sealed.values() if value.get("sealed") is False) if sealed else None
     ladder = live_ladder(current, previous_boards(prev, reference), fake_up=fake_up)
 
-    live = as_of == now.astimezone(CN_TZ).date() and in_continuous_session(now)
-    stamp = _finite(current["quote_ts"].max()) if "quote_ts" in current.columns else None
-    quote_time = datetime.fromtimestamp(stamp / 1000, CN_TZ) if stamp else None
-    stale = live and (quote_time is None or (now - quote_time).total_seconds() > STALE_SECONDS)
-    result = verdict({role: role_signal(items, role) for role in ("emotion", "leader", "core")}
+    result = verdict(role_signals(items, ("emotion", "leader", "core"))
                      | {"feedback": feedback_signal(feedback["limit_up"])})
-    if stale:
-        result = {**result, "key": "unknown", "label": VERDICT_LABELS["unknown"],
-                  "reason": f"行情超过 {STALE_SECONDS // 60} 分钟未更新, 暂不下结论"}
+    if ctx["stale"]:
+        result = _stale_verdict(result)
     return {
-        "status": "ready", "reason": "", "as_of": str(as_of), "reference_date": str(reference),
-        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%S"),
-        "quote_time": quote_time.strftime("%Y-%m-%dT%H:%M:%S") if quote_time else None,
-        "live": live, "stale": stale, "verdict": result, "items": items, "feedback": feedback,
+        "scope": "market", "status": "ready", "reason": "", **_stamp(now, ctx),
+        "verdict": result, "items": items, "feedback": feedback,
         "ladder": {key: ladder[key] for key in ("limit_up", "broken", "limit_down", "max_consecutive",
                                                  "seal_rate", "promo_rate", "sealed_corrected")},
         "mainlines": [{key: item.get(key) for key in ("kind", "name", "rank")}
@@ -326,23 +380,286 @@ def build_snapshot(repo, *, quote_service=None, depth_service=None, now: datetim
     }
 
 
-_cache: tuple[float, dict] | None = None
+# ───────────────────────── 持仓 / 自选所属板块 ─────────────────────────
+
+USER_SCOPES = ("holdings", "watchlist")
+SECTORS_PER_STOCK = {"concept": 2, "industry": 1}
+MAX_USER_SECTORS = 8
+USER_MAINLINE_TOP = 10        # 板块排序参考的主线名次范围
+BREADTH_STRONG = (0.01, 0.6)  # 板块均涨 ≥1% 且红盘率 ≥60% 为走强
+BREADTH_WEAK_RATIO = 0.4
+BREADTH_MIN_COVERAGE = 0.8    # 与首板同行确认同一覆盖率门槛
+RELATIVE_BAND = 0.01          # 本股相对板块均涨 ±1% 以内算同步
+
+
+def _filter_config() -> dict | None:
+    """None 让主线过滤自行读取偏好(成员数上下限与黑名单), 与主线口径一致。"""
+    return None
+
+
+def sector_map(mapping: pl.DataFrame, kind: str, filter_cfg: dict | None) -> pl.DataFrame:
+    """成分映射(_sym_up, kind) → (_sym_up, sector): 过滤宽基/黑名单, 行业取前两级。"""
+    if mapping.is_empty() or not {"_sym_up", kind}.issubset(mapping.columns):
+        return pl.DataFrame(schema={"_sym_up": pl.Utf8, "sector": pl.Utf8})
+    counts = mapping.group_by(kind).len().rename({"len": "_members"})
+    allowed = filter_mainline_members(counts, kind, filter_cfg).select(kind)
+    sector = pl.col(kind).cast(pl.Utf8)
+    if kind == "industry":
+        sector = sector.str.split("-").list.head(2).list.join("-")
+    return (mapping.join(allowed, on=kind, how="semi")
+            .select(pl.col("_sym_up").cast(pl.Utf8).str.to_uppercase(), sector.alias("sector")).unique())
+
+
+def _prev_info(prev: pl.DataFrame) -> dict[str, tuple[int, float | None, float | None]]:
+    """T-1 每只股票的 (连板数, 成交额, 涨跌幅); 重复行整只剔除。"""
+    change = pl.col("change_pct") if "change_pct" in prev.columns else pl.lit(None)
+    frame = prev.select(
+        pl.col("symbol").cast(pl.Utf8).str.strip_chars().str.to_uppercase().alias("symbol"),
+        pl.col("consecutive_limit_ups").cast(pl.Int64, strict=False).fill_null(0),
+        pl.col("amount").cast(pl.Float64, strict=False), change.cast(pl.Float64, strict=False),
+    ).unique("symbol", keep="none")
+    return {symbol: (int(boards), _finite(amount), _finite(change))
+            for symbol, boards, amount, change in frame.iter_rows()}
+
+
+def _sector_watch(members: list[str], info: dict) -> list[dict]:
+    """板块内的龙头与中军(只看 T-1); 没有涨停股时只给弱龙头, 不参与结论。"""
+    picked: dict[str, list[dict]] = {}
+    limit = [symbol for symbol in members if info[symbol][0] >= 1]
+    if limit:
+        leader = min(limit, key=lambda s: (-info[s][0], -(info[s][1] or 0.0), s))
+        picked[leader] = [{"key": "leader", "label": ROLE_LABELS["leader"], "detail": f"昨日 {info[leader][0]} 板"}]
+    else:
+        rising = [symbol for symbol in members if info[symbol][2] is not None]
+        if rising:
+            leader = min(rising, key=lambda s: (-info[s][2], s))
+            picked[leader] = [{"key": "weak_leader", "label": ROLE_LABELS["weak_leader"],
+                               "detail": "昨日无涨停, 取涨幅最大"}]
+    sized = [symbol for symbol in members if info[symbol][1] is not None]
+    if sized:
+        core = min(sized, key=lambda s: (-info[s][1], s))
+        picked.setdefault(core, []).append({"key": "core", "label": ROLE_LABELS["core"], "detail": "昨日成交额最大"})
+    return [{"symbol": symbol, "roles": roles, "boards_prev": info[symbol][0]} for symbol, roles in picked.items()]
+
+
+def pick_user_sectors(user: list[str], prev: pl.DataFrame, maps: dict[str, pl.DataFrame],
+                      ranks: dict[tuple[str, str], int], *,
+                      excluded: frozenset[str] = frozenset()) -> tuple[list[dict], list[str]]:
+    """用户股票 → 要跟踪的板块(全部只用 T-1), 返回 (板块, 未覆盖的股票)。
+
+    每只股票按「T-1 主线名次 → T-1 板块涨停家数 → T-1 板块均涨」挑概念与行业各
+    SECTORS_PER_STOCK 个, 合并后整体按同一顺序截到 MAX_USER_SECTORS。风险警示股
+    不当龙头/中军也不计入板块统计, 但用户自己持有的仍能找到所属板块。
+    """
+    wanted = list(dict.fromkeys(_symbol(symbol) for symbol in user if _symbol(symbol)))
+    info = _prev_info(prev) if not prev.is_empty() else {}
+    stats: dict[tuple[str, str], dict] = {}
+    per_stock: dict[str, list[tuple[str, str]]] = {symbol: [] for symbol in wanted}
+    for kind, mapping in maps.items():
+        traded = mapping.filter(pl.col("_sym_up").is_in(list(info)))
+        hits = traded.filter(pl.col("_sym_up").is_in(wanted))
+        if hits.is_empty():
+            continue
+        for symbol, name in hits.select("_sym_up", "sector").iter_rows():
+            per_stock[symbol].append((kind, name))
+        names = set(hits["sector"].to_list())
+        groups: dict[str, list[str]] = {}
+        for symbol, name in traded.filter(pl.col("sector").is_in(list(names))).select("_sym_up", "sector").iter_rows():
+            groups.setdefault(name, []).append(symbol)
+        for name, all_members in groups.items():
+            members = sorted(symbol for symbol in set(all_members) if symbol not in excluded)
+            changes = [info[symbol][2] for symbol in members if info[symbol][2] is not None]
+            stats[(kind, name)] = {
+                "members": members, "all": set(all_members),
+                "limit_up": sum(info[symbol][0] >= 1 for symbol in members),
+                "avg": sum(changes) / len(changes) if changes else None,
+            }
+
+    def order(key: tuple[str, str]) -> tuple:
+        item = stats[key]
+        return (ranks.get(key, 999), -item["limit_up"], -(item["avg"] if item["avg"] is not None else -1.0),
+                key[0], key[1])
+
+    chosen: set[tuple[str, str]] = set()
+    for symbol in wanted:
+        for kind, limit in SECTORS_PER_STOCK.items():
+            chosen.update(sorted((key for key in per_stock[symbol] if key[0] == kind), key=order)[:limit])
+    tracked = sorted(chosen, key=order)[:MAX_USER_SECTORS]
+
+    sectors = []
+    for key in tracked:
+        item = stats[key]
+        sectors.append({
+            "kind": key[0], "name": key[1], "mainline_rank": ranks.get(key),
+            "member_count": len(item["members"]), "members": item["members"],
+            "limit_up_prev": item["limit_up"], "avg_pct_prev": item["avg"],
+            "mine": [symbol for symbol in wanted if symbol in item["all"]],
+            "items": _sector_watch(item["members"], info),
+        })
+    covered = {symbol for sector in sectors for symbol in sector["mine"]}
+    return sectors, [symbol for symbol in wanted if symbol not in covered]
+
+
+def breadth_signal(perf: dict | None) -> str:
+    if not perf or perf["coverage"] < BREADTH_MIN_COVERAGE:
+        return "unknown"
+    if perf["avg_pct"] < 0 or perf["up_ratio"] < BREADTH_WEAK_RATIO:
+        return "weak"
+    strong = perf["avg_pct"] >= BREADTH_STRONG[0] and perf["up_ratio"] >= BREADTH_STRONG[1]
+    return "strong" if strong else "neutral"
+
+
+def relative_strength(change: float | None, avg: float | None) -> str:
+    if change is None or avg is None:
+        return "unknown"
+    if change - avg >= RELATIVE_BAND:
+        return "stronger"
+    return "weaker" if change - avg <= -RELATIVE_BAND else "inline"
+
+
+def _breadth(current: pl.DataFrame, members: list[str]) -> dict | None:
+    perf = pool_performance(current, members)
+    if perf is None or not members:
+        return None
+    today = current.filter(pl.col("symbol").is_in(members))
+    limit = pl.lit(False)
+    if "signal_limit_up" in today.columns:
+        limit = limit | pl.col("signal_limit_up").cast(pl.Boolean, strict=False).fill_null(False)
+    if "consecutive_limit_ups" in today.columns:
+        limit = limit | (pl.col("consecutive_limit_ups").cast(pl.Int64, strict=False).fill_null(0) > 0)
+    return {**perf, "coverage": perf["count"] / len(members), "limit_up": int(today.select(limit.sum()).item())}
+
+
+def load_user_symbols(data_dir: Path, scope: str, group_id: str | None = None) -> tuple[list[str], str | None]:
+    """持仓(批次提醒)或自选的股票代码; 只读代码, 不读数量与成本。"""
+    if scope == "holdings":
+        folder = Path(data_dir) / "user_data" / "lots"
+        # 读取不应顺带创建目录(批次存储读时会建目录)
+        if not folder.is_dir() or not any(folder.glob("lot_*.json")):
+            return [], "还没有批次提醒持仓"
+        from app.strategy import lots
+
+        symbols = [lot.get("symbol") for lot in lots.load_all(Path(data_dir))]
+        empty = "还没有批次提醒持仓"
+    else:
+        from app.services import watchlist
+
+        rows = watchlist.list_symbols()
+        if group_id:
+            if group_id not in {group["id"] for group in watchlist.list_groups()}:
+                return [], "自选分组不存在"
+            rows = [row for row in rows if group_id in (row.get("group_ids") or [])]
+        symbols = [row.get("symbol") for row in rows]
+        empty = "该自选分组没有股票" if group_id else "自选为空"
+    unique = list(dict.fromkeys(_symbol(symbol) for symbol in symbols if _symbol(symbol)))
+    return (unique, None) if unique else ([], empty)
+
+
+def _user_unavailable(scope: str, reason: str, now: datetime, as_of: date | None = None) -> dict:
+    return {"scope": scope, "status": "unavailable", "reason": reason,
+            "as_of": str(as_of) if as_of else None, "reference_date": None,
+            "generated_at": now.strftime("%Y-%m-%dT%H:%M:%S"), "quote_time": None,
+            "live": False, "stale": False, "total": 0, "sectors": [], "uncovered": [], "notes": []}
+
+
+def build_user_snapshot(repo, scope: str, symbols: list[str], *, quote_service=None, depth_service=None,
+                        now: datetime | None = None) -> dict:
+    """持仓/自选所属板块的风向标: 每个板块独立的龙头、中军与板块广度结论。"""
+    now = now or cn_now()
+    ctx, failure = _prepare(repo, quote_service, now)
+    if ctx is None:
+        return _user_unavailable(scope, failure[0], now, failure[1])
+    current, as_of, reference = ctx["current"], ctx["as_of"], ctx["reference"]
+    data_dir = repo.store.data_dir
+
+    try:
+        mainlines = load_mainlines(data_dir, as_of=as_of, reference_date=reference, top_n=USER_MAINLINE_TOP)
+    except Exception:  # noqa: BLE001 - 主线只影响板块排序
+        logger.warning("bellwether: mainline load failed", exc_info=True)
+        mainlines = {"items": []}
+    ranks = {(item["kind"], item["name"]): int(item["rank"]) for item in mainlines.get("items") or []
+             if item.get("kind") and item.get("name") and item.get("rank") is not None}
+    cfg = _filter_config()
+    maps = {}
+    for kind in SECTORS_PER_STOCK:
+        try:
+            maps[kind] = sector_map(_load_concept_map_df(repo, kind)[0], kind, cfg)
+        except Exception:  # noqa: BLE001 - 某一维度缺失时只少该维度
+            logger.warning("bellwether: %s membership unavailable", kind, exc_info=True)
+    sectors, uncovered = pick_user_sectors(symbols, ctx["prev"], maps, ranks,
+                                           excluded=_excluded_symbols(data_dir))
+    if not sectors:
+        return _user_unavailable(scope, "所选股票在上一交易日没有可用的板块归属", now, as_of)
+
+    watched = list(dict.fromkeys([item["symbol"] for sector in sectors for item in sector["items"]]
+                                 + [symbol for sector in sectors for symbol in sector["mine"]] + uncovered))
+    rows = _quote_rows(current, watched)
+    names = _names(repo, rows, watched)
+    sealed = _sealed_map(depth_service, as_of)
+    output = []
+    for sector in sectors:
+        items = [_track(entry, rows, names, sealed) for entry in sector["items"]]
+        breadth = _breadth(current, sector["members"])
+        result = verdict(role_signals(items, ("leader", "core"))
+                         | {"breadth": breadth_signal(breadth)})
+        if ctx["stale"]:
+            result = _stale_verdict(result)
+        mine = []
+        for symbol in sector["mine"]:
+            row = rows.get(symbol)
+            change = _finite(row.get("change_pct")) if row else None
+            mine.append({"symbol": symbol, "name": names.get(symbol) or symbol, "change_pct": change,
+                         "state": stock_state(row, (sealed or {}).get(symbol)),
+                         "relative": relative_strength(change, breadth["avg_pct"] if breadth else None)})
+        output.append({key: sector[key] for key in ("kind", "name", "mainline_rank", "member_count",
+                                                     "limit_up_prev", "avg_pct_prev")}
+                      | {"verdict": result, "items": items, "breadth": breadth, "mine": mine})
+    return {
+        "scope": scope, "status": "ready", "reason": "", **_stamp(now, ctx),
+        "total": len(symbols), "sectors": output,
+        "uncovered": [{"symbol": symbol, "name": names.get(symbol) or symbol} for symbol in uncovered],
+        "notes": [MEMBERSHIP_NOTE],
+    }
+
+
+_cache: dict[tuple, tuple[float, dict]] = {}
 _cache_lock = threading.Lock()
 
 
 def invalidate_cache() -> None:
-    global _cache
     with _cache_lock:
-        _cache = None
+        _cache.clear()
 
 
-def get_snapshot(repo, *, quote_service=None, depth_service=None) -> dict:
-    """短 TTL 缓存的快照, 供接口轮询; 计算在锁外, 并发重算无副作用。"""
-    global _cache
+def get_snapshot(repo, *, scope: str = "market", group_id: str | None = None,
+                 quote_service=None, depth_service=None) -> dict:
+    """短 TTL 缓存的快照, 供接口轮询; 计算在锁外, 并发重算无副作用。
+
+    持仓/自选每次请求都重读代码列表(很轻), 并把列表放进缓存键, 修改后立即生效。
+    """
+    key: tuple = ("market",)
+    symbols: list[str] = []
+    if scope in USER_SCOPES:
+        try:
+            symbols, reason = load_user_symbols(repo.store.data_dir, scope, group_id)
+        except Exception:  # noqa: BLE001 - 自选/批次文件损坏时明确提示
+            logger.warning("bellwether: %s symbols unavailable", scope, exc_info=True)
+            symbols, reason = [], "持仓或自选数据读取失败, 请检查数据文件"
+        if reason:
+            return _user_unavailable(scope, reason, cn_now())
+        key = (scope, group_id, tuple(symbols))
     with _cache_lock:
-        if _cache is not None and time.monotonic() - _cache[0] < _CACHE_TTL:
-            return _cache[1]
-    snapshot = build_snapshot(repo, quote_service=quote_service, depth_service=depth_service)
+        hit = _cache.get(key)
+        if hit is not None and time.monotonic() - hit[0] < _CACHE_TTL:
+            return hit[1]
+    if scope in USER_SCOPES:
+        snapshot = build_user_snapshot(repo, scope, symbols, quote_service=quote_service,
+                                       depth_service=depth_service)
+    else:
+        snapshot = build_snapshot(repo, quote_service=quote_service, depth_service=depth_service)
     with _cache_lock:
-        _cache = (time.monotonic(), snapshot)
+        # 只保留各范围的最新一份, 避免自选反复修改时键无限增长
+        for stale_key in [k for k in _cache if k[:2] == key[:2]]:
+            _cache.pop(stale_key)
+        _cache[key] = (time.monotonic(), snapshot)
     return snapshot

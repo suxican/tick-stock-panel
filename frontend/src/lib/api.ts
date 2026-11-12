@@ -1075,8 +1075,68 @@ export type BellwetherState = 'sealed' | 'broken' | 'strong' | 'flat' | 'weak' |
 /** 一组股票今日表现; avg_pct、up_ratio 为小数制 */
 export interface BellwetherPoolPerf { count: number; avg_pct: number; up_ratio: number }
 
+export type BellwetherScope = 'market' | 'holdings' | 'watchlist'
+export type BellwetherRoleKey = 'emotion' | 'leader' | 'weak_leader' | 'core'
+export interface BellwetherVerdict {
+  key: 'attack' | 'divergence' | 'retreat' | 'unknown'
+  label: string
+  reason: string
+  signals: Partial<Record<'emotion' | 'leader' | 'core' | 'feedback' | 'breadth', BellwetherSignal>>
+}
+export interface BellwetherItem {
+  symbol: string
+  name: string
+  roles: { key: BellwetherRoleKey; label: string; detail: string }[]
+  boards_prev: number | null
+  boards_today: number | null
+  change_pct: number | null
+  state: BellwetherState
+  signal: BellwetherSignal
+  /** 封单量, 单位手; 无五档数据或未封板时为 null */
+  seal_vol: number | null
+}
+
+/** 持仓/自选所属板块的风向标; 比例字段为小数制 */
+export interface UserBellwetherSnapshot {
+  scope: 'holdings' | 'watchlist'
+  status: 'ready' | 'unavailable'
+  reason: string
+  as_of: string | null
+  reference_date: string | null
+  generated_at: string
+  quote_time: string | null
+  live: boolean
+  stale: boolean
+  /** 参与的股票总数 */
+  total: number
+  sectors: {
+    kind: 'concept' | 'industry'
+    name: string
+    /** 上一交易日涨停主线名次(前 10), 不在主线为 null */
+    mainline_rank: number | null
+    member_count: number
+    limit_up_prev: number
+    avg_pct_prev: number | null
+    verdict: BellwetherVerdict
+    items: BellwetherItem[]
+    /** 板块今日广度; coverage 为有效行情占成员比例 */
+    breadth: (BellwetherPoolPerf & { coverage: number; limit_up: number }) | null
+    mine: {
+      symbol: string
+      name: string
+      change_pct: number | null
+      state: BellwetherState
+      relative: 'stronger' | 'inline' | 'weaker' | 'unknown'
+    }[]
+  }[]
+  /** 未能归入所跟踪板块的股票 */
+  uncovered: { symbol: string; name: string }[]
+  notes: string[]
+}
+
 /** 盘中风向标: 上一交易日选定的情绪/龙头/中军, 对照当前行情。比例字段均为小数制 */
 export interface BellwetherSnapshot {
+  scope: 'market'
   status: 'ready' | 'unavailable'
   reason: string
   as_of: string | null
@@ -1087,24 +1147,8 @@ export interface BellwetherSnapshot {
   live: boolean
   /** 盘中行情超时未更新, 此时不下结论 */
   stale: boolean
-  verdict: {
-    key: 'attack' | 'divergence' | 'retreat' | 'unknown'
-    label: string
-    reason: string
-    signals: Partial<Record<'emotion' | 'leader' | 'core' | 'feedback', BellwetherSignal>>
-  }
-  items: {
-    symbol: string
-    name: string
-    roles: { key: 'emotion' | 'leader' | 'core'; label: string; detail: string }[]
-    boards_prev: number | null
-    boards_today: number | null
-    change_pct: number | null
-    state: BellwetherState
-    signal: BellwetherSignal
-    /** 封单量, 单位手; 无五档数据或未封板时为 null */
-    seal_vol: number | null
-  }[]
+  verdict: BellwetherVerdict
+  items: BellwetherItem[]
   feedback: { limit_up: BellwetherPoolPerf | null; broken: BellwetherPoolPerf | null }
   ladder: {
     limit_up: number | null; broken: number | null; limit_down: number | null
@@ -5727,9 +5771,13 @@ export const api = {
   /** 手动执行盘中核验(归档, 不推送) */
   reviewIntradayCheckRun: () =>
     request<{ result: RecapIntradayCheck }>('/api/market-recap/intraday-check', { method: 'POST' }),
-  /** 盘中风向标快照; 数据缺失时 status=unavailable */
-  reviewBellwethers: () =>
-    request<BellwetherSnapshot>('/api/market-recap/bellwethers', { quiet: true }),
+  /** 盘中风向标快照; scope=holdings/watchlist 时为所属板块视图。数据缺失时 status=unavailable */
+  reviewBellwethers: (scope: BellwetherScope = 'market', groupId?: string | null) => {
+    const params = new URLSearchParams({ scope })
+    if (scope === 'watchlist' && groupId) params.set('group_id', groupId)
+    return request<BellwetherSnapshot | UserBellwetherSnapshot>(
+      `/api/market-recap/bellwethers?${params.toString()}`, { quiet: true })
+  },
 
   /**
    * AI 大盘复盘 — 流式调用(NDJSON,与个股/财务分析同协议)。

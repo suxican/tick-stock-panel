@@ -143,13 +143,18 @@ def run_intraday_check(request: Request):
 # ================================================================
 
 @router.get("/bellwethers")
-def get_bellwethers(request: Request):
+def get_bellwethers(
+    request: Request,
+    scope: str = Query(default="market", pattern="^(market|holdings|watchlist)$",
+                       description="market=全市场; holdings=批次提醒持仓所属板块; watchlist=自选所属板块"),
+    group_id: str | None = Query(default=None, description="自选分组 ID, 仅 scope=watchlist 时生效"),
+):
     """盘中风向标快照; 关键数据缺失时 status=unavailable 并给出原因。"""
     from app.services import market_bellwether
 
     state = request.app.state
     return market_bellwether.get_snapshot(
-        state.repo,
+        state.repo, scope=scope, group_id=group_id if scope == "watchlist" else None,
         quote_service=getattr(state, "quote_service", None),
         depth_service=getattr(state, "depth_service", None),
     )
