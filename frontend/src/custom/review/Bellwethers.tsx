@@ -30,6 +30,7 @@ const SCOPE_STORAGE = 'review.bellwether.scope'
 
 const VERDICT_CLS: Record<BellwetherVerdict['key'], string> = {
   attack: 'border-bull/30 bg-bull/10 text-bull',
+  neutral: 'border-border bg-elevated text-secondary',
   divergence: 'border-warning/30 bg-warning/10 text-warning',
   retreat: 'border-bear/30 bg-bear/10 text-bear',
   unknown: 'border-border bg-elevated text-muted',
@@ -146,7 +147,7 @@ function MarketView({ data, onOpenStock }: { data: BellwetherSnapshot; onOpenSto
       <Notes items={[
         `名单只用 ${data.reference_date?.slice(5)} 收盘数据选出, 盘中不重选; 今天新走强的股票不会顶替。`,
         `情绪 = 昨日最高连板(同高度取成交额最大); 龙头/中军来自昨日涨停主线前 ${data.mainlines.length || 3} 名。`,
-        '涨跌幅达到 ±3% 归为强势/走弱; 两类以上风向标走弱为退潮, 无走弱且两类以上走强为进攻, 其余为分歧。阈值为实验门槛。',
+        '涨跌幅达到 ±3% 归为强势/走弱; 两类以上走弱为退潮, 一类走弱为分歧, 无走弱且两类以上走强为进攻, 无走弱但走强不足两类为震荡。中军须昨日红盘。阈值为实验门槛。',
         ...data.notes,
       ]} />
     </>
@@ -166,7 +167,10 @@ function SectorBlock({ sector, onOpenStock }: { sector: UserSector; onOpenStock:
         <span className="ml-auto shrink-0 text-[11px] text-secondary">
           {b ? (
             <>
-              均涨 <b className={cn('font-mono', priceColorClass(b.avg_pct))}>{pct(b.avg_pct)}</b>
+              <span title={b.basis === 'active' ? `近 5 日涨停过的 ${b.size} 只活跃成员` : `全体 ${b.size} 只成员`}>
+                {b.basis === 'active' ? '活跃均涨' : '均涨'}
+              </span>{' '}
+              <b className={cn('font-mono', priceColorClass(b.avg_pct))}>{pct(b.avg_pct)}</b>
               {' '}· 红盘 <b className="font-mono text-foreground">{(b.up_ratio * 100).toFixed(0)}%</b>
               {b.limit_up > 0 && <> · 涨停 <b className="font-mono text-bull">{b.limit_up}</b></>}
               {b.coverage < 0.8 && <span className="text-warning"> · 覆盖不足</span>}
@@ -213,8 +217,8 @@ function UserView({ data, onOpenStock }: { data: UserBellwetherSnapshot; onOpenS
       <Notes items={[
         `板块与名单只用 ${data.reference_date?.slice(5)} 收盘数据选出, 盘中不重选。`,
         '每只股票取所属概念 2 个、行业 1 个, 按昨日主线名次、涨停家数、均涨排序, 合计最多 8 个板块; 已过滤宽基标签。',
-        '龙头 = 昨日板块内连板最高; 昨日无涨停时只给弱龙头, 不参与结论。中军 = 昨日板块内成交额最大。',
-        '板块广度: 均涨 ≥1% 且红盘 ≥60% 为走强, 均涨为负或红盘 <40% 为走弱; 有效行情覆盖不足 80% 时不判定。本股相对板块均涨 ±1% 以内为同步。阈值为实验门槛。',
+        '龙头 = 昨日板块内连板最高; 昨日无涨停时只给弱龙头, 不参与结论。中军 = 昨日板块内红盘股中成交额最大。',
+        '板块广度优先只算近 5 日涨停过的活跃成员(不足 5 只时用全体成员, 显示为「均涨」): 均涨 ≥1% 且红盘 ≥60% 为走强, 均涨为负或红盘 <40% 为走弱; 有效行情覆盖不足 80% 时不判定。本股相对同一口径的板块均涨 ±1% 以内为同步。四档结论同大盘。阈值为实验门槛。',
         ...data.notes,
       ]} />
     </>

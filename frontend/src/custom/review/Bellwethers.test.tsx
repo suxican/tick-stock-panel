@@ -33,7 +33,7 @@ const mine: UserBellwetherSnapshot = {
     verdict: { key: 'retreat', label: '退潮', reason: '龙头、板块广度同时走弱', signals: {} },
     items: [{ symbol: '600102.SH', name: '机器人龙', roles: [{ key: 'leader', label: '龙头', detail: '昨日 2 板' }],
       boards_prev: 2, boards_today: 0, change_pct: 0.06, state: 'broken', signal: 'weak', seal_vol: null }],
-    breadth: { count: 28, avg_pct: -0.012, up_ratio: 0.3, coverage: 0.93, limit_up: 1 },
+    breadth: { count: 28, avg_pct: -0.012, up_ratio: 0.3, coverage: 0.93, limit_up: 1, basis: 'active', size: 30 },
     mine: [{ symbol: '600101.SH', name: '我的股', change_pct: 0.01, state: 'flat', relative: 'stronger' }],
   }],
   uncovered: [{ symbol: '600107.SH', name: '无归属' }],
@@ -96,6 +96,12 @@ it('shows the reason when data is unavailable and the empty list state', async (
   expect(host.textContent).toContain('11-11 非交易时段')
 })
 
+it('shows the neutral verdict as 震荡', async () => {
+  calls.get.mockResolvedValue({ ...ready, verdict: { key: 'neutral', label: '震荡', reason: '没有哪一类走弱，但走强的不足两类', signals: {} } })
+  await render()
+  expect(host.textContent).toContain('震荡没有哪一类走弱，但走强的不足两类')
+})
+
 it('offers a retry when the request fails', async () => {
   calls.get.mockRejectedValue(new Error('boom'))
   await render()
@@ -115,7 +121,7 @@ it('switches to holdings and shows my sectors with relative strength', async () 
   expect(calls.get).toHaveBeenLastCalledWith('holdings', null)
   const text = host.textContent ?? ''
   expect(text).toContain('机器人主线第 1退潮')
-  expect(text).toContain('均涨 -1.20% · 红盘 30% · 涨停 1')
+  expect(text).toContain('活跃均涨 -1.20% · 红盘 30% · 涨停 1')
   expect(text).toContain('机器人龙+6.00%炸板')
   expect(text).toContain('我的我的股+1.00%跑赢')
   expect(text).toContain('1/3 只未覆盖: 无归属')

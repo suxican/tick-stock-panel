@@ -25,6 +25,7 @@ def _prev() -> pl.DataFrame:
         "date": [REFERENCE] * 6,
         "consecutive_limit_ups": [5, 2, 0, 1, 6, 0],
         "amount": [8e8, 6e8, 30e8, 2e8, 1e8, 1e8],
+        "change_pct": [.1, .1, .02, .1, .05, -.01],
         "signal_limit_up": [True, True, False, True, True, False],
         "signal_broken_limit_up": [False, False, True, False, False, False],
     })
@@ -72,6 +73,17 @@ def test_mainline_leader_and_core_by_reference_amount():
     assert items[2]["roles"][0]["detail"] == "机器人 中军"
 
 
+def test_core_must_have_risen_on_the_reference_day():
+    falling = _prev().with_columns(
+        pl.when(pl.col("symbol") == CORE).then(-.03).otherwise(pl.col("change_pct")).alias("change_pct"))
+    items = bw.select_bellwethers(falling, _mainlines(), _members(), excluded=frozenset({ST_STOCK}))
+    # 成交额最大的 CORE 昨日下跌, 中军顺延到红盘中成交额最大的 LEADER
+    assert _roles(items, CORE) == [] and _roles(items, LEADER) == ["leader", "core"]
+    no_change = _prev().drop("change_pct")
+    items = bw.select_bellwethers(no_change, _mainlines(), _members())
+    assert not any(role["key"] == "core" for item in items for role in item["roles"])
+
+
 def test_same_stock_merges_roles_and_industry_is_used_without_concepts():
     members = {LEADER: _mainlines("industry")["items"]}
     items = bw.select_bellwethers(_prev(), _mainlines("industry"), members)
@@ -114,7 +126,8 @@ def test_pool_performance_is_fractional_and_empty_is_none():
     ({"emotion": "strong", "leader": "strong", "core": "neutral", "feedback": "unknown"}, "attack"),
     ({"emotion": "weak", "leader": "strong", "core": "strong", "feedback": "strong"}, "divergence"),
     ({"emotion": "weak", "leader": "neutral", "core": "weak", "feedback": "strong"}, "retreat"),
-    ({"emotion": "neutral", "leader": "neutral", "core": "unknown", "feedback": "unknown"}, "divergence"),
+    ({"emotion": "neutral", "leader": "neutral", "core": "unknown", "feedback": "unknown"}, "neutral"),
+    ({"emotion": "strong", "leader": "neutral", "core": "neutral", "feedback": "unknown"}, "neutral"),
     ({"emotion": "strong", "leader": "unknown", "core": "unknown", "feedback": "unknown"}, "unknown"),
 ])
 def test_verdict_follows_the_weakest_signals(signals, key):
@@ -401,8 +414,9 @@ def test_user_snapshot_tracks_my_sectors(user_env):
     assert snap["status"] == "ready" and snap["scope"] == "holdings" and snap["total"] == 3
     assert snap["uncovered"] == [{"symbol": NOMAP, "name": "无归属"}]
     robot = _by_name(snap["sectors"])["机器人"]
+    # 活跃成员只有 R1、X1 不足 MIN_ACTIVE, 退回全体成员
     assert robot["breadth"] == {"count": 3, "avg_pct": pytest.approx(.08 / 3), "up_ratio": pytest.approx(2 / 3),
-                                "coverage": pytest.approx(1.0), "limit_up": 1}
+                                "coverage": pytest.approx(1.0), "limit_up": 1, "basis": "all", "size": 3}
     assert [(i["name"], i["state"]) for i in robot["items"]] == [("机器人龙", "sealed"), ("机器人中军", "weak")]
     assert robot["verdict"]["key"] == "divergence" and robot["verdict"]["signals"]["breadth"] == "strong"
     assert robot["mine"] == [{"symbol": MINE, "name": "我的股", "change_pct": pytest.approx(.02),
@@ -410,6 +424,22 @@ def test_user_snapshot_tracks_my_sectors(user_env):
     cold = _by_name(snap["sectors"])["冷门"]
     # 弱龙头不计入结论
     assert cold["verdict"]["signals"]["leader"] == "unknown" and cold["verdict"]["signals"]["breadth"] == "weak"
+
+
+def test_breadth_uses_recently_active_members(user_env, monkeypatch):
+    monkeypatch.setattr(bw, "MIN_ACTIVE", 1)
+    snap = bw.build_user_snapshot(user_env.repo, "holdings", [MINE], now=NOON)
+    robot = _by_name(snap["sectors"])["机器人"]
+    assert robot["breadth"]["basis"] == "active" and robot["breadth"]["size"] == 1
+    assert robot["breadth"]["avg_pct"] == pytest.approx(.1)
+    # 本股相对活跃成员均涨(+10%)明显跑输
+    assert robot["mine"][0]["relative"] == "weaker"
+
+
+def test_breadth_falls_back_when_history_is_missing():
+    current = pl.DataFrame({"symbol": [MINE, R1], "change_pct": [.01, .03]})
+    assert bw.sector_breadth(current, [MINE, R1], None)["basis"] == "all"
+    assert bw.sector_breadth(current, [MINE, R1], set())["basis"] == "all"
 
 
 def test_user_snapshot_stale_and_fail_closed(user_env):

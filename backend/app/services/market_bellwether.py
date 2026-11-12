@@ -52,7 +52,8 @@ ROLE_LABELS = {"emotion": "情绪", "leader": "龙头", "weak_leader": "弱龙�
                "feedback": "昨日涨停反馈", "breadth": "板块广度"}
 STATE_LABELS = {"sealed": "封板", "broken": "炸板", "strong": "强势", "flat": "震荡",
                 "weak": "走弱", "limit_down": "跌停", "unknown": "待确认"}
-VERDICT_LABELS = {"attack": "进攻", "divergence": "分歧", "retreat": "退潮", "unknown": "待确认"}
+VERDICT_LABELS = {"attack": "进攻", "neutral": "震荡", "divergence": "分歧", "retreat": "退潮",
+                  "unknown": "待确认"}
 _STATE_SIGNAL = {"sealed": "strong", "strong": "strong", "flat": "neutral", "broken": "weak",
                  "weak": "weak", "limit_down": "weak", "unknown": "unknown"}
 _PREV_COLUMNS = ["symbol", "date", "consecutive_limit_ups", "amount", "change_pct", "signal_limit_up",
@@ -83,14 +84,17 @@ def select_bellwethers(prev: pl.DataFrame, mainlines: dict, members: dict[str, l
                        excluded: frozenset[str] = frozenset()) -> list[dict]:
     """T-1 收盘行情 + T-1 主线 → 风向标名单, 同一只股票的多个角色合并为一行。
 
-    prev 需含 symbol/consecutive_limit_ups/amount; members 为
+    prev 需含 symbol/consecutive_limit_ups/amount, 缺 change_pct 时不选中军; members 为
     load_mainline_members 的 {股票: [命中的主线]}。
     """
     if prev.is_empty() or not {"symbol", "consecutive_limit_ups", "amount"}.issubset(prev.columns):
         return []
     boards: dict[str, int] = {}
     amounts: dict[str, float] = {}
-    for symbol, consecutive, amount in prev.select("symbol", "consecutive_limit_ups", "amount").iter_rows():
+    risers: set[str] = set()
+    change = pl.col("change_pct") if "change_pct" in prev.columns else pl.lit(None)
+    for symbol, consecutive, amount, pct in prev.select(
+            "symbol", "consecutive_limit_ups", "amount", change.alias("_change")).iter_rows():
         key = _symbol(symbol)
         if not key or key in excluded:
             continue
@@ -98,6 +102,8 @@ def select_bellwethers(prev: pl.DataFrame, mainlines: dict, members: dict[str, l
         value = _finite(amount)
         if value is not None:
             amounts[key] = value
+        if (_finite(pct) or 0.0) > 0:
+            risers.add(key)
 
     picked: dict[str, list[dict]] = {}
 
@@ -120,7 +126,8 @@ def select_bellwethers(prev: pl.DataFrame, mainlines: dict, members: dict[str, l
         if leader and leader not in excluded:
             add(leader, "leader", f"{item['name']} 龙头")
     for item in chosen:
-        pool = [symbol for symbol, hits in members.items() if symbol in amounts and any(
+        # 中军须昨日红盘: 只按成交额会选到宽概念里与主线无关、当天下跌的大票
+        pool = [symbol for symbol, hits in members.items() if symbol in amounts and symbol in risers and any(
             hit.get("kind") == kind and hit.get("name") == item["name"] for hit in hits)]
         if pool:
             add(min(pool, key=lambda symbol: (-amounts[symbol], symbol)), "core", f"{item['name']} 中军")
@@ -210,7 +217,8 @@ def verdict(signals: dict[str, str]) -> dict:
     elif weak:
         key, reason = "divergence", f"{'、'.join(weak)}走弱" + (f"，{'、'.join(strong)}仍强" if strong else "")
     else:
-        key, reason = "divergence", "没有哪一类风向标走弱，但走强的不足两类"
+        # 没有走弱只是缺少合力, 与"已有一类走弱"的分歧在交易上不同
+        key, reason = "neutral", "没有哪一类走弱，但走强的不足两类"
     return {"key": key, "label": VERDICT_LABELS[key], "reason": reason, "signals": signals}
 
 
@@ -272,7 +280,7 @@ def _prepare(repo, quote_service, now: datetime) -> tuple[dict | None, tuple[str
     stamp = _finite(current["quote_ts"].max()) if "quote_ts" in current.columns else None
     quote_time = datetime.fromtimestamp(stamp / 1000, CN_TZ) if stamp else None
     stale = live and (quote_time is None or (now - quote_time).total_seconds() > STALE_SECONDS)
-    return {"current": current, "as_of": as_of, "reference": reference, "prev": prev,
+    return {"current": current, "as_of": as_of, "reference": reference, "prev": prev, "sessions": sessions,
             "live": live, "stale": stale, "quote_time": quote_time}, None
 
 
@@ -390,6 +398,8 @@ BREADTH_STRONG = (0.01, 0.6)  # 板块均涨 ≥1% 且红盘率 ≥60% 为走强
 BREADTH_WEAK_RATIO = 0.4
 BREADTH_MIN_COVERAGE = 0.8    # 与首板同行确认同一覆盖率门槛
 RELATIVE_BAND = 0.01          # 本股相对板块均涨 ±1% 以内算同步
+ACTIVE_DAYS = 5               # 活跃成员: 近 5 个交易日(截至 T-1)涨停过
+MIN_ACTIVE = 5                # 活跃成员不足时退回全体成员
 
 
 def _filter_config() -> dict | None:
@@ -435,10 +445,11 @@ def _sector_watch(members: list[str], info: dict) -> list[dict]:
             leader = min(rising, key=lambda s: (-info[s][2], s))
             picked[leader] = [{"key": "weak_leader", "label": ROLE_LABELS["weak_leader"],
                                "detail": "昨日无涨停, 取涨幅最大"}]
-    sized = [symbol for symbol in members if info[symbol][1] is not None]
+    sized = [symbol for symbol in members if info[symbol][1] is not None and (info[symbol][2] or 0.0) > 0]
     if sized:
         core = min(sized, key=lambda s: (-info[s][1], s))
-        picked.setdefault(core, []).append({"key": "core", "label": ROLE_LABELS["core"], "detail": "昨日成交额最大"})
+        picked.setdefault(core, []).append({"key": "core", "label": ROLE_LABELS["core"],
+                                            "detail": "昨日红盘中成交额最大"})
     return [{"symbol": symbol, "roles": roles, "boards_prev": info[symbol][0]} for symbol, roles in picked.items()]
 
 
@@ -515,6 +526,35 @@ def relative_strength(change: float | None, avg: float | None) -> str:
     if change - avg >= RELATIVE_BAND:
         return "stronger"
     return "weaker" if change - avg <= -RELATIVE_BAND else "inline"
+
+
+def _recent_limit_ups(repo, sessions: list[date], reference: date) -> set[str] | None:
+    """近 ACTIVE_DAYS 个交易日(截至 T-1)涨停过的股票; 缓存不覆盖时返回 None。"""
+    window = sorted(day for day in sessions if day <= reference)[-ACTIVE_DAYS:]
+    if not window:
+        return None
+    try:
+        history = repo.get_enriched_range(window[0], reference, columns=["symbol", "date", "consecutive_limit_ups"])
+    except Exception:  # noqa: BLE001 - 取不到历史时退回全体成员
+        logger.warning("bellwether: recent limit-up history unavailable", exc_info=True)
+        return None
+    if history is None or history.is_empty() or "consecutive_limit_ups" not in history.columns:
+        return None
+    hit = history.filter(pl.col("consecutive_limit_ups").cast(pl.Int64, strict=False).fill_null(0) >= 1)
+    return {_symbol(symbol) for symbol in hit["symbol"].to_list()}
+
+
+def sector_breadth(current: pl.DataFrame, members: list[str], active: set[str] | None) -> dict | None:
+    """板块今日广度。活跃成员(近期涨停过)足够时只算它们, 否则退回全体成员。
+
+    宽概念常有两三百只成分, 全体均涨会冲淡真正参与题材的那部分资金的信号。
+    """
+    core = [symbol for symbol in members if active and symbol in active]
+    if len(core) >= MIN_ACTIVE:
+        result = _breadth(current, core)
+        return {**result, "basis": "active", "size": len(core)} if result else None
+    result = _breadth(current, members)
+    return {**result, "basis": "all", "size": len(members)} if result else None
 
 
 def _breadth(current: pl.DataFrame, members: list[str]) -> dict | None:
@@ -596,10 +636,14 @@ def build_user_snapshot(repo, scope: str, symbols: list[str], *, quote_service=N
     rows = _quote_rows(current, watched)
     names = _names(repo, rows, watched)
     sealed = _sealed_map(depth_service, as_of)
+    active = _recent_limit_ups(repo, ctx["sessions"], reference)
+    notes = [MEMBERSHIP_NOTE]
+    if active is None:
+        notes.append("近期涨停历史不可用, 板块广度按全体成员计算")
     output = []
     for sector in sectors:
         items = [_track(entry, rows, names, sealed) for entry in sector["items"]]
-        breadth = _breadth(current, sector["members"])
+        breadth = sector_breadth(current, sector["members"], active)
         result = verdict(role_signals(items, ("leader", "core"))
                          | {"breadth": breadth_signal(breadth)})
         if ctx["stale"]:
@@ -618,7 +662,7 @@ def build_user_snapshot(repo, scope: str, symbols: list[str], *, quote_service=N
         "scope": scope, "status": "ready", "reason": "", **_stamp(now, ctx),
         "total": len(symbols), "sectors": output,
         "uncovered": [{"symbol": symbol, "name": names.get(symbol) or symbol} for symbol in uncovered],
-        "notes": [MEMBERSHIP_NOTE],
+        "notes": notes,
     }
 
 

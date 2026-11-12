@@ -1078,7 +1078,7 @@ export interface BellwetherPoolPerf { count: number; avg_pct: number; up_ratio: 
 export type BellwetherScope = 'market' | 'holdings' | 'watchlist'
 export type BellwetherRoleKey = 'emotion' | 'leader' | 'weak_leader' | 'core'
 export interface BellwetherVerdict {
-  key: 'attack' | 'divergence' | 'retreat' | 'unknown'
+  key: 'attack' | 'neutral' | 'divergence' | 'retreat' | 'unknown'
   label: string
   reason: string
   signals: Partial<Record<'emotion' | 'leader' | 'core' | 'feedback' | 'breadth', BellwetherSignal>>
@@ -1120,7 +1120,8 @@ export interface UserBellwetherSnapshot {
     verdict: BellwetherVerdict
     items: BellwetherItem[]
     /** 板块今日广度; coverage 为有效行情占成员比例 */
-    breadth: (BellwetherPoolPerf & { coverage: number; limit_up: number }) | null
+    /** basis=active 时只统计近 5 日涨停过的活跃成员(size 只), 否则为全体成员 */
+    breadth: (BellwetherPoolPerf & { coverage: number; limit_up: number; basis: 'active' | 'all'; size: number }) | null
     mine: {
       symbol: string
       name: string
