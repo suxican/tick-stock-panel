@@ -176,6 +176,8 @@ datas += [(
     str(ROOT / "backend" / "app" / "services" / "huichun_resources"),
     "app/services/huichun_resources",
 )]
+# AI 指南由 Path(__file__) 读取，必须作为数据文件落盘。
+datas += [(str(ROOT / "backend" / "app" / "strategy" / "prompts"), "app/strategy/prompts")]
 
 # ── 排除不需要的重型依赖 (主包不含 vectorbt 回测链) ──────────────────
 excludes = [
