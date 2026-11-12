@@ -9,6 +9,7 @@
   DELETE /reports/{report_id}  删除一条复盘报告
   GET  /dragon-tiger           龙虎榜三榜 (fuyao 专有, 历史按日缓存)
   GET  /auction-benchmark      盘前风向标 (fuyao 专有, 含当日/次日真实收益)
+  GET  /bellwethers            盘中风向标 (T-1 选定, 对照当前行情)
 """
 from __future__ import annotations
 
@@ -135,6 +136,23 @@ def run_intraday_check(request: Request):
     from app.services.market_recap_intraday import run_and_record
 
     return {"result": run_and_record(request.app.state.repo, push=False)}
+
+
+# ================================================================
+# 盘中风向标(T-1 选定的情绪/龙头/中军, 对照当前行情; 区别于竞价的盘前风向标)
+# ================================================================
+
+@router.get("/bellwethers")
+def get_bellwethers(request: Request):
+    """盘中风向标快照; 关键数据缺失时 status=unavailable 并给出原因。"""
+    from app.services import market_bellwether
+
+    state = request.app.state
+    return market_bellwether.get_snapshot(
+        state.repo,
+        quote_service=getattr(state, "quote_service", None),
+        depth_service=getattr(state, "depth_service", None),
+    )
 
 
 # ================================================================

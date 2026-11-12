@@ -1070,6 +1070,51 @@ export interface RecapIntradayCheck {
   check?: RecapPlanCheck
 }
 
+export type BellwetherSignal = 'strong' | 'neutral' | 'weak' | 'unknown'
+export type BellwetherState = 'sealed' | 'broken' | 'strong' | 'flat' | 'weak' | 'limit_down' | 'unknown'
+/** 一组股票今日表现; avg_pct、up_ratio 为小数制 */
+export interface BellwetherPoolPerf { count: number; avg_pct: number; up_ratio: number }
+
+/** 盘中风向标: 上一交易日选定的情绪/龙头/中军, 对照当前行情。比例字段均为小数制 */
+export interface BellwetherSnapshot {
+  status: 'ready' | 'unavailable'
+  reason: string
+  as_of: string | null
+  reference_date: string | null
+  generated_at: string
+  quote_time: string | null
+  /** 观察日为今天且处于连续竞价时段 */
+  live: boolean
+  /** 盘中行情超时未更新, 此时不下结论 */
+  stale: boolean
+  verdict: {
+    key: 'attack' | 'divergence' | 'retreat' | 'unknown'
+    label: string
+    reason: string
+    signals: Partial<Record<'emotion' | 'leader' | 'core' | 'feedback', BellwetherSignal>>
+  }
+  items: {
+    symbol: string
+    name: string
+    roles: { key: 'emotion' | 'leader' | 'core'; label: string; detail: string }[]
+    boards_prev: number | null
+    boards_today: number | null
+    change_pct: number | null
+    state: BellwetherState
+    signal: BellwetherSignal
+    /** 封单量, 单位手; 无五档数据或未封板时为 null */
+    seal_vol: number | null
+  }[]
+  feedback: { limit_up: BellwetherPoolPerf | null; broken: BellwetherPoolPerf | null }
+  ladder: {
+    limit_up: number | null; broken: number | null; limit_down: number | null
+    max_consecutive: number | null; seal_rate: number | null; promo_rate: number | null
+    sealed_corrected: boolean
+  } | null
+  mainlines: { kind: string; name: string; rank: number }[]
+  notes: string[]
+}
+
 /** 复盘「持仓联动」: 批次提醒持仓 × 盘面; 条件由程序给出 */
 export interface RecapHoldingRow {
   symbol: string
@@ -5682,6 +5727,9 @@ export const api = {
   /** 手动执行盘中核验(归档, 不推送) */
   reviewIntradayCheckRun: () =>
     request<{ result: RecapIntradayCheck }>('/api/market-recap/intraday-check', { method: 'POST' }),
+  /** 盘中风向标快照; 数据缺失时 status=unavailable */
+  reviewBellwethers: () =>
+    request<BellwetherSnapshot>('/api/market-recap/bellwethers', { quiet: true }),
 
   /**
    * AI 大盘复盘 — 流式调用(NDJSON,与个股/财务分析同协议)。

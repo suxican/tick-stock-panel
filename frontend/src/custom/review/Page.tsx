@@ -21,6 +21,7 @@ import {
 import { api, type OverviewMarket, type AiReviewReport, type DragonTigerStockItem, type RecapSnapshot } from '@/lib/api'
 import { RecapSnapshotPanel, stripPlanBlock } from './RecapSnapshot'
 import { IntradayCheckStrip } from './IntradayCheck'
+import { BellwetherCard } from './Bellwethers'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
 import { fmtPct, fmtVolume, priceColorClass } from '@/lib/format'
@@ -370,6 +371,9 @@ export function ReviewPage() {
 
               {/* ===== 今日盘中剧本核验(10:00 后, 按上一篇复盘的剧本) ===== */}
               <IntradayCheckStrip />
+
+              {/* ===== 盘中风向标(上一交易日选定, 对照当前行情) ===== */}
+              <BellwetherCard onOpenStock={setPreviewSymbol} />
 
               {/* ===== 关注点输入 ===== */}
               <div className="flex items-center gap-2 rounded-card border border-border bg-surface/80 px-3.5 py-2.5 transition-colors focus-within:border-accent/40">

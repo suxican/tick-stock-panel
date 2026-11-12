@@ -267,16 +267,14 @@ def _prev_limit_up_perf(repo, as_of: date, prev_date: str | None) -> dict | None
         df = getter(prev, as_of, columns=["symbol", "date", "change_pct", "signal_limit_up"])
         if df is None or df.is_empty():
             return None
+        from app.services.market_bellwether import pool_performance
+
         pool = df.filter((pl.col("date") == prev) & pl.col("signal_limit_up").fill_null(False))["symbol"]
-        today = df.filter((pl.col("date") == as_of) & pl.col("symbol").is_in(pool))
-        pct = today["change_pct"].drop_nulls()
-        if pct.len() == 0:
+        perf = pool_performance(df.filter(pl.col("date") == as_of), pool.to_list())
+        if perf is None:
             return None
-        return {
-            "count": int(pct.len()),
-            "avg_pct": float(pct.mean()) * 100,
-            "up_ratio": float((pct > 0).sum()) / pct.len() * 100,
-        }
+        # 复盘快照沿用百分数展示口径; 共用实现返回小数制
+        return {"count": perf["count"], "avg_pct": perf["avg_pct"] * 100, "up_ratio": perf["up_ratio"] * 100}
     except Exception as e:  # noqa: BLE001
         logger.debug("recap snapshot: prev limit-up perf skipped: %s", e)
         return None
