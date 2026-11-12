@@ -62,6 +62,13 @@ _ADJ_BACKDAYS = 30  # 推导因子时向前找"除权日前收盘"的回看天�
 _ADJ_FUTURE_DAYS = 15  # 未来已公告事件窗口: 无前收盘自然跳过, 滚动增量轮补上
 _BEIJING = ZoneInfo("Asia/Shanghai")
 
+
+def _beijing_now() -> datetime:
+    """北京墙钟(naive)。TDX 请求的 end 时刻与 _minute_rows 产出均按北京墙钟解释,
+    不能用 datetime.now(): 本机时区非北京(如美西)时会请求/过滤到错误交易日 ——
+    修复轮曾因此在北京 11-12 上午反复拉回 11-11 全天数据, 当日上午分钟整段缺失。"""
+    return datetime.now(_BEIJING).replace(tzinfo=None)
+
 # 内部指数代码 → TDX 快照代码(实测 2026-10: 上证指数走 TDX 999999 别名)
 _INDEX_CODE_MAP = {"000001.SH": "999999.SH"}
 
@@ -559,7 +566,7 @@ class TdxQuantProvider:
             return
         client = self._get_client()
         start_d = start_time.date() if start_time else None
-        end_d = end_time.date() if end_time else date.today()
+        end_d = end_time.date() if end_time else _beijing_now().date()
         span = (end_d - start_d).days if start_d else _HIST_MAX_COUNT * 1.4
         count = _bars_for_window(int(span))
         for i, symbol in enumerate(symbols):
@@ -597,7 +604,7 @@ class TdxQuantProvider:
             return pl.DataFrame(schema=_ADJ_SCHEMA)
         client = self._get_client()
         start_d = start_time.date() if start_time else None
-        end_d = end_time.date() if end_time else date.today()
+        end_d = end_time.date() if end_time else _beijing_now().date()
 
         out_rows: list[dict] = []
         for i, symbol in enumerate(symbols):
@@ -769,7 +776,7 @@ class TdxQuantProvider:
             )
             return pl.DataFrame(schema=_MINUTE_SCHEMA)
         client = self._get_client()
-        now = datetime.now()
+        now = _beijing_now()
         today = now.date()
         fetch = max(_MINUTE_BARS_PER_DAY, min(count, 480)) + _MINUTE_BARS_PER_DAY
         out: list[pl.DataFrame] = []
@@ -829,7 +836,7 @@ class TdxQuantProvider:
                 logger.warning("TdxQuant 增量轮股票池枚举失败: %s", e)
                 return pl.DataFrame(schema=_MINUTE_SCHEMA)
         count = max(1, min(int(count), 30))
-        now = datetime.now()
+        now = _beijing_now()
         out: list[pl.DataFrame] = []
         blank_streak = 0
         failures = 0
@@ -922,9 +929,9 @@ class TdxQuantProvider:
             syms = [s for s in (symbols or [])][:3] or ["000001.SZ"]
             try:
                 if dataset == "daily":
-                    df = self.get_daily(syms, datetime.now() - timedelta(days=30), datetime.now())
+                    df = self.get_daily(syms, _beijing_now() - timedelta(days=30), _beijing_now())
                 else:
-                    df = self.get_adj_factors(syms, datetime.now() - timedelta(days=365), datetime.now())
+                    df = self.get_adj_factors(syms, _beijing_now() - timedelta(days=365), _beijing_now())
             except TdxQuantError as e:
                 return {"provider": self.name, "dataset": dataset, "rows": 0, "error": str(e)}
             head = df.head(5).to_dicts()
@@ -937,7 +944,7 @@ class TdxQuantProvider:
         if dataset in ("minute", "full_minute"):
             syms = [s for s in (symbols or [])][:3] or ["600519.SH"]
             try:
-                end = datetime.now()
+                end = _beijing_now()
                 df = (self.get_intraday_batch(syms) if dataset == "full_minute"
                       else self.get_minute(syms, end - timedelta(days=3), end))
             except TdxQuantError as e:

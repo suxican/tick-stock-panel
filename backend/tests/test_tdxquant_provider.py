@@ -868,3 +868,49 @@ def test_close_resets_client():
     p = _provider(fake)
     p.close()
     assert p._client is None
+
+
+# ---------------------------------------------------------------- 本机时区非北京
+_PACIFIC = ZoneInfo("America/Los_Angeles")
+# 北京 11-12 10:21 = 美西 11-11 18:21: 本机 datetime.now() 落在前一交易日
+_INSTANT = datetime(2026, 11, 12, 10, 21, tzinfo=_BEIJING)
+
+
+class _PacificDT(datetime):
+    """模拟本机时区为美西: now() 返回美西墙钟, now(tz) 返回同一时刻的 tz 时间。"""
+
+    @classmethod
+    def now(cls, tz=None):
+        moment = _INSTANT.astimezone(tz or _PACIFIC)
+        moment = moment if tz else moment.replace(tzinfo=None)
+        return cls(*moment.timetuple()[:6], tzinfo=moment.tzinfo)
+
+
+def _two_day_minutes() -> dict:
+    return _minute_raw([
+        ("20261111", "145900", 10, 10, 10, 10.0, 1000, 1.0),
+        ("20261111", "150000", 10, 10, 10, 10.1, 1000, 1.0),
+        ("20261112", "093100", 11, 11, 11, 11.0, 1000, 1.0),
+        ("20261112", "102000", 11, 11, 11, 11.2, 1000, 1.0),
+    ])
+
+
+def test_intraday_repair_uses_beijing_trading_day_not_machine_local_date(monkeypatch):
+    monkeypatch.setattr(tp, "datetime", _PacificDT)
+    monkeypatch.setattr(tp, "_MINUTE_INTERVAL_S", 0)
+    fake = _FakeClient()
+    fake.his_default = _two_day_minutes()
+    frame = _provider(fake).get_intraday_batch(["600519.SH"])
+    # 只保留北京当日(11-12)的分钟, 而不是本机日期 11-11
+    assert sorted({d.date() for d in frame["datetime"].to_list()}) == [date(2026, 11, 12)]
+    # 请求截止时刻按北京墙钟下发
+    assert fake.his_calls[0]["end"] == datetime(2026, 11, 12, 10, 21)
+
+
+def test_intraday_latest_requests_up_to_beijing_now(monkeypatch):
+    monkeypatch.setattr(tp, "datetime", _PacificDT)
+    monkeypatch.setattr(tp, "_MINUTE_INTERVAL_S", 0)
+    fake = _FakeClient()
+    fake.his_default = _two_day_minutes()
+    _provider(fake).get_intraday_latest(symbols=["600519.SH"])
+    assert fake.his_calls[0]["end"] == datetime(2026, 11, 12, 10, 21)

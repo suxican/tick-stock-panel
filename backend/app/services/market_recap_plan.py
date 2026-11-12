@@ -169,7 +169,12 @@ def split_plan_block(content: str) -> tuple[str, dict | None]:
 # ───────────────────────── 开盘半小时成交额 ─────────────────────────
 
 _OPEN_START, _OPEN_END = time(9, 30), time(10, 0)
-_OPEN_MINUTES = 31          # 09:30..10:00 含首尾
+# 完整性只看 09:31..10:00 的 30 分钟: 数据源对开盘首根口径不同 ——
+# 猫爪单列 09:30(集合竞价+首分钟), TdxQuant 把它并入 09:31 且从不返回 09:30
+# (实测 000001.SZ 11-12: 猫爪 09:30 815.38 万 + 09:31 3974.49 万 = TDX 09:31 4789.87 万)。
+# 合计仍从 09:30 起加总, 两种口径的开盘半小时成交额完全一致。
+_OPEN_CHECK_START = time(9, 31)
+_OPEN_MINUTES = 30          # 09:31..10:00 含首尾
 _MIN_SYMBOL_COVERAGE = 0.9  # 每分钟覆盖的标的数 ≥ 当日有成交个股数的 90%
 _OPEN_CACHE: dict[str, tuple[tuple[int, int, int], float | None]] = {}
 
@@ -201,7 +206,8 @@ def opening_amount_yi(data_dir: Path, day: str, expected_symbols: int) -> float 
             .agg(pl.col("amount").sum().alias("amount"), pl.col("symbol").n_unique().alias("n"))
             .collect()
         )
-        if per_min.height == _OPEN_MINUTES and per_min["n"].min() >= expected_symbols * _MIN_SYMBOL_COVERAGE:
+        checked = per_min.filter(pl.col("datetime").dt.time() >= _OPEN_CHECK_START)
+        if checked.height == _OPEN_MINUTES and checked["n"].min() >= expected_symbols * _MIN_SYMBOL_COVERAGE:
             value = float(per_min["amount"].sum()) / 1e8
     except Exception as e:  # noqa: BLE001
         logger.debug("opening amount failed for %s: %s", day, e)

@@ -1,6 +1,6 @@
 """明日剧本结构化 + 次日系统核验 + 开盘半小时成交额。"""
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 
 import polars as pl
@@ -226,3 +226,31 @@ def test_opening_amount_rejects_partial_universe_and_missing_minutes(tmp_path):
     assert mp.opening_amount_yi(tmp_path, "2026-11-11", 100) is None
     assert mp.opening_amount_yi(tmp_path, "2026-11-12", 100) is None  # 无分区
     assert mp.opening_amount_yi(tmp_path, "2026-11-10", 0) is None
+
+
+def test_opening_amount_accepts_tdx_style_without_0930_bar(tmp_path):
+    """TdxQuant 把 09:30(集合竞价+首分钟)并入 09:31 且不返回 09:30; 猫爪单列 09:30。
+
+    两种口径混在同一分区时, 合计必须一致, 且不能因 09:30 缺列判为不完整。
+    """
+    day = "2026-11-12"
+    base = datetime.fromisoformat(f"{day}T09:30:00")
+    rows = []
+    for s in range(100):
+        sym = f"{s:06d}.SZ"
+        tdx_style = s % 2 == 0
+        for m in range(31):
+            ts = base + timedelta(minutes=m)
+            if tdx_style and m == 0:
+                continue  # TDX 无 09:30
+            amount = 3e8 if (tdx_style and m == 1) else (2e8 if m == 0 else 1e8)
+            rows.append({"symbol": sym, "datetime": ts, "amount": amount})
+    p = tmp_path / "kline_minute" / f"date={day}" / "part.parquet"
+    p.parent.mkdir(parents=True)
+    pl.DataFrame(rows).write_parquet(p)
+    # 每只: 09:30+09:31 合计 3 亿 + 09:32..10:00 共 29 分钟各 1 亿 = 32 亿
+    assert mp.opening_amount_yi(tmp_path, day, 100) == pytest.approx(100 * 32)
+
+    # 真实缺口(09:45 整分钟缺失)仍判不完整
+    pl.DataFrame([r for r in rows if r["datetime"] != base + timedelta(minutes=15)]).write_parquet(p)
+    assert mp.opening_amount_yi(tmp_path, day, 100) is None

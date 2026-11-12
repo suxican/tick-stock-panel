@@ -43,6 +43,7 @@ import pyarrow.parquet as pq
 from app.data_providers.base import ProviderRequestError
 from app.data_providers.normalizer import DAILY_COLS, normalize_daily
 from app.indicators.pipeline import filter_halt_days
+from app.market_time import cn_now
 from app.plugins.fuyao import client as fuyao_client
 from app.plugins.fuyao.client import (
     HISTORICAL_BATCH_LIMIT,
@@ -62,6 +63,13 @@ SECRETS_FIELD = "fuyao_api_key"  # UI 配置的 Key 存 secrets.json, 优先级�
 
 # 扶摇 *ms 时间字段为北京时间零点(= UTC 前一日 16:00), +8h 后按 UTC 解析即得交易日
 _SH_MS = 28_800_000
+
+
+def _beijing_now() -> datetime:
+    """北京墙钟(naive)。日K窗口与"今天"按北京交易日界定, 不能用 datetime.now():
+    本机时区非北京(如美西)时会落到前一交易日 —— 缺省窗口漏掉当日日K、
+    当日除权事件被当成未来事件过滤(TdxQuant 插件同类问题曾导致分钟数据整段缺失)。"""
+    return cn_now().replace(tzinfo=None)
 _HIST_MAX_SPAN_MS = 3650 * 86_400_000  # historical 单次窗口上限 10 年, 超出由本层分片
 _HIST_INTERVAL_S = 0.12  # 单标的请求节流(实测 200+ 连发未触发 4001 限频)
 _FINANCIAL_HISTORY_PERIODS = 8  # 财务首装全量历史: 最近 8 期季报(约 2 年)
@@ -573,7 +581,7 @@ class FuyaoProvider:
         if not symbols or asset_type != "stock":
             return
         symbols = list(dict.fromkeys(symbols))
-        end_dt = end_time or datetime.now()
+        end_dt = end_time or _beijing_now()
         start_dt = start_time or (end_dt - timedelta(days=365))
         start_d, end_d = start_dt.date(), end_dt.date()
         symset = set(symbols)
@@ -938,7 +946,7 @@ class FuyaoProvider:
         - 同日拆行(如分红/送转各一行)按成分合并后推导, 顺序不可反;
         - 配股但配股价缺失 → 无法推导, 过滤。
         """
-        today = datetime.now().date()
+        today = _beijing_now().date()
         df = self._ensure_dump(_ADJ_DUMP_KIND, "adj_factors").rename({"thscode": "symbol"})
         df = (
             df.with_columns(
@@ -1284,10 +1292,10 @@ class FuyaoProvider:
             syms = [s for s in (symbols or [])][:3] or ["000001.SZ"]
             try:
                 if dataset == "daily":
-                    df = self.get_daily(syms, datetime.now() - timedelta(days=30), datetime.now())
+                    df = self.get_daily(syms, _beijing_now() - timedelta(days=30), _beijing_now())
                 else:
                     df = self.get_adj_factors(
-                        syms, datetime.now() - timedelta(days=365), datetime.now()
+                        syms, _beijing_now() - timedelta(days=365), _beijing_now()
                     )
             except (FuyaoError, ProviderRequestError) as e:
                 return {"provider": self.name, "dataset": dataset, "rows": 0, "error": str(e)}

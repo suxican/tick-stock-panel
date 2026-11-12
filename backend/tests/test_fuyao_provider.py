@@ -1593,3 +1593,44 @@ def test_test_dataset_adj_factor_preview(monkeypatch):
     assert out["rows"] == 1
     assert out["preview"][0]["trade_date"] == "2026-06-12"
     assert out["preview"][0]["ex_factor"] == pytest.approx(32.8 / 32.12)
+
+
+# ---- 本机时区非北京(美西) ----
+from zoneinfo import ZoneInfo  # noqa: E402
+
+import app.market_time as mt  # noqa: E402
+
+_PACIFIC = ZoneInfo("America/Los_Angeles")
+# 北京 11-12 10:21 = 美西 11-11 18:21: 本机 datetime.now() 落在前一交易日
+_INSTANT = datetime(2026, 11, 12, 10, 21, tzinfo=mt.CN_TZ)
+
+
+class _PacificDT(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        moment = _INSTANT.astimezone(tz or _PACIFIC)
+        moment = moment if tz else moment.replace(tzinfo=None)
+        return cls(*moment.timetuple()[:6], tzinfo=moment.tzinfo)
+
+
+@pytest.fixture
+def pacific_clock(monkeypatch):
+    # 插件自身与 cn_now 所在模块都换成"美西本机"时钟
+    monkeypatch.setattr(fp, "datetime", _PacificDT)
+    monkeypatch.setattr(mt, "datetime", _PacificDT)
+
+
+def test_daily_default_window_ends_on_beijing_today(monkeypatch, pacific_clock):
+    bars = [_bar(date(2026, 11, 11), 11.0), _bar(date(2026, 11, 12), 11.5)]
+    provider = _hist_provider(monkeypatch, _FakeHistClient({"000001.SZ": bars}))
+    df = provider.get_daily(["000001.SZ"], datetime(2026, 9, 1), None)
+    # 缺省截止取北京当日(11-12), 不能落到本机日期 11-11 漏掉当日日K
+    assert df["date"].to_list() == [date(2026, 11, 11), date(2026, 11, 12)]
+
+
+def test_adj_event_on_beijing_today_is_not_treated_as_future(monkeypatch, pacific_clock):
+    events = [("600519.SH", date(2026, 11, 12), 0.68, 0.0, 0.0, 0.0)]
+    bars = {"600519.SH": [_bar(date(2026, 11, 11), 32.8), _bar(date(2026, 11, 12), 32.0)]}
+    provider = _adj_provider(monkeypatch, events, bars)
+    df = provider.get_adj_factors(["600519.SH"], datetime(2026, 1, 1), datetime(2026, 12, 31))
+    assert df["trade_date"].to_list() == [date(2026, 11, 12)]
