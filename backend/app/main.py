@@ -509,6 +509,17 @@ async def _application_lifespan(app: FastAPI):
             except Exception:
                 logger.exception("首板启动失败后的清理未完成")
 
+    # 盘中风向标状态时间线: 订阅行情更新, 独立线程记录, 不进行情回调。
+    app.state.bellwether_tracker = None
+    try:
+        from app.services.market_bellwether_timeline import create_tracker
+
+        bellwether_tracker = create_tracker(repo, qs, getattr(app.state, "depth_service", None))
+        bellwether_tracker.start()
+        app.state.bellwether_tracker = bellwether_tracker
+    except Exception:
+        logger.exception("风向标时间线未启动, 风向标页面仍显示当前状态")
+
     # 持仓监控独立于前端页面运行，使用既有行情和盘口服务。
     try:
         from app.services.position_t_market import PositionTMarket
@@ -550,6 +561,9 @@ async def _application_lifespan(app: FastAPI):
         position_t_service = getattr(app.state, "position_t_service", None)
         if position_t_service:
             position_t_service.stop()
+        bellwether_tracker = getattr(app.state, "bellwether_tracker", None)
+        if bellwether_tracker:
+            bellwether_tracker.stop()
         first_board_service = getattr(app.state, "first_board_service", None)
         if first_board_service:
             try:

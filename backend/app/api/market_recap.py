@@ -153,11 +153,14 @@ def get_bellwethers(
     from app.services import market_bellwether
 
     state = request.app.state
-    return market_bellwether.get_snapshot(
+    snapshot = market_bellwether.get_snapshot(
         state.repo, scope=scope, group_id=group_id if scope == "watchlist" else None,
         quote_service=getattr(state, "quote_service", None),
         depth_service=getattr(state, "depth_service", None),
     )
+    # 后台记录器未启动(如无行情服务)时不附加时间线, 页面照常显示当前状态
+    tracker = getattr(state, "bellwether_tracker", None)
+    return tracker.timeline.annotate(snapshot) if tracker is not None else snapshot
 
 
 # ================================================================

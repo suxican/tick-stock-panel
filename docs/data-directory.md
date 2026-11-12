@@ -141,6 +141,7 @@ user_data / strategies / pools → 用户定义与配置 → 各业务模块
 
 | 子目录 | 数据、读写来源与保留要求 |
 | --- | --- |
+| `bellwether_timeline/` | `<YYYY-MM-DD>.json` 盘中风向标状态时间线：大盘、持仓与全部自选所属板块里风向标及本人股票的状态变化（时间、旧状态、新状态）和各板块结论变化。由 [market_bellwether_timeline.py](../backend/app/services/market_bellwether_timeline.py) 的后台记录器在连续竞价时段按行情更新（至多每 5 秒）有变化时原子写入，复盘页风向标读取当日文件显示首封、炸板次数与转向；后端重启后读回当日记录继续。只保留最近 5 个交易日，较早文件在写入时删除。删除只丢失已记录的盘中变化，无法从日线还原。 |
 | `custom_factors/` | `<id>.json` 自定义和复合因子定义，编辑/导入时由 [factors/store.py](../backend/app/factors/store.py) 保存，注册和计算时读取；属于用户定义。 |
 | `custom_signals/` | `<id>.json` 日线/分钟信号定义及可能存在的初始化标记，由 [custom_signals.py](../backend/app/strategy/custom_signals.py) 维护；删除会影响策略和监控引用。 |
 | `extensions/` | 当前 `paper_execution/<account_id>.json` 为模拟执行扩展的账户配置/运行状态，由 [扩展 service.py](../backend/app/custom/paper_execution/service.py) 管理。成交台账仍在 `paper/accounts/`，这里也不是后端扩展安装包目录。 |
@@ -155,7 +156,7 @@ user_data / strategies / pools → 用户定义与配置 → 各业务模块
 | `strategy_guardian/` | `<strategy_id>.json` 策略基线、复验历史与状态，`combinations.json` 组合建议，由 [guardian_store.py](../backend/app/services/guardian_store.py) 维护；删除丢失守护历史，不等于删除策略源码。 |
 | `strategy_overrides/` | `<strategy_id>.json` 策略参数覆盖，由 [strategy/config.py](../backend/app/strategy/config.py) 保存、运行时合并；删除会回退默认参数并改变运行行为。 |
 
-以上为当前 13 个子目录。代码还支持按需创建 `position_policies/` 保存自定义仓位策略源码，见 [position_policies.py](../backend/app/backtest/position_policies.py)；启用其他功能后也可能有新增目录，需按第 11 节更新说明。
+以上除 `bellwether_timeline/`(首次在盘中记录到风向标变化时创建)外为当前 13 个子目录。代码还支持按需创建 `position_policies/` 保存自定义仓位策略源码，见 [position_policies.py](../backend/app/backtest/position_policies.py)；启用其他功能后也可能有新增目录，需按第 11 节更新说明。
 
 ### user_data 根文件
 

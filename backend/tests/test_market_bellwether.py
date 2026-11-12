@@ -489,3 +489,35 @@ def test_api_scope_parameter(user_env, monkeypatch):
     assert body["scope"] == "watchlist" and body["sectors"][0]["name"] == "机器人"
     assert client.get("/api/market-recap/bellwethers", params={"scope": "nope"}).status_code == 422
     bw.invalidate_cache()
+
+
+# ---------------------------------------------------------------- 新晋
+def test_market_newcomers_reach_yesterdays_top_height(env):
+    snap = bw.build_snapshot(env.repo, now=NOON)
+    # 昨日最高 5 板(剔除 ST), 今天无人追平
+    assert snap["newcomers"] == []
+    env.current = env.current.with_columns(
+        pl.when(pl.col("symbol") == NEWCOMER).then(5).otherwise(pl.col("consecutive_limit_ups"))
+        .alias("consecutive_limit_ups"))
+    snap = bw.build_snapshot(env.repo, now=NOON)
+    assert snap["newcomers"] == [{"symbol": NEWCOMER, "name": "新面孔", "boards_today": 5,
+                                  "change_pct": pytest.approx(.2)}]
+    # 名单里的龙头即使今天晋级也不算新晋
+    assert DRAGON not in [item["symbol"] for item in snap["newcomers"]]
+
+
+def test_sector_new_limit_ups_exclude_listed_and_mine(user_env, monkeypatch):
+    new8 = "600108.SH"
+    raw = _raw_maps()
+    raw["concept"] = pl.concat([raw["concept"], pl.DataFrame({"_sym_up": [new8], "concept": ["机器人"]})])
+    monkeypatch.setattr(bw, "_load_concept_map_df", lambda repo, kind: (raw[kind], 0))
+    user_env.prev = pl.concat([user_env.prev, _user_prev().head(1).with_columns(
+        pl.lit(new8).alias("symbol"), pl.lit(0).alias("consecutive_limit_ups"))], how="vertical_relaxed")
+    user_env.current = pl.concat([user_env.current, pl.DataFrame({
+        "symbol": [new8], "name": ["新涨停"], "change_pct": [.1], "consecutive_limit_ups": [1],
+        "signal_limit_up": [True], "signal_broken_limit_up": [False], "signal_limit_down": [False],
+        "quote_ts": [_ms(NOON) - 5_000]})], how="vertical_relaxed")
+    snap = bw.build_user_snapshot(user_env.repo, "holdings", [MINE], now=NOON)
+    robot = _by_name(snap["sectors"])["机器人"]
+    # R1 今天也涨停但它是盘前龙头, 不重复列出
+    assert robot["new_limit_ups"] == [{"symbol": new8, "name": "新涨停", "boards_today": 1}]

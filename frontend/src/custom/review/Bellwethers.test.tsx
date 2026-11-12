@@ -149,3 +149,35 @@ it('filters watchlist by group and shows empty-group reasons', async () => {
   expect(calls.get).toHaveBeenLastCalledWith('watchlist', 'g1')
   expect(host.textContent).toContain('该自选分组没有股票')
 })
+
+it('shows timeline hints, verdict changes and newcomers', async () => {
+  const timeline = {
+    first_sealed_at: '10:12:03', broken_count: 2, resealed_count: 1, trend: 'up' as const,
+    events: [{ t: '09:31:00', from: null, to: 'strong' as const }, { t: '10:12:03', from: 'strong' as const, to: 'sealed' as const }],
+  }
+  calls.get.mockImplementation((scope: string) => Promise.resolve(scope === 'holdings'
+    ? { ...mine, sectors: [{ ...mine.sectors[0],
+        verdict_change: { t: '10:35:00', from: 'divergence', to: 'retreat' },
+        new_limit_ups: [{ symbol: '600108.SH', name: '新涨停股', boards_today: 1 }],
+        mine: [{ ...mine.sectors[0].mine[0], timeline: { ...timeline, first_sealed_at: null, broken_count: 0, trend: 'down' as const } }] }] }
+    : { ...ready, verdict_change: { t: '10:40:00', from: 'attack', to: 'divergence' },
+        items: [{ ...ready.items[0], timeline }],
+        newcomers: [{ symbol: '600006.SH', name: '新面孔', boards_today: 5, change_pct: 0.1 }] }))
+  const open = vi.fn()
+  await render(open)
+  let text = host.textContent ?? ''
+  expect(text).toContain('10:40 进攻→分歧')
+  expect(text).toContain('首封 10:12 · 炸 2弱转强')
+  expect(text).toContain('新晋新面孔5板+10.00%')
+  const hint = Array.from(host.querySelectorAll('span')).find(s => s.textContent?.startsWith('首封'))!
+  expect(hint.title).toBe('09:31 开始 强势\n10:12 强势→封板')
+  await act(async () => { button('新面孔').click() })
+  expect(open).toHaveBeenCalledWith('600006.SH')
+
+  await act(async () => { button('持仓').click() })
+  await flush()
+  text = host.textContent ?? ''
+  expect(text).toContain('10:35 分歧→退潮')
+  expect(text).toContain('跑赢强转弱')
+  expect(text).toContain('新涨停新涨停股')
+})

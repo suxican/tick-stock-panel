@@ -12,8 +12,11 @@ import {
   type BellwetherPoolPerf,
   type BellwetherScope,
   type BellwetherSnapshot,
+  type BellwetherNewcomer,
   type BellwetherState,
+  type BellwetherTimeline,
   type BellwetherVerdict,
+  type BellwetherVerdictChange,
   type UserBellwetherSnapshot,
 } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
@@ -46,6 +49,56 @@ const STATE_CLS: Record<BellwetherState, string> = {
 }
 const RELATIVE_TEXT: Record<UserSector['mine'][number]['relative'], string> = {
   stronger: '跑赢', inline: '同步', weaker: '跑输', unknown: '',
+}
+
+const VERDICT_TEXT: Record<BellwetherVerdict['key'], string> = {
+  attack: '进攻', neutral: '震荡', divergence: '分歧', retreat: '退潮', unknown: '待确认',
+}
+
+function TimelineHint({ t }: { t?: BellwetherTimeline | null }) {
+  if (!t) return null
+  const parts = [
+    t.first_sealed_at ? `首封 ${t.first_sealed_at.slice(0, 5)}` : null,
+    t.broken_count > 0 ? `炸 ${t.broken_count}` : null,
+  ].filter(Boolean).join(' · ')
+  const history = t.events.map(e => `${e.t.slice(0, 5)} ${e.from ? `${STATE_TEXT[e.from]}→` : '开始 '}${STATE_TEXT[e.to]}`).join('\n')
+  if (!parts && !t.trend) return null
+  return (
+    <span className="shrink-0 text-[10px] text-muted" title={history}>
+      {parts}
+      {t.trend && (
+        <span className={cn(parts && 'ml-1', t.trend === 'up' ? 'text-bull' : 'text-bear')}>
+          {t.trend === 'up' ? '弱转强' : '强转弱'}
+        </span>
+      )}
+    </span>
+  )
+}
+
+function ChangeHint({ change }: { change?: BellwetherVerdictChange | null }) {
+  if (!change) return null
+  return (
+    <span className="shrink-0 text-[10px] text-muted">
+      {change.t.slice(0, 5)} {VERDICT_TEXT[change.from]}→{VERDICT_TEXT[change.to]}
+    </span>
+  )
+}
+
+function Newcomers({ label, items, onOpenStock }: { label: string; items?: BellwetherNewcomer[]; onOpenStock: OpenStock }) {
+  if (!items?.length) return null
+  return (
+    <span className="flex min-w-0 flex-wrap items-center gap-x-2 text-[11px] text-muted">
+      {label}
+      {items.map(n => (
+        <button key={n.symbol} type="button" onClick={() => onOpenStock?.(n.symbol)}
+          className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-elevated">
+          <span className="text-foreground">{n.name}</span>
+          {n.boards_today > 1 && <span className="font-mono text-bull">{n.boards_today}板</span>}
+          {n.change_pct != null && <span className={cn('font-mono', priceColorClass(n.change_pct))}>{pct(n.change_pct)}</span>}
+        </button>
+      ))}
+    </span>
+  )
 }
 
 function pct(v: number | null | undefined, digits = 2): string {
@@ -100,6 +153,7 @@ function Row({ item, onOpenStock, detail = true }: { item: BellwetherItem; onOpe
       <span className="min-w-0 truncate text-foreground">{item.name}</span>
       <span className={cn('shrink-0 font-mono tabular-nums', priceColorClass(item.change_pct))}>{pct(item.change_pct)}</span>
       <StateTag state={item.state} />
+      <TimelineHint t={item.timeline} />
       {detail && extra && <span className="ml-auto hidden min-w-0 shrink truncate text-[11px] text-muted sm:block">{extra}</span>}
     </button>
   )
@@ -138,6 +192,7 @@ function MarketView({ data, onOpenStock }: { data: BellwetherSnapshot; onOpenSto
       ) : (
         <div className="text-[11px] text-muted">上一交易日没有 2 板以上的连板股, 也没有可用的主线龙头</div>
       )}
+      <Newcomers label="新晋" items={data.newcomers} onOpenStock={onOpenStock} />
       <div className="flex flex-wrap gap-x-3 gap-y-0.5 border-t border-border/40 pt-1.5 text-[11px] text-secondary">
         <Perf label="昨日涨停今日" perf={feedback.limit_up} />
         <Perf label="昨日炸板今日" perf={feedback.broken} />
@@ -147,6 +202,8 @@ function MarketView({ data, onOpenStock }: { data: BellwetherSnapshot; onOpenSto
       <Notes items={[
         `名单只用 ${data.reference_date?.slice(5)} 收盘数据选出, 盘中不重选; 今天新走强的股票不会顶替。`,
         `情绪 = 昨日最高连板(同高度取成交额最大); 龙头/中军来自昨日涨停主线前 ${data.mainlines.length || 3} 名。`,
+        '新晋 = 今天连板高度追平或超过昨日最高板、但不在名单里的股票, 可能是新周期的切换信号; 名单本身不变。',
+        '首封、炸板次数与弱转强/强转弱(对比 15 分钟前)由后台在盘中按行情记录, 鼠标悬停可看完整变化; 后端重启后读回当日记录继续。',
         '涨跌幅达到 ±3% 归为强势/走弱; 两类以上走弱为退潮, 一类走弱为分歧, 无走弱且两类以上走强为进攻, 无走弱但走强不足两类为震荡。中军须昨日红盘。阈值为实验门槛。',
         ...data.notes,
       ]} />
@@ -164,6 +221,7 @@ function SectorBlock({ sector, onOpenStock }: { sector: UserSector; onOpenStock:
         {sector.mainline_rank != null && <span className="shrink-0 text-[10px] text-accent">主线第 {sector.mainline_rank}</span>}
         <VerdictTag verdict={sector.verdict} />
         <span className="hidden min-w-0 flex-1 truncate text-[11px] text-secondary md:block" title={sector.verdict.reason}>{sector.verdict.reason}</span>
+        <ChangeHint change={sector.verdict_change} />
         <span className="ml-auto shrink-0 text-[11px] text-secondary">
           {b ? (
             <>
@@ -193,10 +251,12 @@ function SectorBlock({ sector, onOpenStock }: { sector: UserSector; onOpenStock:
                     {RELATIVE_TEXT[m.relative]}
                   </span>
                 )}
+                <TimelineHint t={m.timeline} />
               </button>
             ))}
           </span>
         )}
+        <Newcomers label="新涨停" items={sector.new_limit_ups} onOpenStock={onOpenStock} />
       </div>
     </div>
   )
@@ -217,6 +277,7 @@ function UserView({ data, onOpenStock }: { data: UserBellwetherSnapshot; onOpenS
       <Notes items={[
         `板块与名单只用 ${data.reference_date?.slice(5)} 收盘数据选出, 盘中不重选。`,
         '每只股票取所属概念 2 个、行业 1 个, 按昨日主线名次、涨停家数、均涨排序, 合计最多 8 个板块; 已过滤宽基标签。',
+        '新涨停 = 今天封板、但不在盘前名单和你的股票里的板块成员。首封、炸板与弱转强/强转弱由后台盘中记录。',
         '龙头 = 昨日板块内连板最高; 昨日无涨停时只给弱龙头, 不参与结论。中军 = 昨日板块内红盘股中成交额最大。',
         '板块广度优先只算近 5 日涨停过的活跃成员(不足 5 只时用全体成员, 显示为「均涨」): 均涨 ≥1% 且红盘 ≥60% 为走强, 均涨为负或红盘 <40% 为走弱; 有效行情覆盖不足 80% 时不判定。本股相对同一口径的板块均涨 ±1% 以内为同步。四档结论同大盘。阈值为实验门槛。',
         ...data.notes,
@@ -278,6 +339,7 @@ export function BellwetherCard({ onOpenStock }: { onOpenStock?: (symbol: string)
         <>
           <VerdictTag verdict={data.verdict} />
           <span className="min-w-0 flex-1 truncate text-secondary" title={data.verdict.reason}>{data.verdict.reason}</span>
+          <ChangeHint change={data.verdict_change} />
         </>
       )}
       {data?.status === 'ready' && (

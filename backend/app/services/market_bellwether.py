@@ -54,6 +54,8 @@ STATE_LABELS = {"sealed": "封板", "broken": "炸板", "strong": "强势", "fla
                 "weak": "走弱", "limit_down": "跌停", "unknown": "待确认"}
 VERDICT_LABELS = {"attack": "进攻", "neutral": "震荡", "divergence": "分歧", "retreat": "退潮",
                   "unknown": "待确认"}
+MAX_NEWCOMERS = 5
+MAX_SECTOR_NEW = 3
 _STATE_SIGNAL = {"sealed": "strong", "strong": "strong", "flat": "neutral", "broken": "weak",
                  "weak": "weak", "limit_down": "weak", "unknown": "unknown"}
 _PREV_COLUMNS = ["symbol", "date", "consecutive_limit_ups", "amount", "change_pct", "signal_limit_up",
@@ -240,7 +242,8 @@ def _unavailable(reason: str, now: datetime, as_of: date | None = None) -> dict:
     return {"scope": "market", "status": "unavailable", "reason": reason, "as_of": str(as_of) if as_of else None,
             "reference_date": None, "generated_at": now.strftime("%Y-%m-%dT%H:%M:%S"),
             "quote_time": None, "live": False, "stale": False,
-            "verdict": verdict({}), "items": [], "feedback": {"limit_up": None, "broken": None},
+            "verdict": verdict({}), "items": [], "newcomers": [],
+            "feedback": {"limit_up": None, "broken": None},
             "ladder": None, "mainlines": [], "notes": []}
 
 
@@ -337,6 +340,38 @@ def _stale_verdict(result: dict) -> dict:
             "reason": f"行情超过 {STALE_SECONDS // 60} 分钟未更新, 暂不下结论"}
 
 
+def _today_limit_ups(current: pl.DataFrame, candidates: set[str], sealed: dict | None) -> list[dict]:
+    """候选中今天封板的股票(五档判定为假涨停的不算), 按连板数、成交额降序。"""
+    if not candidates:
+        return []
+    rows = _quote_rows(current, sorted(candidates))
+    output = []
+    for symbol, row in rows.items():
+        if stock_state(row, (sealed or {}).get(symbol)) != "sealed":
+            continue
+        output.append({"symbol": symbol, "name": row.get("name") or symbol,
+                       "boards_today": int(_finite(row.get("consecutive_limit_ups")) or 0),
+                       "change_pct": _finite(row.get("change_pct")),
+                       "_amount": _finite(row.get("amount")) or 0.0})
+    output.sort(key=lambda item: (-item["boards_today"], -item["_amount"], item["symbol"]))
+    for item in output:
+        item.pop("_amount")
+    return output
+
+
+def market_newcomers(current: pl.DataFrame, prev: pl.DataFrame, listed: set[str], *,
+                     excluded: frozenset[str], sealed: dict | None) -> list[dict]:
+    """今天连板高度追平或超过昨日最高板、且不在盘前名单里的股票(切换信号候选)。"""
+    if prev.is_empty() or "consecutive_limit_ups" not in current.columns:
+        return []
+    boards = [int(_finite(value) or 0) for symbol, value in
+              prev.select("symbol", "consecutive_limit_ups").iter_rows() if _symbol(symbol) not in excluded]
+    height = max([*boards, MIN_EMOTION_BOARDS])
+    high = current.filter(pl.col("consecutive_limit_ups").cast(pl.Int64, strict=False).fill_null(0) >= height)
+    candidates = {_symbol(symbol) for symbol in high["symbol"].to_list()} - listed - set(excluded)
+    return _today_limit_ups(current, candidates, sealed)[:MAX_NEWCOMERS]
+
+
 def build_snapshot(repo, *, quote_service=None, depth_service=None, now: datetime | None = None) -> dict:
     """装配一次风向标快照; 任何关键输入缺失都返回 status=unavailable, 不用别的日期顶替。"""
     now = now or cn_now()
@@ -346,6 +381,7 @@ def build_snapshot(repo, *, quote_service=None, depth_service=None, now: datetim
     current, as_of, reference, prev = ctx["current"], ctx["as_of"], ctx["reference"], ctx["prev"]
 
     data_dir = repo.store.data_dir
+    excluded = _excluded_symbols(data_dir)
     notes = []
     try:
         mainlines = load_mainlines(data_dir, as_of=as_of, reference_date=reference, top_n=TOP_MAINLINES)
@@ -357,13 +393,14 @@ def build_snapshot(repo, *, quote_service=None, depth_service=None, now: datetim
         notes.append(MEMBERSHIP_NOTE)
     else:
         notes.append(f"主线龙头与中军暂缺: {mainlines.get('reason') or '主线数据不可用'}")
-    selected = select_bellwethers(prev, mainlines, members, excluded=_excluded_symbols(data_dir))
+    selected = select_bellwethers(prev, mainlines, members, excluded=excluded)
 
     symbols = [item["symbol"] for item in selected]
     rows = _quote_rows(current, symbols)
     names = _names(repo, rows, symbols)
     sealed = _sealed_map(depth_service, as_of)
     items = [_track(entry, rows, names, sealed) for entry in selected]
+    newcomers = market_newcomers(current, prev, set(symbols), excluded=excluded, sealed=sealed)
 
     limit_pool, broken_pool = _flags(prev, "signal_limit_up"), _flags(prev, "signal_broken_limit_up")
     feedback = {
@@ -379,7 +416,7 @@ def build_snapshot(repo, *, quote_service=None, depth_service=None, now: datetim
         result = _stale_verdict(result)
     return {
         "scope": "market", "status": "ready", "reason": "", **_stamp(now, ctx),
-        "verdict": result, "items": items, "feedback": feedback,
+        "verdict": result, "items": items, "newcomers": newcomers, "feedback": feedback,
         "ladder": {key: ladder[key] for key in ("limit_up", "broken", "limit_down", "max_consecutive",
                                                  "seal_rate", "promo_rate", "sealed_corrected")},
         "mainlines": [{key: item.get(key) for key in ("kind", "name", "rank")}
@@ -655,9 +692,13 @@ def build_user_snapshot(repo, scope: str, symbols: list[str], *, quote_service=N
             mine.append({"symbol": symbol, "name": names.get(symbol) or symbol, "change_pct": change,
                          "state": stock_state(row, (sealed or {}).get(symbol)),
                          "relative": relative_strength(change, breadth["avg_pct"] if breadth else None)})
+        listed = {item["symbol"] for item in items} | set(sector["mine"])
+        fresh = _today_limit_ups(current, set(sector["members"]) - listed, sealed)[:MAX_SECTOR_NEW]
         output.append({key: sector[key] for key in ("kind", "name", "mainline_rank", "member_count",
                                                      "limit_up_prev", "avg_pct_prev")}
-                      | {"verdict": result, "items": items, "breadth": breadth, "mine": mine})
+                      | {"verdict": result, "items": items, "breadth": breadth, "mine": mine,
+                         "new_limit_ups": [{key: item[key] for key in ("symbol", "name", "boards_today")}
+                                           for item in fresh]})
     return {
         "scope": scope, "status": "ready", "reason": "", **_stamp(now, ctx),
         "total": len(symbols), "sectors": output,

@@ -1084,6 +1084,17 @@ export interface BellwetherVerdict {
   reason: string
   signals: Partial<Record<'emotion' | 'leader' | 'core' | 'feedback' | 'breadth', BellwetherSignal>>
 }
+/** 状态时间线摘要(后台记录器盘中按行情更新记录); 时间为北京时间 HH:MM:SS */
+export interface BellwetherTimeline {
+  first_sealed_at: string | null
+  broken_count: number
+  resealed_count: number
+  /** 与 15 分钟前相比: up=弱转强, down=强转弱 */
+  trend: 'up' | 'down' | null
+  events: { t: string; from: BellwetherState | null; to: BellwetherState }[]
+}
+export interface BellwetherVerdictChange { t: string; from: BellwetherVerdict['key']; to: BellwetherVerdict['key'] }
+export interface BellwetherNewcomer { symbol: string; name: string; boards_today: number; change_pct?: number | null }
 export interface BellwetherItem {
   symbol: string
   name: string
@@ -1095,6 +1106,8 @@ export interface BellwetherItem {
   signal: BellwetherSignal
   /** 封单量, 单位手; 无五档数据或未封板时为 null */
   seal_vol: number | null
+  /** 记录器未运行或今日尚无记录时缺省/为 null */
+  timeline?: BellwetherTimeline | null
 }
 
 /** 持仓/自选所属板块的风向标; 比例字段为小数制 */
@@ -1120,6 +1133,10 @@ export interface UserBellwetherSnapshot {
     avg_pct_prev: number | null
     verdict: BellwetherVerdict
     items: BellwetherItem[]
+    /** 结论最近一次变化; 记录器未运行时缺省 */
+    verdict_change?: BellwetherVerdictChange | null
+    /** 今天新涨停、但不在盘前名单与我的股票里的成员 */
+    new_limit_ups?: BellwetherNewcomer[]
     /** 板块今日广度; coverage 为有效行情占成员比例 */
     /** basis=active 时只统计近 5 日涨停过的活跃成员(size 只), 否则为全体成员 */
     breadth: (BellwetherPoolPerf & { coverage: number; limit_up: number; basis: 'active' | 'all'; size: number }) | null
@@ -1129,6 +1146,7 @@ export interface UserBellwetherSnapshot {
       change_pct: number | null
       state: BellwetherState
       relative: 'stronger' | 'inline' | 'weaker' | 'unknown'
+      timeline?: BellwetherTimeline | null
     }[]
   }[]
   /** 未能归入所跟踪板块的股票 */
@@ -1150,7 +1168,10 @@ export interface BellwetherSnapshot {
   /** 盘中行情超时未更新, 此时不下结论 */
   stale: boolean
   verdict: BellwetherVerdict
+  verdict_change?: BellwetherVerdictChange | null
   items: BellwetherItem[]
+  /** 今天连板高度追平或超过昨日最高板、且不在名单里的股票 */
+  newcomers?: BellwetherNewcomer[]
   feedback: { limit_up: BellwetherPoolPerf | null; broken: BellwetherPoolPerf | null }
   ladder: {
     limit_up: number | null; broken: number | null; limit_down: number | null
