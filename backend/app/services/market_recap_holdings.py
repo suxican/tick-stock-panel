@@ -234,6 +234,70 @@ def build_holdings_linkage(repo, snapshot: dict | None, *, sector_service=None, 
     }
 
 
+def _raw_closes(repo, day: date, symbols: list[str]) -> dict[str, float] | None:
+    """复盘日原始收盘价(与引擎支撑/压力同为原始价基准); 缓存不覆盖返回 None。"""
+    getter = getattr(repo, "get_enriched_range", None)
+    if getter is None or not symbols:
+        return None
+    try:
+        df = getter(day, day, symbols=symbols, columns=["symbol", "date", "close", "raw_close"])
+    except Exception as e:  # noqa: BLE001
+        logger.debug("holdings check: closes unavailable: %s", e)
+        return None
+    if df is None:
+        return None
+    out = {}
+    for r in df.filter(pl.col("date") == day).to_dicts():
+        v = r.get("raw_close") if r.get("raw_close") is not None else r.get("close")
+        if v is not None:
+            out[r["symbol"]] = float(v)
+    return out
+
+
+def check_holding_conditions(prev_holdings: dict | None, snapshot: dict, repo, *, from_as_of: str) -> dict | None:
+    """核验上一交易日为持仓给出的程序条件在复盘日是否触发。
+
+    条件是触发位而不是预测, 结果为 triggered / not / pending(盘中或数据缺失),
+    不计入剧本命中率。已从批次删除的股票照样核验(条件给出时仍持有)。
+    """
+    rows = [r for r in (prev_holdings or {}).get("rows") or [] if r.get("conditions")]
+    if not rows:
+        return None
+    day = date.fromisoformat(snapshot["as_of"])
+    intraday = bool(snapshot.get("intraday"))
+    closes = None if intraday else _raw_closes(repo, day, [r["symbol"] for r in rows])
+    ops = {">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b, ">": lambda a, b: a > b, "<": lambda a, b: a < b}
+    out = []
+    for r in rows:
+        close = None if closes is None else closes.get(r["symbol"])
+        conds = []
+        for c in r["conditions"]:
+            op = ops.get(c.get("op"))
+            if close is None or op is None:
+                status = "pending"
+            else:
+                status = "triggered" if op(close, float(c["value"])) else "not"
+            conds.append({"label": c.get("label"), "meaning": c.get("meaning"), "status": status})
+        out.append({"symbol": r["symbol"], "name": r.get("name") or r["symbol"],
+                    "close": close, "conditions": conds})
+    return {"from_as_of": from_as_of, "as_of": snapshot["as_of"], "rows": out,
+            "triggered": sum(c["status"] == "triggered" for r in out for c in r["conditions"])}
+
+
+def holdings_check_prompt_block(check: dict | None) -> str:
+    """昨日持仓条件今日触发情况 → 提示词(程序判定, 模型只解释)。"""
+    if not check:
+        return ""
+    hits = [f"{r['name']} {c['label']} → {c['meaning']}(收盘 {r['close']:.2f})"
+            for r in check["rows"] for c in r["conditions"] if c["status"] == "triggered"]
+    pending = any(c["status"] == "pending" for r in check["rows"] for c in r["conditions"])
+    lines = [f"## 昨日持仓条件今日触发(来自 {check['from_as_of']}, 程序判定)"]
+    lines += [f"- {h}" for h in hits] or ["- 无条件触发"]
+    if pending:
+        lines.append("- 部分条件因数据未定型暂不能判定")
+    return "\n".join(lines)
+
+
 def holdings_prompt_block(holdings: dict | None) -> str:
     """持仓联动 → 提示词文本。不含数量与成本金额; 条件为程序结果, 模型不得改动。"""
     if not holdings or not holdings.get("rows"):

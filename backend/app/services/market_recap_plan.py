@@ -85,8 +85,69 @@ def validate_plan(raw: object) -> dict | None:
             # all: 条件同时成立; any: 任一成立(对应表格里的"或")
             "match": "any" if sc.get("match") == "any" else "all",
             "conditions": conds,
+            # 表格里的"应对", 盘中核验推送时原样带出(只做文本, 不参与判定)
+            "action": str(sc.get("action") or "").strip()[:40],
         })
-    return {"scenarios": scenarios} if scenarios else None
+    if not scenarios:
+        return None
+    return {"scenarios": scenarios, "overlaps": find_overlaps(scenarios)}
+
+
+# ───────────────────────── 情景互斥 ─────────────────────────
+# 情景重叠 = 存在某个市场状态让两个情景同时命中。重叠时"主判断命中"不再说明
+# 判断对了(其他情景也命中), 统计时不计入主判断命中率。
+# 区间表示: (lo, lo_closed, hi, hi_closed), 同一指标(boards 按标的区分)取交集。
+
+_INF = float("inf")
+
+
+def _cond_key(c: dict) -> tuple:
+    return (c["metric"], c.get("symbol"))
+
+
+def _cond_interval(c: dict) -> tuple:
+    v, op = c["value"], c["op"]
+    return {
+        ">": (v, False, _INF, False), ">=": (v, True, _INF, False),
+        "<": (-_INF, False, v, False), "<=": (-_INF, False, v, True),
+    }[op]
+
+
+def _intersect(a: tuple, b: tuple) -> tuple | None:
+    lo, lo_c = max((a[0], a[1]), (b[0], b[1]), key=lambda x: (x[0], not x[1]))
+    hi, hi_c = min((a[2], a[3]), (b[2], b[3]), key=lambda x: (x[0], x[1]))
+    if lo > hi or (lo == hi and not (lo_c and hi_c)):
+        return None
+    return (lo, lo_c, hi, hi_c)
+
+
+def _boxes(sc: dict) -> list[dict]:
+    """情景 → 可命中区域列表(每个区域: 指标 → 区间)。all 为一个区域, any 为每个条件一个。"""
+    if sc.get("match") == "any":
+        return [{_cond_key(c): _cond_interval(c)} for c in sc["conditions"]]
+    box: dict = {}
+    for c in sc["conditions"]:
+        key = _cond_key(c)
+        cur = _intersect(box[key], _cond_interval(c)) if key in box else _cond_interval(c)
+        if cur is None:
+            return []  # 自相矛盾的情景永远不会命中
+        box[key] = cur
+    return [box]
+
+
+def _boxes_overlap(a: dict, b: dict) -> bool:
+    # 只在共同指标上可能互斥; 一方未约束的指标总能取到满足另一方的值
+    return all(_intersect(a[k], b[k]) is not None for k in a.keys() & b.keys())
+
+
+def find_overlaps(scenarios: list[dict]) -> list[list[str]]:
+    """可能同时命中的情景对(按名称)。"""
+    out = []
+    for i, x in enumerate(scenarios):
+        for y in scenarios[i + 1:]:
+            if any(_boxes_overlap(a, b) for a in _boxes(x) for b in _boxes(y)):
+                out.append([x["name"], y["name"]])
+    return out
 
 
 def split_plan_block(content: str) -> tuple[str, dict | None]:
@@ -216,27 +277,36 @@ def evaluate_plan(plan: dict, snapshot: dict, repo, *, from_as_of: str) -> dict:
         else:
             status = "miss" if "miss" in states else ("pending" if "pending" in states else "hit")
         scenarios.append({"name": sc["name"], "primary": sc["primary"], "match": match,
-                          "status": status, "conditions": conds})
-    return {"from_as_of": from_as_of, "as_of": snapshot["as_of"], "scenarios": scenarios}
+                          "status": status, "conditions": conds, "action": sc.get("action", "")})
+    return {"from_as_of": from_as_of, "as_of": snapshot["as_of"], "scenarios": scenarios,
+            "overlaps": plan.get("overlaps") or [],
+            "ambiguous": sum(s["status"] == "hit" for s in scenarios) > 1}
 
 
 def plan_stats(checks: list[dict]) -> dict:
-    """历次核验 → 主判断命中率 / 剧本覆盖率。仅统计已定型(无待定)的核验。"""
-    primary_total = primary_hits = covered_total = covered = 0
+    """历次核验 → 主判断命中率 / 剧本覆盖率。仅统计已定型(无待定)的核验。
+
+    多个情景同时命中(剧本不互斥)时, 主判断"命中"不说明判断正确, 该次不计入
+    主判断命中率, 单独计为 ambiguous。按情景状态现算, 兼容旧核验记录。
+    """
+    primary_total = primary_hits = covered_total = covered = ambiguous = 0
     for chk in checks:
         scs = chk.get("scenarios") or []
         if not scs:
             continue
+        hits = sum(s.get("status") == "hit" for s in scs)
         prim = next((s for s in scs if s.get("primary")), None)
-        if prim and prim.get("status") != "pending":
+        if hits > 1:
+            ambiguous += 1
+        elif prim and prim.get("status") != "pending":
             primary_total += 1
             primary_hits += prim.get("status") == "hit"
         if all(s.get("status") != "pending" for s in scs):
             covered_total += 1
-            covered += any(s.get("status") == "hit" for s in scs)
+            covered += hits > 0
     return {
         "primary_total": primary_total, "primary_hits": primary_hits,
-        "covered_total": covered_total, "covered": covered,
+        "covered_total": covered_total, "covered": covered, "ambiguous": ambiguous,
     }
 
 
@@ -290,6 +360,8 @@ def plan_check_prompt_block(check: dict | None, stats: dict | None) -> str:
         joiner = " 或 " if sc.get("match") == "any" else "; "
         conds = joiner.join(f"{c['label']} 实际 {c['actual_text']} {mark[c['status']]}" for c in sc["conditions"])
         lines.append(f"- {sc['name']}{'(主判断)' if sc['primary'] else ''}: {mark[sc['status']]} — {conds}")
+    if check.get("ambiguous"):
+        lines.append("- 注意: 多个情景同时命中, 说明剧本情景不互斥, 本次不计入主判断命中率")
     if stats and stats.get("primary_total"):
         lines.append(f"- 历史主判断命中 {stats['primary_hits']}/{stats['primary_total']}")
     return "\n".join(lines)

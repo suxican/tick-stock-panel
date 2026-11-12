@@ -184,3 +184,45 @@ it('renders holdings linkage with market-only mode and program conditions', () =
   act(() => Array.from(host.querySelectorAll('button')).find(b => b.textContent === '中天科技')!.click())
   expect(onOpenStock).toHaveBeenCalledWith('600522.SH')
 })
+
+it('flags ambiguous plan checks and shows overlap counts', () => {
+  act(() => root.render(<RecapSnapshotPanel snapshot={{
+    ...snapshot,
+    plan_check: {
+      from_as_of: '2026-11-10', as_of: '2026-11-11', ambiguous: true, overlaps: [['强于预期', '符合预期']],
+      scenarios: [
+        { name: '强于预期', primary: false, status: 'hit', conditions: [{ label: '开盘半小时成交额 ≥ 5000亿', actual: 5341, actual_text: '5341亿', status: 'hit' }] },
+        { name: '符合预期', primary: true, status: 'hit', conditions: [{ label: '开盘半小时成交额 ≥ 4000亿', actual: 5341, actual_text: '5341亿', status: 'hit' }] },
+      ],
+    },
+    plan_stats: { primary_total: 2, primary_hits: 1, covered_total: 3, covered: 3, ambiguous: 1 },
+  }} />))
+  const text = host.textContent ?? ''
+  expect(text).toContain('多个情景同时命中: 剧本情景不互斥, 本次不计入主判断命中率')
+  expect(text).toContain('多情景命中 1 次')
+})
+
+it('lists holding conditions triggered today', () => {
+  act(() => root.render(
+    <MemoryRouter>
+      <RecapSnapshotPanel snapshot={{
+        ...snapshot,
+        holdings: { as_of: '2026-11-11', market_only: 0, warnings: [], rows: [{
+          symbol: '600522.SH', name: '中天科技', mode: 'full', missing: [], close: 27.1, price_date: '2026-11-11',
+          pnl_pct: -50, pnl_state: 'deep_loss', age_days: 10, trend: 'down', relative: 'weaker', stock_pct: 1,
+          sector: null, hot: [], mainline: null, conditions: [], warnings: [],
+        }] },
+        holdings_check: { from_as_of: '2026-11-10', as_of: '2026-11-11', triggered: 1, rows: [{
+          symbol: '600522.SH', name: '中天科技', close: 27.1, conditions: [
+            { label: '收盘 ≥ 26.80(压力)', meaning: '站上压力, 联动走强', status: 'triggered' },
+            { label: '收盘 ≤ 22.10(支撑)', meaning: '跌破支撑', status: 'not' },
+          ],
+        }] },
+      }} />
+    </MemoryRouter>,
+  ))
+  const text = host.textContent ?? ''
+  expect(text).toContain('昨日持仓条件(11-10 给出)今日触发')
+  expect(text).toContain('中天科技 收盘 ≥ 26.80(压力) → 站上压力, 联动走强(收盘 27.10)')
+  expect(text).not.toContain('跌破支撑')
+})

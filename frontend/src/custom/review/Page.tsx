@@ -20,6 +20,7 @@ import {
 
 import { api, type OverviewMarket, type AiReviewReport, type DragonTigerStockItem, type RecapSnapshot } from '@/lib/api'
 import { RecapSnapshotPanel, stripPlanBlock } from './RecapSnapshot'
+import { IntradayCheckStrip } from './IntradayCheck'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
 import { fmtPct, fmtVolume, priceColorClass } from '@/lib/format'
@@ -157,6 +158,17 @@ export function ReviewPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: QK.preferences })
       toast('已更新推送触发方式', 'success')
+    },
+    onError: () => { /* request() 已 toast */ },
+  })
+
+  // 10:00 盘中剧本核验(独立常驻, 即时生效; 结果推送到上面的复盘推送渠道)
+  const intradayEnabled = !!prefs.data?.intraday_plan_check_enabled
+  const intradayMut = useMutation({
+    mutationFn: (enabled: boolean) => api.updateIntradayPlanCheck(enabled),
+    onSuccess: (_data, enabled) => {
+      qc.invalidateQueries({ queryKey: QK.preferences })
+      toast(enabled ? '已开启 10:00 盘中剧本核验' : '已关闭盘中剧本核验', 'success')
     },
     onError: () => { /* request() 已 toast */ },
   })
@@ -355,6 +367,9 @@ export function ReviewPage() {
 
               {/* ===== 龙虎榜 (fuyao 专有, 资金动向上下文; 复盘日联动) ===== */}
               <DragonTigerCard date={dtDate} onOpenStock={setPreviewSymbol} />
+
+              {/* ===== 今日盘中剧本核验(10:00 后, 按上一篇复盘的剧本) ===== */}
+              <IntradayCheckStrip />
 
               {/* ===== 关注点输入 ===== */}
               <div className="flex items-center gap-2 rounded-card border border-border bg-surface/80 px-3.5 py-2.5 transition-colors focus-within:border-accent/40">
@@ -608,6 +623,33 @@ export function ReviewPage() {
                     </Link>
                   )}
                 </p>
+
+                {/* 10:00 盘中剧本核验: 工作日 10:02 判定倾向情景并推送 */}
+                <div className="mt-2.5 flex items-center justify-between border-t border-border/40 pt-2.5">
+                  <div>
+                    <div className="text-[11px] text-foreground">10:00 盘中剧本核验</div>
+                    <div className="text-[10px] text-muted/70">
+                      工作日 10:02 按开盘半小时成交额判定今天倾向哪个情景{reviewPushChannels.length ? '并推送' : '(未选推送渠道, 仅页面可见)'}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={intradayEnabled}
+                    aria-label="10:00 盘中剧本核验"
+                    disabled={intradayMut.isPending}
+                    onClick={() => intradayMut.mutate(!intradayEnabled)}
+                    className={cn(
+                      'relative h-4 w-7 shrink-0 rounded-full transition-colors disabled:opacity-50',
+                      intradayEnabled ? 'bg-accent' : 'bg-border',
+                    )}
+                  >
+                    <span className={cn(
+                      'absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all',
+                      intradayEnabled ? 'left-3.5' : 'left-0.5',
+                    )} />
+                  </button>
+                </div>
               </div>
 
               {/* 自定义复盘提示词(折叠区, 展开/保存/恢复默认/填入默认模板) */}

@@ -149,7 +149,7 @@ def test_plan_stats_counts_only_settled_checks():
         {"scenarios": [{"primary": True, "status": "pending"}, {"primary": False, "status": "miss"}]},
     ]
     assert mp.plan_stats(checks) == {
-        "primary_total": 3, "primary_hits": 1, "covered_total": 3, "covered": 2,
+        "primary_total": 3, "primary_hits": 1, "covered_total": 3, "covered": 2, "ambiguous": 0,
     }
 
 

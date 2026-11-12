@@ -1267,7 +1267,8 @@ async def _stream_review_with_retry(repo, quote_service, depth_service) -> tuple
     return "".join(content_parts), last_meta
 
 
-def _maybe_push_review(content: str, meta: dict) -> None:
+def _maybe_push_review(content: str, meta: dict, *, title: str = "每日复盘",
+                       event: str = "market_review") -> None:
     """复盘报告归档后, 按 review_push_channels 选定的外部工具逐个推送完整报告。
 
     定时生成与手动生成共用本函数 (手动归档端点 POST /api/market-recap/reports 也会调用)。
@@ -1298,7 +1299,7 @@ def _maybe_push_review(content: str, meta: dict) -> None:
                     continue
                 secret = preferences.get_feishu_webhook_secret()
                 ok = webhook_adapter.send_feishu_card(
-                    url, "每日复盘", subtitle, content, secret
+                    url, title, subtitle, content, secret
                 )
                 logger.info("review push(feishu) %s", "sent" if ok else "failed")
             elif ch == "wecom":
@@ -1309,7 +1310,7 @@ def _maybe_push_review(content: str, meta: dict) -> None:
                 # 企业微信 markdown 标题已含一级标题, subtitle 拼到正文首行
                 full_body = (f"**{subtitle}**\n\n{content}" if subtitle else content)
                 ok = webhook_adapter.send_wecom_markdown(
-                    url, "每日复盘", full_body
+                    url, title, full_body
                 )
                 logger.info("review push(wecom) %s", "sent" if ok else "failed")
             elif ch == "custom":
@@ -1319,9 +1320,9 @@ def _maybe_push_review(content: str, meta: dict) -> None:
                     continue
                 ok = webhook_adapter.send_custom(
                     url,
-                    "每日复盘",
+                    title,
                     content,
-                    "market_review",
+                    event,
                     meta,
                     secrets_store.get_custom_webhook_secret(),
                 )
@@ -1335,7 +1336,7 @@ def _maybe_push_review(content: str, meta: dict) -> None:
                 ok = email_adapter.send_email(
                     config,
                     secrets_store.get_email_smtp_password(),
-                    "每日复盘",
+                    title,
                     email_body,
                 )
                 logger.info("review push(email) %s", "sent" if ok else "failed")
@@ -1362,6 +1363,32 @@ def _register_review_job(scheduler, repo, hour: int, minute: int) -> None:
                             timezone="Asia/Shanghai"),
         id=REVIEW_JOB_ID,
         misfire_grace_time=7200,  # 复盘非关键, 允许 2 小时内补跑
+        replace_existing=True,
+    )
+
+
+def _run_intraday_plan_check(repo) -> None:
+    """盘中剧本核验 job: 判定倾向情景 → 归档 → 推送。异常只记日志。"""
+    try:
+        from app.services.market_recap_intraday import run_and_record
+
+        result = run_and_record(repo, push=True)
+        logger.info("intraday plan check: %s %s", result.get("status"), result.get("date"))
+    except Exception:  # noqa: BLE001
+        logger.exception("intraday plan check failed")
+
+
+def register_intraday_plan_check_job(scheduler, repo) -> None:
+    """注册/更新盘中剧本核验 job(工作日 10:02, Asia/Shanghai)。"""
+    from app.services.market_recap_intraday import JOB_ID, RUN_HOUR, RUN_MINUTE
+
+    scheduler.add_job(
+        _run_intraday_plan_check,
+        args=[repo],
+        trigger=CronTrigger(day_of_week="mon-fri", hour=RUN_HOUR, minute=RUN_MINUTE,
+                            timezone="Asia/Shanghai"),
+        id=JOB_ID,
+        misfire_grace_time=1800,  # 盘中信号过时无意义, 只允许 30 分钟内补跑
         replace_existing=True,
     )
 
@@ -1487,6 +1514,10 @@ def start_scheduler(repo: KlineRepository, capset: CapabilitySet) -> AsyncIOSche
         _register_review_job(scheduler, repo, review_sched["hour"], review_sched["minute"])
         logger.info("scheduled_review enabled @%02d:%02d mon-fri",
                     review_sched["hour"], review_sched["minute"])
+
+    if preferences.get_intraday_plan_check_enabled():
+        register_intraday_plan_check_job(scheduler, repo)
+        logger.info("intraday plan check enabled @10:02 mon-fri")
 
     scheduler.start()
     logger.info("scheduler started; instruments@%02d:%02d, pipeline@%02d:%02d, depth@%02d:%02d mon-fri",

@@ -8,7 +8,9 @@
 import { useMemo } from 'react'
 import type { EChartsOption } from 'echarts'
 import { Link } from 'react-router-dom'
-import type { RecapHoldings, RecapPlanCheck, RecapPlanStatus, RecapSnapshot, RecapSnapshotMetric } from '@/lib/api'
+import type {
+  RecapHoldings, RecapHoldingsCheck, RecapPlanCheck, RecapPlanStatus, RecapSnapshot, RecapSnapshotMetric,
+} from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { priceColorClass } from '@/lib/format'
 import { useChartTheme } from '@/lib/theme'
@@ -253,7 +255,19 @@ function PlanCheck({ check, stats }: { check: RecapPlanCheck | null | undefined;
             剧本覆盖 <b className="font-mono text-foreground">{stats.covered}/{stats.covered_total}</b>
           </span>
         )}
+        {stats && (stats.ambiguous ?? 0) > 0 && (
+          <span className="text-muted" title="多个情景同时命中的天数, 不计入主判断命中率">
+            多情景命中 {stats.ambiguous} 次
+          </span>
+        )}
       </div>
+      {check?.ambiguous ? (
+        <div className="text-[11px] text-warning">多个情景同时命中: 剧本情景不互斥, 本次不计入主判断命中率</div>
+      ) : check?.overlaps?.length ? (
+        <div className="text-[11px] text-muted">
+          注: 情景 {check.overlaps.map(p => p.join(' / ')).join('、')} 存在可同时命中的区间
+        </div>
+      ) : null}
       {check ? (
         <div className="overflow-x-auto">
           <table className="w-full text-[12px]">
@@ -297,11 +311,35 @@ function PlanCheck({ check, stats }: { check: RecapPlanCheck | null | undefined;
 const PNL_TEXT = { deep_loss: '深套', loss: '浮亏', flat: '持平', profit: '浮盈', unknown: '' } as const
 const REL_TEXT = { stronger: '跑赢', weaker: '跑输', inline: '同步', unknown: '' } as const
 
-function HoldingsLinkage({ holdings, onOpenStock }: { holdings: RecapHoldings; onOpenStock?: (symbol: string) => void }) {
+function HoldingsCheck({ check }: { check: RecapHoldingsCheck }) {
+  const triggered = check.rows.flatMap(r => r.conditions.filter(c => c.status === 'triggered').map(c => ({ r, c })))
+  const pending = check.rows.some(r => r.conditions.some(c => c.status === 'pending'))
+  return (
+    <div className="space-y-0.5 rounded bg-elevated/40 px-2 py-1.5 text-[11px]">
+      <div className="text-muted">昨日持仓条件({check.from_as_of.slice(5)} 给出)今日触发</div>
+      {triggered.length ? triggered.map(({ r, c }, i) => (
+        <div key={i}>
+          <span className="text-foreground">{r.name}</span>{' '}
+          <span className="font-mono text-foreground">{c.label}</span>{' '}
+          <span className="text-secondary">→ {c.meaning}</span>
+          {r.close != null && <span className="ml-1 font-mono text-muted">(收盘 {r.close.toFixed(2)})</span>}
+        </div>
+      )) : <div className="text-secondary">无条件触发</div>}
+      {pending && <div className="text-muted">部分条件因数据未定型暂不能判定</div>}
+    </div>
+  )
+}
+
+function HoldingsLinkage({ holdings, check, onOpenStock }: {
+  holdings: RecapHoldings
+  check?: RecapHoldingsCheck | null
+  onOpenStock?: (symbol: string) => void
+}) {
   // 多只持仓共有的数据原因(如日线未定版)只在表下提示一次
   const notes = Array.from(new Set([...holdings.warnings, ...holdings.rows.flatMap(r => r.warnings)])).slice(0, 3)
   return (
     <div className="min-w-0 space-y-1.5">
+      {check && <HoldingsCheck check={check} />}
       <div className="flex flex-wrap items-baseline gap-x-3 text-[11px]">
         <span className="text-muted">持仓联动(批次提醒 · 条件由程序给出)</span>
         {holdings.market_only > 0 && (
@@ -406,7 +444,7 @@ export function RecapSnapshotPanel({ snapshot, onOpenStock }: { snapshot: RecapS
         <Ladder snapshot={snapshot} onOpenStock={onOpenStock} />
       </div>
       {snapshot.holdings && snapshot.holdings.rows.length > 0 && (
-        <HoldingsLinkage holdings={snapshot.holdings} onOpenStock={onOpenStock} />
+        <HoldingsLinkage holdings={snapshot.holdings} check={snapshot.holdings_check} onOpenStock={onOpenStock} />
       )}
     </section>
   )

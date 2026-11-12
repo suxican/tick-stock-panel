@@ -708,6 +708,7 @@ def get_preferences() -> dict:
         "depth_polling_interval": preferences.get_depth_polling_interval(),
         "depth_finalize_time": preferences.get_depth_finalize_time(),
         "review_schedule": preferences.get_review_schedule(),
+        "intraday_plan_check_enabled": preferences.get_intraday_plan_check_enabled(),
         "review_push_channels": preferences.get_review_push_channels(),
         "review_push_mode": preferences.get_review_push_mode(),
         "market_recap_system_prompt": preferences.get_market_recap_system_prompt(),
@@ -2267,6 +2268,34 @@ def update_review_schedule(req: ReviewScheduleIn, request: Request) -> dict:
                 pass  # job 本就不存在(从未开过), 无需处理
 
     return sched
+
+
+class IntradayPlanCheckIn(BaseModel):
+    enabled: bool
+
+
+@router.put("/preferences/intraday-plan-check")
+def update_intraday_plan_check(req: IntradayPlanCheckIn, request: Request) -> dict:
+    """开关 10:00 盘中剧本核验, 立即注册/移除 APScheduler job。
+
+    核验结果推送到复盘推送渠道; 开启时要求已选推送渠道, 否则只在复盘页可见。
+    """
+    from app.services import preferences
+
+    enabled = preferences.set_intraday_plan_check_enabled(req.enabled)
+    from app.jobs.daily_pipeline import register_intraday_plan_check_job
+    from app.services.market_recap_intraday import JOB_ID
+
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler:
+        if enabled:
+            register_intraday_plan_check_job(scheduler, request.app.state.repo)
+        else:
+            try:
+                scheduler.remove_job(JOB_ID)
+            except Exception:
+                pass  # job 本就不存在
+    return {"enabled": enabled}
 
 
 class ReviewPushIn(BaseModel):

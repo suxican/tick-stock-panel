@@ -58,10 +58,10 @@ _SYSTEM_PROMPT = """你是一位有 15 年 A 股短线与波段实战经验的�
 表格 `| 方向 | 阶段 | 龙头/梯队 | 判断 |`,最多 4 行。方向只取输入"涨停主线"中的主线;板块涨幅榜里未标【主线】的板块只能写进表后的异动说明,不得列为主线。阶段用 首日/发酵/高潮/分歧/退潮(结合"连续 N 日位列前10")。判断不超过 25 字,说清资金是否确认(龙虎榜)、有无补涨或掉队。表后一行"退潮/流出方向:……"。
 
 ## 🗺️ 明日剧本
-表格 `| 情景 | 触发条件 | 应对 |`,2-3 行(强于预期/符合预期/弱于预期),在情景名后用"(主判断)"标出你认为最可能的一个。触发条件只能用输入"明日剧本可用的触发指标"里的指标,表格中写中文含义(如"开盘半小时成交额 ≥ 5500亿"),不写英文 metric 名;优先用开盘半小时成交额(开盘后即可验证);阈值必须参照该表的今日值与前5日均给出,不得凭空设定。应对写参与方向与参与强度(如"主线核心加大参与""只做分歧转一致""降低参与度、以观望为主"),不点名推荐买入具体个股。
+表格 `| 情景 | 触发条件 | 应对 |`,2-3 行(强于预期/符合预期/弱于预期),在情景名后用"(主判断)"标出你认为最可能的一个。触发条件只能用输入"明日剧本可用的触发指标"里的指标,表格中写中文含义(如"开盘半小时成交额 ≥ 5500亿"),不写英文 metric 名;优先用开盘半小时成交额(开盘后即可验证);阈值必须参照该表的今日值与前5日均给出,不得凭空设定。**情景必须互斥**:选一个主轴指标(优先开盘半小时成交额)切成首尾相接、互不重叠的区间(如 ≥6000 / 4800–6000 / <4800),任何一天最多只有一个情景命中;其他指标只能作为同一情景内的附加条件。应对写参与方向与参与强度(如"主线核心加大参与""只做分歧转一致""降低参与度、以观望为主"),不点名推荐买入具体个股。
 
 ## 📦 持仓联动
-仅当输入含"持仓联动"时输出本节,否则整节省略。页面已展示持仓表与程序条件,本节只做解释,2-4 句:哪些持仓与今天的主线判断同向、哪些最弱,明日剧本的各情景分别会怎样影响它们。**不得新增或改动价位、数量和操作动作**,提到条件时只能原样引用输入中的条件;标注"只看市场联动"的持仓只谈联动,不谈仓位处理。
+仅当输入含"持仓联动"时输出本节,否则整节省略。页面已展示持仓表与程序条件,本节只做解释,2-4 句:哪些持仓与今天的主线判断同向、哪些最弱,明日剧本的各情景分别会怎样影响它们。**不得新增或改动价位、数量和操作动作**,提到条件时只能原样引用输入中的条件;标注"只看市场联动"的持仓只谈联动,不谈仓位处理。输入含"昨日持仓条件今日触发"时,先用一句话说明哪些条件已触发(原样引用,不改判)。
 
 ## ⛔ 失效条件
 1-3 条列表,出现即说明今天的定调错了。
@@ -71,9 +71,9 @@ _SYSTEM_PROMPT = """你是一位有 15 年 A 股短线与波段实战经验的�
 
 **最后**输出一个 plan 代码块,把明日剧本表格结构化,供系统次日自动核验(页面不显示)。格式:
 ```plan
-{"scenarios":[{"name":"强于预期","primary":false,"conditions":[{"metric":"amount_30m","op":">=","value":6000},{"metric":"limit_up","op":">=","value":90}]},{"name":"符合预期","primary":true,"conditions":[{"metric":"boards","symbol":"603366.SH","name":"日出东方","op":">=","value":5}]},{"name":"弱于预期","primary":false,"match":"any","conditions":[{"metric":"amount_30m","op":"<","value":4800},{"metric":"limit_up","op":"<","value":70}]}]}
+{"scenarios":[{"name":"强于预期","primary":false,"action":"主线核心加大参与","conditions":[{"metric":"amount_30m","op":">=","value":6000},{"metric":"limit_up","op":">=","value":90}]},{"name":"符合预期","primary":true,"action":"只做分歧转一致","conditions":[{"metric":"amount_30m","op":">=","value":4800},{"metric":"amount_30m","op":"<","value":6000},{"metric":"boards","symbol":"603366.SH","name":"日出东方","op":">=","value":5}]},{"name":"弱于预期","primary":false,"action":"降低参与度、以观望为主","conditions":[{"metric":"amount_30m","op":"<","value":4800}]}]}
 ```
-规则:metric 只能取触发指标表中的值;op 只能是 > >= < <=;value 是数字,单位与表中一致(亿/家/%/板);同一情景内条件默认同时成立才算命中,表格里写"或"的情景加 "match":"any"(任一成立即命中);"区间"写成两个条件(如 ≥4800 与 <5500);每个情景 1-3 个条件,与表格触发条件一一对应、不得省略;恰好一个情景 primary 为 true;boards 必须带 symbol(用输入中的代码)和 name。
+规则:metric 只能取触发指标表中的值;op 只能是 > >= < <=;value 是数字,单位与表中一致(亿/家/%/板);同一情景内条件默认同时成立才算命中,表格里写"或"的情景加 "match":"any"(任一成立即命中);"区间"写成两个条件(如 ≥4800 与 <5500);每个情景 1-3 个条件,与表格触发条件一一对应、不得省略;恰好一个情景 primary 为 true;action 原样填写表格中该情景的应对(不超过 30 字);boards 必须带 symbol(用输入中的代码)和 name;"match":"any" 容易破坏互斥,只在各条件都与其他情景的区间不重叠时使用。
 
 ## 准则
 1. 只输出结论,不写分析过程和"我先看……"之类的元话语。
@@ -352,10 +352,9 @@ def attach_plan_check(snapshot: dict | None, repo, reports: list[dict]) -> None:
     from app.services.market_recap_plan import archived_checks, evaluate_plan, plan_stats
 
     as_of = snapshot["as_of"]
-    dates = snapshot.get("dates") or []
-    prev = find_prev_report(as_of, reports)
+    prev = _adjacent_prev_report(snapshot, reports)
     check = None
-    if prev and prev.get("plan") and len(dates) >= 2 and dates[-2] == prev.get("as_of"):
+    if prev and prev.get("plan"):
         try:
             check = evaluate_plan(prev["plan"], snapshot, repo, from_as_of=prev["as_of"])
         except Exception as e:  # noqa: BLE001
@@ -363,6 +362,33 @@ def attach_plan_check(snapshot: dict | None, repo, reports: list[dict]) -> None:
     snapshot["plan_check"] = check
     stats = plan_stats(archived_checks(reports, as_of) + ([check] if check else []))
     snapshot["plan_stats"] = stats if (stats["primary_total"] or stats["covered_total"]) else None
+
+
+def _adjacent_prev_report(snapshot: dict, reports: list[dict]) -> dict | None:
+    """上一篇复盘, 且必须是复盘日紧邻的上一交易日(否则其剧本/条件不针对复盘日)。"""
+    dates = snapshot.get("dates") or []
+    prev = find_prev_report(snapshot["as_of"], reports)
+    if prev and len(dates) >= 2 and dates[-2] == prev.get("as_of"):
+        return prev
+    return None
+
+
+def attach_holdings_check(snapshot: dict | None, repo, reports: list[dict]) -> None:
+    """核验上一交易日给持仓的程序条件今日是否触发, 写入快照(就地)。"""
+    if not snapshot:
+        return
+    from app.services.market_recap_holdings import check_holding_conditions
+
+    prev = _adjacent_prev_report(snapshot, reports)
+    check = None
+    if prev:
+        try:
+            check = check_holding_conditions(
+                (prev.get("snapshot") or {}).get("holdings"), snapshot, repo, from_as_of=prev["as_of"],
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("holdings check failed for %s: %s", snapshot["as_of"], e)
+    snapshot["holdings_check"] = check
 
 
 def _prev_plan_text(prev_plan: dict | None) -> str:
@@ -435,7 +461,7 @@ async def recap_market_stream(
     rs = _regime_state(overview)
 
     # 数据快照: 近期对比/周期/梯队/主线, 同时供 prompt 与前端结构化面板; 失败只降级
-    from app.services.market_recap_holdings import holdings_prompt_block
+    from app.services.market_recap_holdings import holdings_check_prompt_block, holdings_prompt_block
     from app.services.market_recap_plan import plan_check_prompt_block, plan_vocabulary_block
     from app.services.market_recap_snapshot import build_recap_snapshot, snapshot_prompt_block
 
@@ -458,6 +484,7 @@ async def recap_market_stream(
         except Exception as e:  # noqa: BLE001
             logger.warning("holdings linkage failed for %s: %s", as_of_str, e)
             snapshot["holdings"] = None
+        attach_holdings_check(snapshot, repo, reports)
 
     # 2. meta 事件(前端据此先渲染信号灯/看板与数据面板)
     yield json.dumps({
@@ -492,7 +519,10 @@ async def recap_market_stream(
                 (snapshot or {}).get("plan_check"), (snapshot or {}).get("plan_stats"),
             ),
             plan_vocab_context=plan_vocabulary_block(snapshot),
-            holdings_context=holdings_prompt_block((snapshot or {}).get("holdings")),
+            holdings_context="\n\n".join(filter(None, [
+                holdings_prompt_block((snapshot or {}).get("holdings")),
+                holdings_check_prompt_block((snapshot or {}).get("holdings_check")),
+            ])),
         )
         got_content = False
         async for delta in stream_ai_text(

@@ -978,6 +978,16 @@ def set_review_push_mode(mode: str) -> str:
     return mode
 
 
+def get_intraday_plan_check_enabled() -> bool:
+    """10:00 盘中剧本核验(工作日 10:02 判定倾向情景并推送)。默认关闭 —— 会外发消息。"""
+    return bool(load().get("intraday_plan_check_enabled", False))
+
+
+def set_intraday_plan_check_enabled(enabled: bool) -> bool:
+    save({"intraday_plan_check_enabled": bool(enabled)})
+    return bool(enabled)
+
+
 
 # ===== 实时监控 =====
 

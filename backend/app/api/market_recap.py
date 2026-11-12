@@ -117,6 +117,27 @@ async def analyze_market(request: Request, req: AnalyzeRequest):
 
 
 # ================================================================
+# 盘中剧本核验(10:00 后判定今天倾向上一篇剧本的哪个情景)
+# ================================================================
+
+@router.get("/intraday-check")
+def get_intraday_check(request: Request):
+    """今日最近一次盘中核验结果; 今日尚未核验时 result=null。"""
+    from app.market_time import cn_today
+    from app.services.market_recap_intraday import latest_result
+
+    return {"result": latest_result(cn_today().isoformat())}
+
+
+@router.post("/intraday-check")
+def run_intraday_check(request: Request):
+    """手动执行一次盘中核验(归档, 不推送; 定时任务才推送)。"""
+    from app.services.market_recap_intraday import run_and_record
+
+    return {"result": run_and_record(request.app.state.repo, push=False)}
+
+
+# ================================================================
 # 报告 CRUD(历史复盘持久化)
 # ================================================================
 

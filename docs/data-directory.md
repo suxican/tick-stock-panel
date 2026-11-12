@@ -167,6 +167,8 @@ user_data / strategies / pools → 用户定义与配置 → 各业务模块
 | `research_candidates.json` | 挖掘候选及其研究状态，不等于已经发布的策略。 |
 | 策略结果/计时缓存、任务注册表 | 各服务用于复用结果、记录耗时和调度任务的状态；应由对应功能管理，不与用户定义一并清理。 |
 | `integrity_report.json`、`daily_integrity_state.json` | 自检报告和跨重启保留的异常/待重算状态；与 `integrity_backups/`、修复流程配套，不应手工删除以强行放行异常数据。 |
+| `ai_market_recaps.json` | AI 复盘归档(最多 20 篇)：正文、数据快照(含剧本核验、持仓联动)和结构化明日剧本 `plan`，由 [market_recap_reports.py](../backend/app/services/market_recap_reports.py) 在生成复盘后写入。下一篇复盘读取上一篇的剧本做系统核验、读取历史核验算命中率；删除后历史复盘与命中率统计丢失，不能从行情重建。 |
+| `market_recap_intraday.json` | 10:00 盘中剧本核验结果(最多 20 条)：开盘半小时成交额与倾向情景，由 [market_recap_intraday.py](../backend/app/services/market_recap_intraday.py) 在定时任务(偏好 `intraday_plan_check_enabled`)或复盘页手动核验时写入，复盘页读取当日最新一条。删除只影响页面显示历史结果，可再次核验生成。 |
 
 上述文件与备份范围的对应关系见 [config_backup.py](../backend/app/services/config_backup.py)；自检状态说明见 [配置说明](configuration.md)。
 

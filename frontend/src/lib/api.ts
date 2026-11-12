@@ -1033,9 +1033,41 @@ export interface RecapSnapshot {
   /** 系统对上一交易日结构化剧本的核验; 无结构化剧本或不紧邻时为 null */
   plan_check?: RecapPlanCheck | null
   /** 历次核验汇总: 主判断命中 / 剧本覆盖(仅统计已定型的核验) */
-  plan_stats?: { primary_total: number; primary_hits: number; covered_total: number; covered: number } | null
+  plan_stats?: {
+    primary_total: number; primary_hits: number; covered_total: number; covered: number
+    /** 多个情景同时命中的次数(不计入主判断命中率) */
+    ambiguous?: number
+  } | null
   /** 批次提醒持仓联动; 无批次时为 null */
   holdings?: RecapHoldings | null
+  /** 上一交易日给持仓的程序条件今日是否触发; 无条件或不紧邻时为 null */
+  holdings_check?: RecapHoldingsCheck | null
+}
+
+export interface RecapHoldingsCheck {
+  from_as_of: string
+  as_of: string
+  triggered: number
+  rows: {
+    symbol: string
+    name: string
+    close: number | null
+    conditions: { label: string; meaning: string; status: 'triggered' | 'not' | 'pending' }[]
+  }[]
+}
+
+/** 10:00 盘中剧本核验结果 */
+export interface RecapIntradayCheck {
+  id?: string
+  date: string
+  generated_at: string
+  status: 'ok' | 'data_incomplete' | 'no_plan' | 'not_trading' | 'too_early'
+  message?: string
+  from_as_of?: string
+  amount_30m?: number | null
+  prev_amount_30m?: number | null
+  leaning?: { name: string; primary: boolean; action: string }[]
+  check?: RecapPlanCheck
 }
 
 /** 复盘「持仓联动」: 批次提醒持仓 × 盘面; 条件由程序给出 */
@@ -1079,7 +1111,12 @@ export interface RecapPlanCheck {
     match?: 'all' | 'any'
     status: RecapPlanStatus
     conditions: { label: string; actual: number | null; actual_text: string; status: RecapPlanStatus }[]
+    action?: string
   }[]
+  /** 可能同时命中的情景对 */
+  overlaps?: string[][]
+  /** 本次多个情景同时命中 */
+  ambiguous?: boolean
 }
 
 export interface AiReviewReport {
@@ -3364,6 +3401,8 @@ export interface Preferences {
   depth_polling_interval: number
   depth_finalize_time: { hour: number; minute: number }
   review_schedule: { enabled: boolean; hour: number; minute: number }
+  /** 10:00 盘中剧本核验(工作日 10:02 推送倾向情景) */
+  intraday_plan_check_enabled?: boolean
   review_push_channels: string[]
   review_push_mode?: 'auto' | 'manual'
   /** 用户自定义复盘系统提示词；空串 = 使用内置默认模板 */
@@ -4201,6 +4240,11 @@ export const api = {
     request<{ enabled: boolean; hour: number; minute: number }>('/api/settings/preferences/review-schedule', {
       method: 'PUT',
       body: JSON.stringify({ enabled, hour, minute }),
+    }),
+  updateIntradayPlanCheck: (enabled: boolean) =>
+    request<{ enabled: boolean }>('/api/settings/preferences/intraday-plan-check', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
     }),
   updateReviewPush: (channels: string[], mode?: 'auto' | 'manual') =>
     request<{ review_push_channels: string[]; review_push_mode: 'auto' | 'manual' }>('/api/settings/preferences/review-push', {
@@ -5631,6 +5675,13 @@ export const api = {
 
   reviewReportDelete: (reportId: string) =>
     request<{ ok: boolean }>(`/api/market-recap/reports/${encodeURIComponent(reportId)}`, { method: 'DELETE' }),
+
+  /** 今日最近一次盘中剧本核验; 未核验时 result=null */
+  reviewIntradayCheck: () =>
+    request<{ result: RecapIntradayCheck | null }>('/api/market-recap/intraday-check', { quiet: true }),
+  /** 手动执行盘中核验(归档, 不推送) */
+  reviewIntradayCheckRun: () =>
+    request<{ result: RecapIntradayCheck }>('/api/market-recap/intraday-check', { method: 'POST' }),
 
   /**
    * AI 大盘复盘 — 流式调用(NDJSON,与个股/财务分析同协议)。
