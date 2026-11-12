@@ -1186,6 +1186,23 @@ it('shows the live ladder beside the closed-day phase, using the dashboard count
   const chip = [...status.querySelectorAll<HTMLElement>('span[title]')].find(node => node.textContent?.startsWith('盘中梯队'))!
   expect(chip.title).toContain('炸板 23 家，跌停 1 家')
 })
+it('warns with a settings link when intraday seal polling is off, and stays quiet when running', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), seal_polling: { running: false, reason: '未开启连板梯队监控' } })
+  await render()
+  const link = [...host.querySelectorAll<HTMLAnchorElement>('section[aria-label="盯盘状态"] a')].find(node => node.textContent?.startsWith('盘中封单未开启'))!
+  expect(link.getAttribute('href')).toBe('/settings?tab=monitoring')
+  expect(link.title).toContain('未开启连板梯队监控')
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), seal_polling: { running: false, reason: '当前数据源没有可用的五档盘口能力' } })
+  await click('刷新')
+  await settle()
+  await act(async () => { await client.refetchQueries() })
+  await settle()
+  expect([...host.querySelectorAll('a')].find(node => node.textContent?.startsWith('盘中封单未开启'))?.getAttribute('href')).toBe('/settings?tab=data-sources')
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), seal_polling: { running: true, reason: null } })
+  await act(async () => { await client.refetchQueries() })
+  await settle()
+  expect(host.textContent).not.toContain('盘中封单未开启')
+})
 it('hides sentiment and mainline chips for snapshots from an older backend', async () => {
   await render()
   const status = host.querySelector('section[aria-label="盯盘状态"]')!

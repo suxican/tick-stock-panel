@@ -20,6 +20,18 @@ def _number(value: object) -> float | None:
     return float(value)
 
 
+def polling_status(depth_service) -> dict:
+    """盘中封单轮询状态; 未运行时盘中封板质量只能显示为不可用, 盘后仍有收盘定版。"""
+    if depth_service is None:
+        return {"running": False, "reason": "五档封单服务未启动"}
+    try:
+        running, reason = depth_service.polling_status()
+    except Exception:  # noqa: BLE001 - 状态读取失败按未运行提示
+        logger.warning("封单轮询状态读取失败", exc_info=True)
+        return {"running": False, "reason": "封单轮询状态读取失败"}
+    return {"running": bool(running), "reason": reason}
+
+
 def load_sealed(depth_service, as_of: date) -> dict:
     """一次评估读取一次涨停方向的封单表; 任何失败都降级为未就绪。"""
     if depth_service is None:

@@ -58,3 +58,32 @@ def test_unready_stale_or_failing_depth_is_unavailable():
         raise RuntimeError("depth down")
     failing = SimpleNamespace(is_sealed_ready=broken)
     assert load_sealed(failing, DAY)["ready"] is False
+
+
+def test_polling_status_reports_actionable_reasons():
+    from app.services.first_board_seal import polling_status
+    assert polling_status(None) == {"running": False, "reason": "五档封单服务未启动"}
+    running = SimpleNamespace(polling_status=lambda: (True, None))
+    assert polling_status(running) == {"running": True, "reason": None}
+    off = SimpleNamespace(polling_status=lambda: (False, "未开启连板梯队监控"))
+    assert polling_status(off)["reason"] == "未开启连板梯队监控"
+
+    def broken():
+        raise RuntimeError("boom")
+    assert polling_status(SimpleNamespace(polling_status=broken))["running"] is False
+
+
+@pytest.mark.parametrize("capable,ladder,realtime,reason", [
+    (False, True, True, "五档盘口能力"), (True, False, True, "连板梯队监控"), (True, True, False, "实时行情"),
+])
+def test_depth_service_polling_status_follows_start_gates(monkeypatch, capable, ladder, realtime, reason):
+    from app.services import preferences
+    from app.services.depth_service import DepthService
+    service = DepthService()
+    monkeypatch.setattr(service, "_has_capability", lambda: capable)
+    monkeypatch.setattr(preferences, "get_limit_ladder_monitor_enabled", lambda: ladder)
+    monkeypatch.setattr(preferences, "get_realtime_quotes_enabled", lambda: realtime)
+    running, message = service.polling_status()
+    assert running is False and reason in message
+    service._running = True
+    assert service.polling_status() == (True, None)

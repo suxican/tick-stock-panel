@@ -170,6 +170,19 @@ class DepthService:
         self._thread.start()
         logger.info("depth sealed 盘中轮询已启动")
 
+    def polling_status(self) -> tuple[bool, str | None]:
+        """盘中封单轮询是否在运行; 未运行时给出用户可处理的原因(按 start_polling 的门控顺序)。"""
+        if self._running:
+            return True, None
+        if not self._has_capability():
+            return False, "当前数据源没有可用的五档盘口能力"
+        from app.services import preferences
+        if not preferences.get_limit_ladder_monitor_enabled():
+            return False, "未开启连板梯队监控"
+        if not preferences.get_realtime_quotes_enabled():
+            return False, "全局实时行情未开启"
+        return False, "封单轮询未运行, 可在设置中重新开关连板梯队监控"
+
     def stop_polling(self) -> None:
         """停止盘中轮询线程。"""
         self._running = False

@@ -42,6 +42,8 @@ export function LiveStatus({ data, retained }: { data: FirstBoardSnapshot; retai
   const env = data.environment
   const ladder = env.ladder
   const live = data.market_ladder
+  const polling = data.seal_polling
+  const pollingLink = polling?.reason?.includes('五档盘口能力') ? '/settings?tab=data-sources' : '/settings?tab=monitoring'
   const whole = (value?: number | null) => value == null ? '—' : String(Math.round(value))
   const ratio = (value?: number | null) => value == null ? '—' : `${(value * 100).toFixed(0)}%`
   const mainlines = data.mainlines?.items ?? []
@@ -61,6 +63,10 @@ export function LiveStatus({ data, retained }: { data: FirstBoardSnapshot; retai
         {data.mainlines && <Chip tone="neutral" title={mainlines.length ? mainlines.map(item => `${item.kind === 'industry' ? '行业' : '概念'}第 ${item.rank}：${item.name}（涨停 ${whole(item.limit_up_count)} 家，最高 ${whole(item.max_boards)} 板）`).join('；') : data.mainlines.reason}>
           <span className="max-w-64 truncate">昨日主线：{mainlines.length ? (conceptLines.length ? conceptLines : mainlines).slice(0, 3).map(item => item.name).join('、') : '待确认'}</span>
         </Chip>}
+        {polling && !polling.running && <Link to={pollingLink} title={`${polling.reason ?? '封单轮询未运行'}。盘中封板质量将显示为不可用，收盘后仍有定版结果。`}
+          className={cn(chipClass, toneClass.warn, 'hover:bg-elevated focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent')}>
+          {toneIcon.warn}盘中封单未开启<span className="text-secondary">· {polling.reason?.includes('五档盘口能力') ? '检查数据源' : '去开启'}</span>
+        </Link>}
         {summary && <button type="button" aria-expanded={open} aria-controls={panelId} onClick={() => setOpen(value => !value)}
           className={cn(chipClass, toneClass[summary.tone], 'hover:bg-elevated focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent')}>
           {toneIcon[summary.tone]}数据覆盖 {summary.label}{retained && '（上次摘要）'}

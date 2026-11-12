@@ -37,7 +37,7 @@ from app.services.first_board_context import (
 )
 from app.services.first_board_data_status import build_data_status, radar_clocks
 from app.services.first_board_feedback import FirstBoardFeedback, empty_feedback, expire_feedback
-from app.services.first_board_seal import load_sealed, seal_quality
+from app.services.first_board_seal import load_sealed, polling_status, seal_quality
 from app.services.first_board_observations import FirstBoardObservationStore
 from app.services.first_board_portfolio import (
     buy_budget,
@@ -1059,6 +1059,7 @@ class FirstBoardService:
                     "environment": dict(self._environment),
                     "mainlines": copy.deepcopy(self._mainlines),
                     "market_ladder": ladder,
+                    "seal_polling": polling_status(self._depth_service),
                     "yesterday_feedback": feedback,
                     "coverage": {"candidate_count": len(visible_rows),
                                  "symbol_count": len({row["symbol"] for row in visible_rows}),

@@ -7082,6 +7082,8 @@ export interface FirstBoardSnapshot {
     limit_up: number | null; broken: number | null; limit_down: number | null; max_consecutive: number | null
     first_board: number | null; ge2_count: number | null; seal_rate: number | null; promo_rate: number | null; promo_pool: number | null
   }
+  /** 盘中五档封单轮询状态；未运行时盘中封板质量为不可用，盘后仍有收盘定版。旧后端缺省。 */
+  seal_polling?: { running: boolean; reason: string | null }
   mainlines?: { date?: string | null; status?: 'ready' | 'unavailable'; reason?: string; top_n?: number; items?: FirstBoardMainlineItem[] }
   /** role_hidden_count：因不属于所选角色而未列出的股票数，旧后端缺省。 */
   coverage: { candidate_count: number; symbol_count: number; quote_count: number; fresh_count: number; role_hidden_count?: number }
