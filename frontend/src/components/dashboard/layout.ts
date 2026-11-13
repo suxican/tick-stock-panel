@@ -19,7 +19,7 @@ export type WidgetType =
   | 'indices' | 'kpi' | 'distribution' | 'radar' | 'trend'
   | 'concept-rank' | 'industry-rank'
   | 'gainers' | 'losers' | 'turnover' | 'activity'
-  | 'ladder' | 'monitor' | 'ext-link'
+  | 'ladder' | 'monitor' | 'bellwether' | 'ext-link'
 
 export interface DashboardItem {
   /** 实例 id: 内置组件 = type; 外部链接 = ext-link-<seq> */
@@ -29,7 +29,7 @@ export interface DashboardItem {
   y: number
   w: number
   h: number
-  /** 外部链接组件参数: { title, url } */
+  /** 组件参数: 外部链接 { title, url }; 风向标 { scope } */
   p?: Record<string, string>
 }
 
@@ -99,6 +99,10 @@ export function normalizeLayout(
       if (!url) continue // 外链缺合法 URL → 整项剔除
       const title = typeof p?.title === 'string' && p.title.trim() ? p.title.trim().slice(0, 30) : new URL(url).hostname
       item = { ...item, p: { title, url } }
+    } else if (t === 'bellwether') {
+      // 风向标只保留合法的范围参数; 未知值丢弃, 组件按默认「大盘」显示
+      const scope = (r.p as Record<string, unknown> | undefined)?.scope
+      if (scope === 'market' || scope === 'holdings' || scope === 'watchlist') item = { ...item, p: { scope } }
     }
     out.push(item)
   }

@@ -8,7 +8,7 @@ import type { CSSProperties } from 'react'
 import type { ReactNode } from 'react'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowUpRight, BarChart3, BellRing, Flame, Gauge, LineChart, Link2, Sparkles, Target, TrendingUp, TrendingDown, Coins, Repeat } from 'lucide-react'
+import { ArrowUpRight, BarChart3, BellRing, Compass, Flame, Gauge, LineChart, Link2, Sparkles, Target, TrendingUp, TrendingDown, Coins, Repeat } from 'lucide-react'
 import type { AlertEvent, OverviewMarket } from '@/lib/api'
 import { fmtBigNum } from '@/lib/format'
 import type { DimensionMembersTarget } from '@/components/DimensionMembersDialog'
@@ -21,6 +21,7 @@ import {
 } from './widgets'
 import type { DashboardItem, WidgetType } from './layout'
 import { ExternalLinkWidget } from './ExternalLinkWidget'
+import { BellwetherWidget } from './BellwetherWidget'
 
 /** 渲染上下文: 数据切片与交互回调(由 Dashboard 页提供, 组件不自取数据) */
 export interface WidgetCtx {
@@ -34,6 +35,10 @@ export interface WidgetCtx {
   openStock: (source: string, symbol: string, name?: string, navList?: { symbol: string; name?: string }[]) => void
   openDimension: (t: DimensionMembersTarget) => void
   openAlert: (ev: AlertEvent, navList?: { symbol: string; name?: string }[]) => void
+  /** 看板选中的是最新交易日(非历史回看) */
+  isLatestDate: boolean
+  /** 更新某个组件实例的参数(随布局保存), 如风向标的范围 */
+  updateItemParams: (id: string, p: Record<string, string>) => void
 }
 
 export interface WidgetDef {
@@ -258,6 +263,17 @@ export const WIDGET_DEFS: WidgetDef[] = [
   {
     id: 'monitor', label: '监控中心', icon: BellRing, minW: 2, minH: 6, defW: 4, defH: 10,
     render: ctx => <MonitorSection ctx={ctx} />,
+  },
+  {
+    id: 'bellwether', label: '风向标', icon: Compass, minW: 3, minH: 6, defW: 4, defH: 10,
+    render: (ctx, item) => (
+      <BellwetherWidget
+        scope={item.p?.scope}
+        isLatestDate={ctx.isLatestDate}
+        onScopeChange={scope => ctx.updateItemParams(item.i, { scope })}
+        onOpenStock={(symbol, name, navList) => ctx.openStock('bellwether', symbol, name, navList)}
+      />
+    ),
   },
   {
     id: 'ext-link', label: '外部链接', icon: Link2, minW: 2, minH: 5, defW: 6, defH: 10,

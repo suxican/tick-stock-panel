@@ -202,3 +202,18 @@ describe('compactLayout', () => {
     }
   })
 })
+
+describe('bellwether widget params', () => {
+  const item = (p?: Record<string, unknown>) => ({ v: 1, items: [{ i: 'bellwether', t: 'bellwether', x: 0, y: 0, w: 4, h: 10, ...(p ? { p } : {}) }] })
+  it('is registered as a single-instance built-in', () => {
+    expect(isKnownWidgetType('bellwether')).toBe(true)
+    expect(DEFAULT_LAYOUT.some(it => it.t === 'bellwether')).toBe(false)
+  })
+  it('keeps a valid scope and drops anything else', () => {
+    expect(normalizeDashboardLayout(item({ scope: 'holdings' }))[0].p).toEqual({ scope: 'holdings' })
+    expect(normalizeDashboardLayout(item({ scope: 'all', url: 'https://example.com' }))[0].p).toBeUndefined()
+    expect(normalizeDashboardLayout(item())[0].p).toBeUndefined()
+    const twice = normalizeDashboardLayout({ v: 1, items: [...item().items, { ...item().items[0], i: 'bellwether-2', y: 10 }] })
+    expect(twice.filter(it => it.t === 'bellwether')).toHaveLength(1)
+  })
+})
