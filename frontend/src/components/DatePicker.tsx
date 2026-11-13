@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Calendar, ChevronLeft, ChevronRight } from 'lucide-react'
+import { cnToday } from '@/lib/cnTime'
 
 /** 弹层固定宽度(px) — 与下方 w-[260px] 保持一致,用于水平边界裁剪计算 */
 const POPUP_WIDTH = 260
@@ -28,8 +29,7 @@ function toDateStr(y: number, m: number, d: number) {
   return `${y}-${pad(m + 1)}-${pad(d)}`
 }
 function todayStr() {
-  const date = new Date()
-  return toDateStr(date.getFullYear(), date.getMonth(), date.getDate())
+  return cnToday()
 }
 function viewDate(value: string, min?: string, max?: string) {
   const source = value || max || min || todayStr()
@@ -217,7 +217,7 @@ export function DatePicker({
               <div className="grid grid-cols-4 gap-1">
                 {Array.from({ length: 12 }, (_, i) => viewYear - 5 + i).map(y => {
                   const isSelected = y === Number(value.slice(0, 4))
-                  const isThisYear = y === new Date().getFullYear()
+                  const isThisYear = y === Number(cnToday().slice(0, 4))
                   return (
                     <button
                       key={y}

@@ -21,6 +21,7 @@ from app.backtest.mining import (
 )
 from app.enriched_generation import EnrichedGenerationUnavailableError
 from app.factors.registry import missing_factor_ids
+from app.market_time import cn_today
 from app.services import preferences
 from app.services.mining_jobs import (
     RUN_STATUSES,
@@ -357,7 +358,7 @@ def start_auto_run(payload: MiningAutoStartRequest, request: Request) -> dict[st
             engine = BacktestEngine(request.app.state.repo)
             request.app.state.backtest_engine = engine
         all_dates = enriched_partition_dates(data_dir, payload.asset_type)
-        screen_end = payload.end or (all_dates[-1] if all_dates else date.today())
+        screen_end = payload.end or (all_dates[-1] if all_dates else cn_today())
         screening = screen_all_factors(
             engine,
             asset_type=payload.asset_type,

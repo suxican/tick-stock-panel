@@ -25,10 +25,10 @@ import json
 import logging
 import threading
 import uuid
-from datetime import datetime
 from pathlib import Path
 
 from app.config import settings
+from app.market_time import cn_now_naive
 from app.services import preferences
 from app.services.fs_utils import atomic_write_text
 
@@ -41,7 +41,7 @@ _MAX_META = 2000
 
 
 def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return cn_now_naive().isoformat(timespec="seconds")
 
 
 def _path() -> Path:

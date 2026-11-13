@@ -1,5 +1,6 @@
 import { Download, ScanSearch } from 'lucide-react'
 import type { BacktestEvidence } from '@/lib/api'
+import { cnFormat } from '@/lib/cnTime'
 
 const STATUS_LABELS: Record<BacktestEvidence['lookahead']['status'], string> = {
   passed: '抽样未发现差异', failed: '检测到历史输出变化', partial: '部分检查未完成',
@@ -68,7 +69,7 @@ export function BacktestEvidencePanel({ evidence }: { evidence?: BacktestEvidenc
               <div key={label} className="min-w-0"><dt className="text-muted">{label}</dt><dd className="mt-0.5 break-all font-mono text-foreground" title={value}>{value.slice(0, 20)}</dd></div>
             ))}
           </dl>
-          <p>程序版本 {evidence.runtime.application} · 记录时间 {new Date(evidence.created_at).toLocaleString('zh-CN')}</p>
+          <p>程序版本 {evidence.runtime.application} · 记录时间 {cnFormat(evidence.created_at)}</p>
           {evidence.execution_timing && (
             <p>信号与成交时间：{evidence.execution_timing.status === 'passed' ? `已核对 ${evidence.execution_timing.compared_values} 项` : evidence.execution_timing.status === 'failed' ? '存在异常' : '暂无可核对的已完成交易记录'}</p>
           )}

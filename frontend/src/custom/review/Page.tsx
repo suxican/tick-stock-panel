@@ -37,6 +37,7 @@ import {
   startReviewGeneration, resetReview, isReviewGenerating, cancelReviewGeneration,
   type ReviewPhase, type ReviewMeta,
 } from '@/lib/reviewStore'
+import { cnMonthDayTime, cnToday } from '@/lib/cnTime'
 
 // ================================================================
 // 涨跌幅格式化(注意单位差异)
@@ -60,13 +61,7 @@ function scoreColor(v: number | null | undefined): string {
 
 // 归档时刻格式化:ISO → "MM-DD HH:mm"(用于历史列表显示复盘时间)
 function fmtArchivedAt(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  const hh = String(d.getHours()).padStart(2, '0')
-  const mi = String(d.getMinutes()).padStart(2, '0')
-  return `${mm}-${dd} ${hh}:${mi}`
+  return cnMonthDayTime(iso) || iso
 }
 
 // Phase 类型复用 store 的定义(单一来源)
@@ -216,7 +211,7 @@ export function ReviewPage() {
 
   // 自动归档(生成完成后台静默保存)—— 通过回调注入 store,避免 store 直接依赖 qc/marketQuery
   const onGenerationDone = useCallback(async (fullContent: string, doneMeta: ReviewMeta | null) => {
-    const reportAsOf = doneMeta?.as_of ?? marketQuery.data?.as_of ?? asOf ?? new Date().toISOString().slice(0, 10)
+    const reportAsOf = doneMeta?.as_of ?? marketQuery.data?.as_of ?? asOf ?? cnToday()
     try {
       await api.reviewReportSave({
         as_of: reportAsOf,
@@ -257,7 +252,7 @@ export function ReviewPage() {
   const downloadContent = useCallback(() => {
     const text = stripPlanBlock(viewing?.content ?? content)
     if (!text) return
-    const reportDate = viewing?.as_of ?? meta?.as_of ?? asOf ?? new Date().toISOString().slice(0, 10)
+    const reportDate = viewing?.as_of ?? meta?.as_of ?? asOf ?? cnToday()
     const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')

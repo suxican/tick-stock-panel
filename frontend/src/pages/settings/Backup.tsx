@@ -14,6 +14,7 @@ import { toast } from '@/components/Toast'
 import { Modal } from '@/components/Modal'
 import { QK } from '@/lib/queryKeys'
 import { notifyStrategyLibraryChanged, STRATEGY_LIBRARY_QUERY_KEYS } from '@/lib/strategyLibrary'
+import { cnFormat } from '@/lib/cnTime'
 
 /** 类别选项 — key 与后端 config_backup._CATEGORY_LABELS 一一对应 */
 export const CATEGORY_OPTIONS: { key: string; label: string; desc: string; sensitive?: boolean }[] = [
@@ -190,7 +191,7 @@ export function SettingsBackupPanel({ mode = 'all' }: { mode?: 'all' | 'export' 
 
   const fmtTime = (iso: string) => {
     try {
-      return iso ? new Date(iso).toLocaleString() : '—'
+      return iso ? cnFormat(iso) : '—'
     } catch {
       return iso || '—'
     }

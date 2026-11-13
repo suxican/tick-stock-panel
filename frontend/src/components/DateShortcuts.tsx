@@ -1,5 +1,5 @@
 import { cn } from '@/lib/cn'
-import { fmtDate } from '@/lib/format'
+import { cnToday, shiftDate } from '@/lib/cnTime'
 
 export interface DateShortcutOption {
   label: string
@@ -17,9 +17,7 @@ interface Props {
 }
 
 function addDaysISO(days: number, base?: string): string {
-  const d = base ? new Date(`${base}T00:00:00`) : new Date()
-  d.setDate(d.getDate() + days)
-  return fmtDate(d)
+  return shiftDate(base || cnToday(), { days })
 }
 
 /**

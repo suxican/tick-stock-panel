@@ -23,7 +23,7 @@ from app.data_providers.custom.mapper import (
 )
 from app.data_providers.minute_stream import RequestPacer
 from app.data_providers.normalizer import normalize_adj_factors, normalize_daily
-from app.market_time import cn_now
+from app.market_time import cn_now, cn_now_naive
 from app.tickflow.rate_limits import chunked, sleep_between_batches
 
 logger = logging.getLogger(__name__)
@@ -466,7 +466,7 @@ class GenericHTTPProvider:
     def test_dataset(self, dataset: str, symbols: list[str] | None = None) -> dict:
         cfg = self._dataset(dataset)
         test_symbols = symbols or ["000001.SZ"]
-        end_time = datetime.now()
+        end_time = cn_now_naive()
         start_time = end_time - timedelta(days=7)
         if dataset == "realtime":
             rows = self._request_rows(cfg)

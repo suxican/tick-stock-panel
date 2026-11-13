@@ -19,6 +19,7 @@ import { useZzshareReasons } from '@/lib/useZzshareReasons'
 import { SealedBadge } from '@/components/SealedBadge'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
 import type { ExtColumnDisplayConfig } from '@/lib/watchlist-columns'
+import { cnToday } from '@/lib/cnTime'
 
 // ===== Ext 字段配置 =====
 
@@ -1618,7 +1619,7 @@ export function LimitUpLadder() {
     )
   }
 
-  const dateValue = displayDate || new Date().toISOString().slice(0, 10)
+  const dateValue = displayDate || cnToday()
 
   // 请求失败与空数据分开呈现: 失败显示错误态 + 重试, 而非误导性的「暂无连板数据」
   if (isError) {

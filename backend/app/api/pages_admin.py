@@ -11,13 +11,13 @@ from __future__ import annotations
 import re
 import shutil
 import zipfile
-from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from app.config import settings
+from app.market_time import cn_now_naive
 
 router = APIRouter(prefix="/api/pages-admin", tags=["pages-admin"])
 
@@ -69,7 +69,7 @@ def _zip_dir(src: Path, dest: Path) -> None:
 def delete_source_extension(namespace: str, request: Request) -> dict:
     """删除一个源码扩展页目录。先备份后删除, 备份失败不动源码。"""
     ns_dir = _resolve_namespace_dir(namespace)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = cn_now_naive().strftime("%Y%m%d-%H%M%S")
     backup = _backup_root(request) / f"{namespace}-{stamp}.zip"
     _zip_dir(ns_dir, backup)
     shutil.rmtree(ns_dir)

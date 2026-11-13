@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
+from app.market_time import cn_today
 from app.services import kline_sync
 from app.services.pipeline_jobs import job_store
 from app.tickflow.capabilities import Cap, CapabilitySet
@@ -107,7 +108,7 @@ def run_extend_history(
 
     # 0. 计算时间偏移
     offset = compute_offset(value, unit)
-    today = date.today()
+    today = cn_today()
 
     # 1. 获取当前最早日期
     emit("extend_history", 2, "检查当前数据范围…")

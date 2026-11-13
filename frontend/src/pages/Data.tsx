@@ -38,6 +38,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { useAdjFactorSyncGate } from '@/components/AdjFactorSyncGate'
 import { formatScheduleDatePart, formatScheduleTimePart, isToday } from '@/lib/format'
 import { findDataSource } from '@/lib/dataSources'
+import { cnToday, parseCnTime, shiftDate } from '@/lib/cnTime'
 
 // 拆分出的子组件
 import { StatCard, type FieldTab, type CapLimitValue } from '@/components/data/StatCard'
@@ -353,12 +354,8 @@ export function Data() {
   const indexOverviewLabel = s ? '日 · 维表 · 日K · 指标' : undefined
   const indexEarliestDate = s?.index_daily?.earliest_date ?? s?.index_enriched?.earliest_date ?? null
   const indexOffsetDays = indexExtendUnit === 'month' ? indexExtendValue * 30 : indexExtendValue * 365
-  const indexTargetDate = (() => {
-    const d = indexEarliestDate ? new Date(indexEarliestDate) : new Date()
-    d.setDate(d.getDate() - indexOffsetDays)
-    return d
-  })()
-  const indexTargetDateText = indexTargetDate.toISOString().slice(0, 10)
+  const indexTargetDateText = shiftDate(indexEarliestDate || cnToday(), { days: -indexOffsetDays })
+  const indexTargetDate = parseCnTime(indexTargetDateText)
   const indexSyncDays = Math.min(
     5000,
     Math.max(30, Math.ceil((Date.now() - indexTargetDate.getTime()) / 86_400_000) + 1),

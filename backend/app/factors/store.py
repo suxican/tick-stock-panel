@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
 from pathlib import Path
 
 from app.definitions import DefinitionKind, JsonDefinitionStore, register_kind
@@ -21,6 +20,7 @@ from app.factors.registry import (
     get_factor,
     register_factor,
 )
+from app.market_time import cn_now_naive
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ def delete_one(data_dir: Path, factor_id: str) -> bool:
 
 
 def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return cn_now_naive().isoformat(timespec="seconds")
 
 
 def to_spec(definition: dict) -> FactorSpec:

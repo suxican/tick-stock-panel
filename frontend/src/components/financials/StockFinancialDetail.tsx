@@ -12,6 +12,7 @@ import { fmtPrice, fmtBigNum, fmtDate } from '@/lib/format'
 import { Skeleton } from '@/components/data/Skeleton'
 import { startAnalysis, findLatestHistoryReport, openHistoryReport } from '@/lib/aiReportStore'
 import { toast } from '@/components/Toast'
+import { cnFormat } from '@/lib/cnTime'
 
 interface Props {
   symbol: string
@@ -347,6 +348,6 @@ function fmtReportTime(iso: string): string {
     if (diff < 3600_000) return `${Math.floor(diff / 60_000)} 分钟前`
     if (diff < 86400_000) return `${Math.floor(diff / 3600_000)} 小时前`
     if (diff < 7 * 86400_000) return `${Math.floor(diff / 86400_000)} 天前`
-    return new Date(iso).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+    return cnFormat(iso, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
   } catch { return '' }
 }

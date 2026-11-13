@@ -22,7 +22,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from app.config import settings
 from app.indicators.pipeline import filter_halt_days, run_pipeline
-from app.market_time import CN_TZ, cn_now, cn_today
+from app.market_time import CN_TZ, cn_now, cn_now_naive, cn_today
 from app.parquet import DAILY_STORAGE_SCHEMA, scan_daily_parquet, scan_enriched_parquet
 from app.services import index_sync, instrument_sync, kline_sync
 from app.services import preferences as _prefs
@@ -426,7 +426,7 @@ def run_now(
     can_sync_adj = capset.has(Cap.ADJ_FACTOR) or adj_provider != "tickflow"
     if can_sync_adj:
         from datetime import datetime, timedelta
-        adj_end = datetime.now()
+        adj_end = cn_now_naive()
         if daily_range_start is not None:
             adj_start = datetime.combine(daily_range_start, datetime.min.time())
         else:
@@ -622,7 +622,7 @@ def run_now(
                     try:
                         emit("sync_index", 88, "同步 ETF 除权因子…")
                         from datetime import datetime, timedelta
-                        adj_end = datetime.now()
+                        adj_end = cn_now_naive()
                         adj_path = repo.store.data_dir / "adj_factor_etf" / "all.parquet"
                         # 首次无文件时与 ETF 日K 默认一年窗口对齐, 不要只拉 30 天。
                         history_start = adj_end - timedelta(days=365)
@@ -926,7 +926,7 @@ def run_adj_factor_sync(
     emit("sync_adj", 10, f"获取除权因子 [{window_label}, {len(universe)} 只]…")
     written_adj, affected = kline_sync.sync_adj_factor(
         universe, repo, capset,
-        start_time=start, end_time=datetime.now(),
+        start_time=start, end_time=cn_now_naive(),
         on_chunk_done=_adj_chunk_progress,
     )
     affected = sorted(set(affected))

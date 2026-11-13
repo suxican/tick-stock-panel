@@ -27,6 +27,7 @@ import { huichunChartRange, stockChartQueryOptions, type HuichunChartContext } f
 import { ExtensionSlot } from '@/extensions/ExtensionSlot'
 import { ExtensionBoundary } from '@/extensions/ExtensionBoundary'
 import { getFrontendSlotRegistrations } from '@/extensions/registry'
+import { cnFormat, cnMonthDayTime } from '@/lib/cnTime'
 
 export interface Props {
   symbol: string | null
@@ -99,9 +100,7 @@ const AB_STATUS_META: Record<string, { label: string; cls: string; bar: string; 
 
 /** 异动引擎计算时间 (服务端 asof 秒级时间戳 → 月-日 时:分:秒) */
 function fmtAbnormalCalcTime(asofSec: number): string {
-  const d = new Date(asofSec * 1000)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  return cnMonthDayTime(asofSec * 1000, true)
 }
 
 
@@ -487,7 +486,7 @@ export function StockPreviewDialogContent({ symbol, name, tradeDate, onClose, tr
                   <span className="text-[10px] font-semibold text-amber-400">⚡ 触发</span>
                   {triggerInfo.ts && (
                     <span className="text-[11px] text-secondary font-mono">
-                      {new Date(triggerInfo.ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                      {cnFormat(triggerInfo.ts, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
                     </span>
                   )}
                 </div>

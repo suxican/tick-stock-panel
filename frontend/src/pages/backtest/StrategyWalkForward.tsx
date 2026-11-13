@@ -25,9 +25,10 @@ import {
   SweepParamList,
   CombosHint,
 } from './components/paramSweep'
+import { cnDaysAgo, cnToday } from '@/lib/cnTime'
 
-const TODAY = new Date().toISOString().slice(0, 10)
-const THREE_YEARS_AGO = new Date(Date.now() - 3 * 365 * 864e5).toISOString().slice(0, 10)
+const TODAY = cnToday()
+const THREE_YEARS_AGO = cnDaysAgo(3 * 365)
 
 function Stat({ label, value, hint, color }: { label: string; value: string; hint?: string; color?: string }) {
   return (

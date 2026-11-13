@@ -24,6 +24,7 @@ import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { toNavItems, type NavItem } from '@/lib/listNav'
 import { DimensionMembersDialog, type DimensionKind, type DimensionMembersTarget } from '@/components/DimensionMembersDialog'
 import { usePreferences, useQuoteStatus } from '@/lib/useSharedQueries'
+import { cnFormat } from '@/lib/cnTime'
 
 const TYPE_LABEL: Record<string, string> = {
   signal: '信号', price: '价格/涨跌', market: '市场异动', strategy: '策略监控', sector: '板块监控',
@@ -648,7 +649,7 @@ function AlertsList({ alertsQuery, confirmClear, setConfirmClear, total, enterTs
                 </div>
                 <div className="flex shrink-0 flex-col items-end gap-1">
                   <span className="text-[10px] text-muted/60 font-mono">
-                    {new Date(ev.ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                    {cnFormat(ev.ts, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
                   </span>
                   {confirmTs === ev.ts ? (
                     // 确认态: 红色实心按钮 (原删除图标位置), 再点确认删除

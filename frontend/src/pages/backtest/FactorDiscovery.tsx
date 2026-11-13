@@ -15,14 +15,10 @@ import { MiningWorkbench } from './MiningWorkbench'
 import { AutoMiningDialog } from './AutoMiningDialog'
 import { AddFactorSignalDialog } from './AddFactorSignalDialog'
 import { factorBatchCandidate } from './researchCandidates'
+import { cnFormat, cnToday, shiftDate } from '@/lib/cnTime'
 
-const formatDate = (value: Date) => value.toISOString().slice(0, 10)
-const monthsAgo = (months: number) => {
-  const value = new Date()
-  value.setMonth(value.getMonth() - months)
-  return formatDate(value)
-}
-const TODAY = formatDate(new Date())
+const monthsAgo = (months: number) => shiftDate(cnToday(), { months: -months })
+const TODAY = cnToday()
 const INPUT_CLS = 'w-full rounded-input border border-border bg-surface px-2.5 py-1.5 text-xs focus:border-accent focus:outline-none'
 
 type View = 'batch' | 'single' | 'mining'
@@ -688,7 +684,7 @@ function BatchDiscovery({
                       title="会话内记忆的上次运行结果; 修改左侧配置后点「筛选」重新计算"
                     >
                       <Clock className="h-3 w-3" />
-                      上次运行 {new Date(restored.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                      上次运行 {cnFormat(restored.ts, { hour: '2-digit', minute: '2-digit' })}
                     </span>
                   )}
                 </div>

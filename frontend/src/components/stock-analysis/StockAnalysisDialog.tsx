@@ -13,6 +13,7 @@ import {
   minimizeDialog, closeDialog, startAnalysis,
 } from '@/lib/stockAnalysisStore'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
+import { cnFormat } from '@/lib/cnTime'
 
 /**
  * AI 个股分析对话框 —— 蓝色主题,与财务分析对话框区分。
@@ -259,6 +260,6 @@ function fmtRelative(iso: string): string {
     if (diff < 3600_000) return `${Math.floor(diff / 60_000)} 分钟前`
     if (diff < 86400_000) return `${Math.floor(diff / 3600_000)} 小时前`
     if (diff < 7 * 86400_000) return `${Math.floor(diff / 86400_000)} 天前`
-    return new Date(iso).toLocaleDateString('zh-CN')
+    return cnFormat(iso, { year: 'numeric', month: 'numeric', day: 'numeric' })
   } catch { return '' }
 }

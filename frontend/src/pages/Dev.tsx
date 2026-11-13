@@ -6,6 +6,7 @@ import { api } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { QK } from '@/lib/queryKeys'
 import { resetBadge } from '@/lib/monitorBadge'
+import { cnToday, shiftDate } from '@/lib/cnTime'
 
 // ── 分钟K探测 (迁移自 MinuteDataProbe) ─────────────────
 interface ProbeResult {
@@ -30,11 +31,9 @@ function MinuteProbePanel() {
     setResults([])
 
     const dates: string[] = []
-    const today = new Date()
+    const today = cnToday()
     for (let i = 0; i < days; i++) {
-      const d = new Date(today)
-      d.setDate(d.getDate() - i)
-      dates.push(d.toISOString().slice(0, 10))
+      dates.push(shiftDate(today, { days: -i }))
     }
 
     const out: ProbeResult[] = []

@@ -18,6 +18,7 @@ import { strategyEventMeta, strategyName } from '@/lib/strategyMonitorEvents'
 import { boardTag } from '@/components/stock-table/primitives'
 import { toNavItems, type NavItem } from '@/lib/listNav'
 import { fmtPrice, fmtIndexPct, fmtStockPct, pctClass, scoreColor as scoreColorValue, SectionTitle } from './shared'
+import { cnFormat } from '@/lib/cnTime'
 
 // 切股导航列表构建 (与列表展示行一致: StockList 只显示前 8)
 export function stockListNav(rows: MarketSnapshotRow[]): NavItem[] {
@@ -461,7 +462,7 @@ export function MonitorWidget({ onStockClick, activeSymbol }: {
                         : ev.message && <span className="truncate text-[9px] text-muted">{ev.message}</span>}
                       <span className="flex-1" />
                       <span className="text-[8px] text-muted/50 shrink-0 font-mono">
-                        {ev.ts ? new Date(ev.ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
+                        {ev.ts ? cnFormat(ev.ts, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
                       </span>
                     </div>
                   ) : (
@@ -469,7 +470,7 @@ export function MonitorWidget({ onStockClick, activeSymbol }: {
                       <span className="truncate text-[9px] text-muted">{ev.message}</span>
                       <span className="flex-1" />
                       <span className="text-[8px] text-muted/50 shrink-0 font-mono">
-                        {ev.ts ? new Date(ev.ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
+                        {ev.ts ? cnFormat(ev.ts, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
                       </span>
                     </div>
                   )}
@@ -491,7 +492,7 @@ export function MonitorWidget({ onStockClick, activeSymbol }: {
                       <span className="text-[9px] text-muted truncate flex-1">{ev.message}</span>
                     )}
                     <span className="text-[8px] text-muted/50 shrink-0 font-mono">
-                      {ev.ts ? new Date(ev.ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
+                      {ev.ts ? cnFormat(ev.ts, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
                     </span>
                   </div>
                   {ev.signals && ev.signals.length > 0 && (

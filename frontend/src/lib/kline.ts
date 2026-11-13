@@ -8,6 +8,7 @@
  */
 import { api, type KlineDailyLatestResponse, type KlineDailyResponse } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
+import { cnToday } from '@/lib/cnTime'
 
 /** 分时 tab 多日分时默认周期 (StockPanel 预取与弹窗存储回退共用, 避免魔数两处漂移) */
 export const DEFAULT_INTRADAY_DAYS = 10
@@ -83,10 +84,8 @@ const CLOSE_MINUTE = '15:00'
  * (15:30) 同口径; 盘后管道默认 15:35 在此之后启动。 */
 const MARKET_ALL_OVER = '15:30'
 
-/** 北京时间今日 YYYY-MM-DD (与后端 cn_today 同口径; 不用 UTC toISOString, 避免傍晚错日)。 */
-export function cnToday(now = new Date()): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(now)
-}
+/** 北京时间今日 YYYY-MM-DD (与后端 cn_today 同口径); 实现统一在 cnTime.ts。 */
+export { cnToday }
 
 export function klineDateRange(months = 6, today = cnToday()): { start: string; end: string } {
   const [year, month, day] = today.split('-').map(Number)

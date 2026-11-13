@@ -53,6 +53,7 @@ import {
   useAssistantStore,
 } from '../store'
 import { AssistantMessageView } from './messages'
+import { cnDateTime, cnToday, shiftDate } from '@/lib/cnTime'
 
 const EASE_SMOOTH: [number, number, number, number] = [0.16, 1, 0.3, 1]
 
@@ -416,14 +417,15 @@ function AssistantSettingsMenu({ onDone }: { onDone: () => void }) {
 
 /** 会话时间: 今天/昨天 + HH:MM, 年内 MM-DD HH:MM, 跨年带年份 */
 function formatSessionTime(ts: number): string {
-  const d = new Date(ts)
-  const now = new Date()
-  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-  if (d.toDateString() === now.toDateString()) return `今天 ${hm}`
-  const yesterday = new Date(now.getTime() - 86_400_000)
-  if (d.toDateString() === yesterday.toDateString()) return `昨天 ${hm}`
-  const md = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-  return d.getFullYear() === now.getFullYear() ? `${md} ${hm}` : `${d.getFullYear()}-${md}`
+  const full = cnDateTime(ts)  // 'YYYY-MM-DD HH:mm:ss' (北京时间)
+  if (!full) return ''
+  const day = full.slice(0, 10)
+  const hm = full.slice(11, 16)
+  const today = cnToday()
+  if (day === today) return `今天 ${hm}`
+  if (day === shiftDate(today, { days: -1 })) return `昨天 ${hm}`
+  const md = full.slice(5, 10)
+  return day.slice(0, 4) === today.slice(0, 4) ? `${md} ${hm}` : day
 }
 
 function SessionMenu({

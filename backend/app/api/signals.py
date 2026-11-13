@@ -4,12 +4,12 @@
 """
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from app.market_time import cn_now_naive
 from app.strategy import custom_signals
 from app.strategy.intraday_features import INTRADAY_FEATURES
 
@@ -257,7 +257,7 @@ async def ai_generate_signal(req: AIGenerateRequest):
 
 
 def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return cn_now_naive().isoformat(timespec="seconds")
 
 
 def _set_archived(signal_id: str, archived: bool, request: Request) -> dict:

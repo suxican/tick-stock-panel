@@ -24,6 +24,11 @@ def cn_now() -> datetime:
     return datetime.now(CN_TZ)
 
 
+def cn_now_naive() -> datetime:
+    """当前北京墙钟时间 (naive, 不带时区), 用于 naive 时间窗口、ID/文件名时间戳等。"""
+    return datetime.now(CN_TZ).replace(tzinfo=None)
+
+
 def cn_today() -> date:
     """当前北京日期。"""
     return datetime.now(CN_TZ).date()

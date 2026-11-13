@@ -16,6 +16,7 @@ import { toast } from '@/components/Toast'
 import { cn } from '@/lib/cn'
 import { packToExtension, runtimeBundleUrl } from '@/extensions/runtime'
 import { getFrontendExtensionLoadErrors } from '@/extensions/registry'
+import { cnFormat } from '@/lib/cnTime'
 
 function fmtSize(n: number): string {
   if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)}MB`
@@ -24,7 +25,7 @@ function fmtSize(n: number): string {
 
 function fmtTime(ts: number): string {
   if (!ts) return '—'
-  return new Date(ts * 1000).toLocaleString('zh-CN', { hour12: false })
+  return cnFormat(ts * 1000, { hour12: false })
 }
 
 export function SettingsPagePacksPanel() {

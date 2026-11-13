@@ -8,13 +8,13 @@ Phase 1 实现:
 from __future__ import annotations
 
 import logging
-from datetime import date
 from pathlib import Path
 from typing import Literal
 
 import polars as pl
 
 from app.config import settings
+from app.market_time import cn_today
 from app.tickflow.client import get_client
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ def get_pool(pool_id: PoolId, refresh: bool = False) -> list[str]:
 
         cache.parent.mkdir(parents=True, exist_ok=True)
         # 原子写: 半截缓存会让上面的 read_parquet 每次都抛错, 不会自愈
-        atomic_write_parquet(pl.DataFrame({"symbol": symbols, "as_of": [date.today()] * len(symbols)}), cache)
+        atomic_write_parquet(pl.DataFrame({"symbol": symbols, "as_of": [cn_today()] * len(symbols)}), cache)
     return symbols
 
 

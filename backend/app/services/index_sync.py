@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 import polars as pl
 
 from app.indicators.pipeline import compute_enriched
+from app.market_time import cn_now_naive
 from app.services import kline_sync, preferences
 from app.tickflow.capabilities import Cap, CapabilitySet
 from app.tickflow.client import get_client
@@ -283,7 +284,7 @@ def sync_and_persist_index_daily(
             return 0
         symbols = sorted(set(instruments["symbol"].to_list()))
 
-    end_time = end_date or datetime.now()
+    end_time = end_date or cn_now_naive()
     start_time = start_date or (end_time - timedelta(days=365))
 
     def _persist_index_frame(raw: pl.DataFrame) -> int:
@@ -433,7 +434,7 @@ def sync_and_persist_etf_daily(
     if not symbols:
         return 0
 
-    end_time = end_date or datetime.now()
+    end_time = end_date or cn_now_naive()
     start_time = start_date or (end_time - timedelta(days=365))
 
     factors = _load_etf_factors(repo)

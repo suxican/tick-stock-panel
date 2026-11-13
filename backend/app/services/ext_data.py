@@ -9,7 +9,7 @@ import logging
 import re
 import threading
 from contextlib import suppress
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -17,7 +17,7 @@ import anyio
 import polars as pl
 
 from app.db_safe import is_valid_ext_ident
-from app.market_time import cn_now, cn_today
+from app.market_time import cn_now, cn_now_naive, cn_today
 from app.services.fs_utils import atomic_write_parquet, atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -445,8 +445,8 @@ class ExtConfig:
         # 状态序列。上传/写入/拉取跳过标的关联强制; 供 /rows API 与未来的
         # "市场级过滤数据集" 契约消费 (策略 JOIN 面向 symbol, 不适用此类表)。
         self.market_level = bool(market_level)
-        self.created_at = created_at or datetime.now().isoformat()
-        self.updated_at = updated_at or datetime.now().isoformat()
+        self.created_at = created_at or cn_now_naive().isoformat()
+        self.updated_at = updated_at or cn_now_naive().isoformat()
         self.pull = pull
 
     def to_dict(self) -> dict:
@@ -583,7 +583,7 @@ class ExtConfigStore:
             raise
 
     def upsert(self, config: ExtConfig, *, keep_strategy_cache: bool = False) -> None:
-        config.updated_at = datetime.now().isoformat()
+        config.updated_at = cn_now_naive().isoformat()
         cp = self._config_path(config.id)
         cp.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(

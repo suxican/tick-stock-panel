@@ -13,6 +13,7 @@ import { Loader2, Download, CheckCircle2, Hourglass, Clock, Table2 } from 'lucid
 import { useFinancialStatus, useFinancialSync } from '@/lib/useFinancials'
 import { fmtBigNum } from '@/lib/format'
 import { toast } from '@/components/Toast'
+import { cnFormat } from '@/lib/cnTime'
 
 const TABLE_LABELS: Record<string, string> = {
   metrics: '核心指标',
@@ -153,7 +154,7 @@ export function FinancialSyncPanel() {
               <span className="hidden shrink-0 items-center gap-1 text-[10px] text-muted/80 sm:flex">
                 <Clock className="h-2.5 w-2.5" />
                 {lsTime
-                  ? new Date(lsTime).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+                  ? cnFormat(lsTime, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
                   : '未同步'}
               </span>
 

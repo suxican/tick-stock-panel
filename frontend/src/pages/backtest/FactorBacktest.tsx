@@ -13,14 +13,10 @@ import { selectableDefinitions, definitionOptionLabel } from '@/lib/definitionOp
 import { FactorICChart } from './charts/FactorICChart'
 import { FactorGroupNavChart } from './charts/FactorGroupNavChart'
 import { factorResultCandidate } from './researchCandidates'
+import { cnToday, shiftDate } from '@/lib/cnTime'
 
-const formatDate = (date: Date) => date.toISOString().slice(0, 10)
-const monthsAgo = (months: number) => {
-  const date = new Date()
-  date.setMonth(date.getMonth() - months)
-  return formatDate(date)
-}
-const TODAY = formatDate(new Date())
+const monthsAgo = (months: number) => shiftDate(cnToday(), { months: -months })
+const TODAY = cnToday()
 const THREE_MONTHS_AGO = monthsAgo(3)
 
 const INPUT_CLS = `w-full px-2.5 py-1.5 rounded-input bg-surface border border-border text-xs
@@ -170,12 +166,12 @@ export function FactorBacktest({ initialFactorName = 'momentum_20d', autoRun = f
 
   const applyRange = (months: number) => {
     setStart(monthsAgo(months))
-    setEnd(formatDate(new Date()))
+    setEnd(cnToday())
   }
 
   const applyAllRange = () => {
     setStart('')
-    setEnd(formatDate(new Date()))
+    setEnd(cnToday())
   }
 
   const rangeKey = end === TODAY && start === THREE_MONTHS_AGO

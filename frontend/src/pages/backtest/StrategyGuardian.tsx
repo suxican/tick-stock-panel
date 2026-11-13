@@ -5,6 +5,7 @@ import { api, type GuardianCombinationSuggestion, type GuardianConfig, type Guar
 import { QK } from '@/lib/queryKeys'
 import { EmptyState } from '@/components/EmptyState'
 import { INPUT_CLS, PRIMARY_OBJECTIVES, StrategySelect } from './components/paramSweep'
+import { cnFormat } from '@/lib/cnTime'
 
 const STATUS_META: Record<GuardianProfile['status'], { label: string; cls: string }> = {
   pending: { label: '未复验', cls: 'bg-elevated text-secondary' },
@@ -402,7 +403,7 @@ export function StrategyGuardian() {
                       </div>
                     </td>
                     <td className="px-2 py-2 text-secondary">
-                      <div>{last?.checked_at ? new Date(last.checked_at).toLocaleString('zh-CN', { hour12: false }) : '—'}</div>
+                      <div>{last?.checked_at ? cnFormat(last.checked_at, { hour12: false }) : '—'}</div>
                       <div className="max-w-56 truncate text-[10px]" title={lastText}>{lastText}</div>
                     </td>
                     <td className="px-2 py-2 text-right font-medium" style={{ color: last?.degradation_pct != null && last.degradation_pct > 0 ? '#f87171' : undefined }}>

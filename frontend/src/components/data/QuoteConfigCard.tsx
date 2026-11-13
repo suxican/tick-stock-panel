@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Activity, Settings } from 'lucide-react'
 import { Skeleton } from './Skeleton'
+import { cnFormat } from '@/lib/cnTime'
 
 export function QuoteConfigCard({ enabled, running, isTrading, lastFetchMs, intervalS, intervalMin, intervalMax, loading, onToggle, toggling, showIntervalEdit, onShowIntervalEdit, onIntervalChange }: {
   enabled: boolean
@@ -33,7 +34,7 @@ export function QuoteConfigCard({ enabled, running, isTrading, lastFetchMs, inte
         : '已停止'
 
   const lastFetchTime = lastFetchMs
-    ? new Date(lastFetchMs).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    ? cnFormat(lastFetchMs, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
     : null
 
   return (

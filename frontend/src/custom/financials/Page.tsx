@@ -13,6 +13,7 @@ import { LastStockChip } from '@/components/LastStockChip'
 import { useLastStock } from '@/lib/useLastStock'
 import { fmtBigNum } from '@/lib/format'
 import { toast } from '@/components/Toast'
+import { cnFormat } from '@/lib/cnTime'
 
 const TABLE_LABELS: Record<string, string> = {
   metrics: '核心指标',
@@ -268,7 +269,7 @@ export function Financials() {
                     <div className="mt-auto pt-2 border-t border-border/40 text-[10px] text-muted flex items-center gap-1">
                       <Clock className="h-2.5 w-2.5 shrink-0" />
                       {lsTime
-                        ? new Date(lsTime).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+                        ? cnFormat(lsTime, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
                         : '尚未同步'}
                     </div>
                   </div>

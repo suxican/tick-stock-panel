@@ -1,3 +1,4 @@
+import { cnDate, cnFormat, cnMonthDayTime, cnToday } from '@/lib/cnTime'
 // 数字 / 价格 / 涨跌幅 格式化(§6.0.2 等宽数字)
 
 export function fmtPrice(v: number | null | undefined, digits = 2): string {
@@ -54,9 +55,8 @@ export function fmtBigNum(v: number | null | undefined): string {
 
 export function fmtDate(s: string | Date | null | undefined): string {
   if (s == null) return '—'
-  const d = typeof s === 'string' ? new Date(s) : s
-  if (isNaN(d.getTime())) return String(s)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  // 北京日期; 无时区串按北京墙钟解析 (见 cnTime.parseCnTime)
+  return cnDate(s) || String(s)
 }
 
 /**
@@ -122,27 +122,21 @@ export function formatDuration(seconds: number): string {
   return rm > 0 ? `${h}h ${rm}m` : `${h}h`
 }
 
+// 以下均按北京时间展示 (A 股业务口径), 不依赖浏览器本地时区。
 export function formatScheduleDatePart(iso: string): string {
-  const d = new Date(iso)
-  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  return cnMonthDayTime(iso).slice(0, 5)
 }
 
 export function formatScheduleTimePart(iso: string): string {
-  const d = new Date(iso)
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  return cnMonthDayTime(iso).slice(6, 11)
 }
 
 export function isToday(iso: string): boolean {
-  const d = new Date(iso)
-  const now = new Date()
-  return d.getFullYear() === now.getFullYear()
-    && d.getMonth() === now.getMonth()
-    && d.getDate() === now.getDate()
+  return cnDate(iso) === cnToday()
 }
 
 export function formatLogTime(iso: string): string {
-  const d = new Date(iso)
-  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+  return cnFormat(iso, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
 }
 
 /**

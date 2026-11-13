@@ -7,13 +7,12 @@ import { toast } from '@/components/Toast'
 import { api, type MiningAvailability, type MiningBudgetProfile } from '@/lib/api'
 import { startAutoMining } from '@/lib/miningTask'
 import { QK } from '@/lib/queryKeys'
+import { cnDaysAgo, cnToday } from '@/lib/cnTime'
 
 const INPUT_CLS = 'h-8 w-full rounded-input border border-border bg-surface px-2.5 text-xs text-foreground focus:border-accent focus:outline-none'
 
 function isoDaysAgo(days: number) {
-  const value = new Date()
-  value.setDate(value.getDate() - days)
-  return value.toISOString().slice(0, 10)
+  return cnDaysAgo(days)
 }
 
 const PROFILE_ORDER: MiningBudgetProfile[] = ['exploratory', 'balanced', 'strict']
@@ -41,7 +40,7 @@ export function AutoMiningDialog({
   const [profile, setProfile] = useState<MiningBudgetProfile>('balanced')
   const [profileTouched, setProfileTouched] = useState(false)
   const [start, setStart] = useState(isoDaysAgo(365 * 2))
-  const [end, setEnd] = useState(new Date().toISOString().slice(0, 10))
+  const [end, setEnd] = useState(cnToday)
 
   // 三档可用性: 数据交易日 vs 各档所需; 默认档数据不够时自动落到可用的最高档
   const availabilityArgs = {

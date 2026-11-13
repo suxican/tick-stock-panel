@@ -5,12 +5,12 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from app.market_time import cn_today
 from app.strategy import monitor_rules
 from app.strategy.intraday_signals import INTRADAY_SIGNAL_LABELS, uses_intraday_signals
 
@@ -347,7 +347,7 @@ def save_rule(req: RuleModel, request: Request):
                 StrategyDataContext(
                     asset_type=str(rule.get("asset_type") or "stock"),
                     timeframe="1d",
-                    as_of=date.today(),
+                    as_of=cn_today(),
                 ),
             )
         except ValueError as e:

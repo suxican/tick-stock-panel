@@ -49,9 +49,10 @@ import { MiningLockControl } from './components/MiningLockControl'
 import { FactorCorrelationHeatmap } from './charts/FactorCorrelationHeatmap'
 import { MiningOosChart } from './charts/MiningOosChart'
 import { RegimeComparisonChart } from './charts/RegimeComparisonChart'
+import { cnToday, shiftDate } from '@/lib/cnTime'
 
 const DRAFT_KEY = 'mining_workbench_draft_v1'
-const TODAY = new Date().toISOString().slice(0, 10)
+const TODAY = cnToday()
 const INPUT = 'h-8 w-full rounded-input border border-border bg-surface px-2 text-xs text-foreground outline-none transition-colors focus:border-accent'
 const LABEL = 'mb-1 block text-[10px] font-medium text-secondary'
 const SUCCESS = new Set(['succeeded', 'succeeded_with_budget_exhausted'])
@@ -97,9 +98,7 @@ interface MiningDraft {
 }
 
 function yearsAgo(years: number) {
-  const value = new Date()
-  value.setFullYear(value.getFullYear() - years)
-  return value.toISOString().slice(0, 10)
+  return shiftDate(cnToday(), { years: -years })
 }
 
 const DEFAULT_DRAFT: MiningDraft = {

@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { History, Trash2, FileText, Clock, Sparkles, Loader2 } from 'lucide-react'
 import { useHistoryReports, openHistoryReport, deleteReport, loadHistory } from '@/lib/aiReportStore'
 import { useActiveTasks } from '@/lib/aiReportStore'
+import { cnFormat } from '@/lib/cnTime'
 
 /**
  * AI 财务分析历史报告面板 —— 显示在财务页底部。
@@ -120,6 +121,6 @@ function fmtRelative(iso: string): string {
     if (diff < 3600_000) return `${Math.floor(diff / 60_000)} 分钟前`
     if (diff < 86400_000) return `${Math.floor(diff / 3600_000)} 小时前`
     if (diff < 7 * 86400_000) return `${Math.floor(diff / 86400_000)} 天前`
-    return new Date(iso).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+    return cnFormat(iso, { month: '2-digit', day: '2-digit' })
   } catch { return '' }
 }

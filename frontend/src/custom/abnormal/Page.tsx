@@ -18,6 +18,7 @@ import { boardTag } from '@/components/stock-table/primitives'
 import { PageHeader } from '@/components/PageHeader'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { useQuoteStatus } from '@/lib/useSharedQueries'
+import { cnDateTime } from '@/lib/cnTime'
 
 /**
  * 异动监控 — 全时段异动中心, 按交易时间线分三个 tab:
@@ -992,11 +993,9 @@ function DeviationView({ onPreview }: {
   }
 }
 
-/** 上次计算时间 (服务端 asof 秒级时间戳 → 本地日期时间) */
+/** 上次计算时间 (服务端 asof 秒级时间戳 → 北京日期时间) */
 function fmtCalcTime(asofSec: number): string {
-  const d = new Date(asofSec * 1000)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  return cnDateTime(asofSec * 1000)
 }
 
 function fmtThreshold(v: number | undefined): string {

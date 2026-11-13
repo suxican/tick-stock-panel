@@ -18,10 +18,9 @@ import json
 import logging
 import uuid
 from datetime import date as _date
-from datetime import datetime
 from pathlib import Path
 
-from app.market_time import cn_now
+from app.market_time import cn_now, cn_now_naive
 from app.services.fs_utils import atomic_write_text
 from app.strategy import paper
 
@@ -39,7 +38,7 @@ def _now_iso() -> str:
 
 
 def _new_id() -> str:
-    return f"arule_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    return f"arule_{cn_now_naive().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}"
 
 
 def validate_rule(rule: dict) -> None:

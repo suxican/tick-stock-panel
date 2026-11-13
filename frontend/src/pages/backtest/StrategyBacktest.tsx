@@ -45,14 +45,10 @@ import { ScoringEditor } from '@/components/ScoringEditor'
 import { strategyResultCandidate } from './researchCandidates'
 import { BacktestEvidencePanel } from './components/BacktestEvidencePanel'
 import { buildDailyNavItems, buildTradeKeyMap, buildTradesNavItems, type TradeNavItem } from './tradeNav'
+import { cnToday, shiftDate } from '@/lib/cnTime'
 
-const formatDate = (date: Date) => date.toISOString().slice(0, 10)
-const monthsAgo = (months: number) => {
-  const date = new Date()
-  date.setMonth(date.getMonth() - months)
-  return formatDate(date)
-}
-const TODAY = formatDate(new Date())
+const monthsAgo = (months: number) => shiftDate(cnToday(), { months: -months })
+const TODAY = cnToday()
 const THREE_MONTHS_AGO = monthsAgo(3)
 
 type QuickRangeUnit = 'month' | 'year' | 'all'
@@ -1408,12 +1404,12 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
 
   const applyRange = (months: number) => {
     setStart(monthsAgo(months))
-    setEnd(formatDate(new Date()))
+    setEnd(cnToday())
   }
 
   const applyAllRange = () => {
     setStart(earliestDate ?? '')
-    setEnd(formatDate(new Date()))
+    setEnd(cnToday())
   }
 
   // 进入页面/还在加载时就点了"全部": earliestDate 就绪后回填, 让 DatePicker 显示真实起始日

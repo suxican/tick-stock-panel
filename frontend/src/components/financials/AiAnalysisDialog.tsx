@@ -13,6 +13,7 @@ import {
   minimizeDialog, closeDialog, startAnalysis,
 } from '@/lib/aiReportStore'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
+import { cnFormat } from '@/lib/cnTime'
 
 interface Props {
   /** 当前展示的任务;活跃任务或历史报告 */
@@ -269,6 +270,6 @@ function fmtRelative(iso: string): string {
     if (diff < 3600_000) return `${Math.floor(diff / 60_000)} 分钟前`
     if (diff < 86400_000) return `${Math.floor(diff / 3600_000)} 小时前`
     if (diff < 7 * 86400_000) return `${Math.floor(diff / 86400_000)} 天前`
-    return new Date(iso).toLocaleDateString('zh-CN')
+    return cnFormat(iso, { year: 'numeric', month: 'numeric', day: 'numeric' })
   } catch { return '' }
 }

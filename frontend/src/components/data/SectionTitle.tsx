@@ -1,5 +1,6 @@
 import { CheckCircle2, XCircle, Loader2, AlertCircle } from 'lucide-react'
 import { formatDuration } from '@/lib/format'
+import { cnFormat } from '@/lib/cnTime'
 
 export function SectionTitle({ icon: Icon, children }: { icon: React.ComponentType<{ className?: string }>; children: React.ReactNode }) {
   return (
@@ -29,7 +30,7 @@ export function HistoryRow({ job, onClick }: { job: any; onClick: () => void }) 
         <div className="min-w-0">
           <div className="font-mono text-xs text-foreground">{job.id}</div>
           <div className="text-[11px] text-muted">
-            {job.started_at ? new Date(job.started_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'}
+            {job.started_at ? cnFormat(job.started_at, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'}
             {' · '}
             {job.duration_s != null ? formatDuration(job.duration_s) : '...'}
           </div>

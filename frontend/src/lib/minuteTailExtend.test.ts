@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { extendMinuteTail, type TailExtendLiveRow } from './minuteTailExtend'
 import type { MinuteKlineRow } from '@/lib/api'
 
-const NOW = new Date(2026, 9, 8, 10, 30) // 2026-10-08 10:30 (连续竞价时段)
+const NOW = new Date('2026-10-08T10:30:00+08:00') // 北京时间 2026-10-08 10:30 (连续竞价时段)
 const TODAY = '2026-10-08'
 
 function bars(...datetimes: string[]): MinuteKlineRow[] {
@@ -85,9 +85,9 @@ describe('extendMinuteTail 新鲜度守卫', () => {
   })
 
   it('非连续竞价时段 (午休/收盘后) 不续画', () => {
-    const lunch = new Date(2026, 9, 8, 12, 0)
+    const lunch = new Date('2026-10-08T12:00:00+08:00')
     expect(extendMinuteTail(BASE, LIVE, DATES_FRESH_STOCK_STALE_ETF, lunch)).toBe(BASE)
-    const afterClose = new Date(2026, 9, 8, 15, 30)
+    const afterClose = new Date('2026-10-08T15:30:00+08:00')
     expect(extendMinuteTail(BASE, LIVE, DATES_FRESH_STOCK_STALE_ETF, afterClose)).toBe(BASE)
   })
 

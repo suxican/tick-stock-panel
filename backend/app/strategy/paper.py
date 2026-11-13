@@ -39,7 +39,7 @@ from pathlib import Path
 
 import polars as pl
 
-from app.market_time import CN_TZ, cn_now, cn_today
+from app.market_time import CN_TZ, cn_now, cn_now_naive, cn_today
 from app.parquet import scan_daily_parquet
 from app.services.fs_utils import atomic_write_text
 
@@ -136,7 +136,7 @@ def _now_iso() -> str:
 
 
 def _new_id(prefix: str) -> str:
-    return f"{prefix}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    return f"{prefix}_{cn_now_naive().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}"
 
 
 def _order_sort_key(order: dict) -> tuple:

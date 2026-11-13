@@ -26,9 +26,10 @@ import {
   SweepParamList,
   CombosHint,
 } from './components/paramSweep'
+import { cnDaysAgo, cnToday } from '@/lib/cnTime'
 
-const TODAY = new Date().toISOString().slice(0, 10)
-const ONE_YEAR_AGO = new Date(Date.now() - 365 * 864e5).toISOString().slice(0, 10)
+const TODAY = cnToday()
+const ONE_YEAR_AGO = cnDaysAgo(365)
 
 /** 诊断徽章的中文标签 (与后端 robust_optimizer 的 label 一一对应)。 */
 const CONVERGENCE_LABEL: Record<string, { text: string; cls: string }> = {

@@ -27,7 +27,6 @@ import shutil
 import sys
 import tempfile
 import threading
-import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -36,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from app import __version__
+from app.market_time import cn_now_naive
 from app.services.fs_utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -289,7 +289,7 @@ class UpgradeGuard:
         if not rows:
             return None
         token = uuid.uuid4().hex
-        report_id = f"{from_version}_to_{__version__}_{time.strftime('%Y%m%d_%H%M%S')}_{token[:8]}"
+        report_id = f"{from_version}_to_{__version__}_{cn_now_naive().strftime('%Y%m%d_%H%M%S')}_{token[:8]}"
         report_dir = self._report_dir(report_id)
         temporary = _safe_path(self.state_dir, f"reports/.report-{token}")
         counts = {c: 0 for c in _REPORT_CATEGORIES}

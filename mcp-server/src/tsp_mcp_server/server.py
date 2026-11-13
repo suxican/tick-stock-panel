@@ -140,9 +140,10 @@ if _has("run:backtest"):
     @mcp.tool()
     def run_backtest(strategy_id: str, symbols: list[str], days: int = 90) -> str:
         """对指定标的跑策略回测 (纯 Polars 引擎), 返回指标/回合/净值。窗口别太大, 90~365 天为宜。"""
-        from datetime import date, timedelta
+        from datetime import datetime, timedelta, timezone
 
-        end = date.today()
+        # A 股按北京日期界定"今天", 不依赖本机时区。
+        end = datetime.now(timezone(timedelta(hours=8))).date()
         start = end - timedelta(days=days)
         return _call("POST", "/api/backtest/strategy/run", json={
             "strategy_id": strategy_id,

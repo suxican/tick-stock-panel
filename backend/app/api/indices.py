@@ -4,14 +4,14 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Annotated
 
 import polars as pl
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.indicators.pipeline import compute_enriched
-from app.market_time import cn_today
+from app.market_time import cn_now_naive, cn_today
 from app.services import (  # noqa: F401
     index_sync,
     kline_sync,
@@ -192,7 +192,7 @@ def sync_index_daily(
     capset = request.app.state.capabilities
     if not capset.has(Cap.KLINE_DAILY_BATCH):
         raise HTTPException(status_code=403, detail="需要 Pro+ 权限 (batch K-line)")
-    end = datetime.now()
+    end = cn_now_naive()
     start = end - timedelta(days=days)
     count = index_sync.sync_index_instruments(repo)
     rows = index_sync.sync_and_persist_index_daily(repo, capset, start_date=start, end_date=end)

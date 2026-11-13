@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 
+from app.market_time import cn_now_naive
 from app.services.fs_utils import atomic_write_text
 
 router = APIRouter(prefix="/api/analysis-menus", tags=["analysis-menus"])
@@ -124,7 +124,7 @@ def _ordered(items: list[AnalysisMenu]) -> list[AnalysisMenu]:
 
 
 def _save(request: Request, menu: AnalysisMenu) -> AnalysisMenu:
-    now = datetime.now().isoformat()
+    now = cn_now_naive().isoformat()
     if not menu.created_at:
         menu.created_at = now
     menu.updated_at = now

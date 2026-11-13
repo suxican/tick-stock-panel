@@ -10,6 +10,7 @@ import {
   SectionHead, INPUT_CLS, formatIntervalSummary,
   MIN_PULL_INTERVAL_SECONDS, MAX_PULL_INTERVAL_SECONDS, validatePullInterval,
 } from './dialogShared'
+import { cnDaysAgo, cnMonthDayTime, cnToday } from '@/lib/cnTime'
 
 const AUTH_TYPE_LABELS: Record<ExtPullAuth['type'], string> = {
   none: '无',
@@ -23,13 +24,7 @@ const WEEKDAY_CN = ['一', '二', '三', '四', '五', '六', '日']
 // 格式化时间显示
 function fmtTime(iso: string | null | undefined) {
   if (!iso) return null
-  const d = new Date(iso)
-  if (isNaN(d.getTime())) return null
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  const hh = String(d.getHours()).padStart(2, '0')
-  const mi = String(d.getMinutes()).padStart(2, '0')
-  return `${mm}-${dd} ${hh}:${mi}`
+  return cnMonthDayTime(iso) || null
 }
 
 /**
@@ -315,8 +310,8 @@ function ExtPullConfigDialog({ config, onSaved, onClose }: {
   const [error, setError] = useState('')
 
   // 历史回补 (仅 timeseries + 接口支持按日查询)
-  const today = new Date().toISOString().slice(0, 10)
-  const monthAgo = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10)
+  const today = cnToday()
+  const monthAgo = cnDaysAgo(30)
   const [bfStart, setBfStart] = useState(monthAgo)
   const [bfEnd, setBfEnd] = useState(today)
   const [bfRunning, setBfRunning] = useState(false)

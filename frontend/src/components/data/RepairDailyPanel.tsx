@@ -5,18 +5,11 @@ import { api } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { MissingCapChip } from '@/lib/capability-labels'
 import { DatePicker } from '@/components/DatePicker'
+import { cnDaysAgo, cnToday } from '@/lib/cnTime'
 
-function pad(n: number) { return String(n).padStart(2, '0') }
-function todayStr() {
-  const d = new Date()
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
-/** 往前推 N 天 */
-function daysAgo(n: number): string {
-  const d = new Date()
-  d.setDate(d.getDate() - n)
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
+const todayStr = () => cnToday()
+/** 往前推 N 天 (北京日期) */
+const daysAgo = (n: number): string => cnDaysAgo(n)
 
 // hasCap: 日K批量能力当前是否可用 (路由矩阵判定, 生效源含插件/自定义源)
 export function RepairDailyPanel({ hasCap, isRunning, latestDate, onStart }: {

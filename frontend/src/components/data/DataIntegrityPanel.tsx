@@ -3,6 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { CheckCircle2, Loader2, SearchCheck, Wrench, AlertTriangle } from 'lucide-react'
 import { api, type IntegrityAsset, type PipelineJob } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
+import { cnFormat } from '@/lib/cnTime'
 
 const ASSETS: { id: IntegrityAsset; label: string }[] = [
   { id: 'stock', label: '股票' }, { id: 'etf', label: 'ETF' }, { id: 'index', label: '指数' },
@@ -115,7 +116,7 @@ export function DataIntegrityPanel({ hasCap, isRunning, job, defaultAssets, onSt
         </div>}
         <div className="space-y-2 border-t border-border px-4 py-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <span className="text-[11px] text-muted">自检于 {new Date(report.checked_at).toLocaleString('zh-CN')}{report.repairable_count > 0 ? ` · 可自动修补 ${report.repairable_count} 个` : ''}</span>
+            <span className="text-[11px] text-muted">自检于 {cnFormat(report.checked_at)}{report.repairable_count > 0 ? ` · 可自动修补 ${report.repairable_count} 个` : ''}</span>
             {report.repairable_count > 0 && <button disabled={!canRepair} onClick={() => setConfirm(true)}
               className="inline-flex items-center gap-1.5 rounded-btn border border-accent/30 px-3 py-1.5 text-xs text-accent hover:bg-accent/10 disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-accent/40">
               <Wrench className="h-3 w-3" />修补已确认问题
