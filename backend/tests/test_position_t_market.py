@@ -43,6 +43,22 @@ def test_security_metadata_unknown_status_and_stale_book_fail_closed(tmp_path):
     assert market.trading_day(datetime(2027, 1, 4).date()) is None
 
 
+def test_beijing_theoretical_limits_stay_inside_the_band(tmp_path):
+    repo = SimpleNamespace(store=SimpleNamespace(data_dir=tmp_path),
+        get_daily=lambda *a, **kw: pl.DataFrame({"date": ["2026-10-15"], "volume": [2400]}),
+        resolve_asset_type=lambda s: "stock")
+    market = PositionTMarket(repo, None, None, None)
+    market._instruments = {"920096.BJ": {"symbol": "920096.BJ", "name": "北交所样本", "listing_date": "2023-05-10"}}
+    now = datetime(2026, 10, 20, 10, 20, tzinfo=CN_TZ)
+    raw = {"source": "fixture", "last_price": 30, "prev_close": 27.52,
+           "timestamp": now.timestamp() * 1000, "received_ts": now.timestamp() * 1000}
+    quote = market._quote({"symbol": "920096.BJ", "board": "bse"}, raw,
+        {"bid_prices": [29.99], "ask_prices": [30.01]}, now, DEFAULT_CONFIG)
+    # 27.52×1.3=35.776 向下取整, 27.52×0.7=19.264 向上取整
+    assert quote["limit_up_price"] == 35.77
+    assert quote["limit_down_price"] == 19.27
+
+
 def _market_context(tmp_path, monkeypatch):
     now = datetime(2026, 10, 16, 10, 20, 5, tzinfo=CN_TZ)
     stamp = now.timestamp() * 1000

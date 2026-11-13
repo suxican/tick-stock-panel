@@ -18,7 +18,7 @@ from datetime import date, timedelta
 
 import polars as pl
 
-from app.price_limits import is_risk_warning_name, price_limit_pct
+from app.price_limits import is_risk_warning_name, limit_price, price_limit_pct
 from app.strategy.engine import StrategyDataContext, StrategyDef, StrategyEngine
 
 # 日线面板列: 基础行情 + 涨停/炸板信号 (策略日线窗口契约) + 基础过滤/展示列。
@@ -83,13 +83,6 @@ def _trigger_hhmm(value) -> str:
     if len(text) >= 16 and text[13] == ":":
         return text[11:16]
     return text[-5:] if text else ""
-
-
-def _scalar_limit_up_price(prev_close: float, limit_pct: float) -> float:
-    """与 polars_limit_price 同口径的标量涨停价 (整数分半进位)。"""
-    cents = int(prev_close * 100 + 0.5)
-    numerator = round((1 + limit_pct) * 100)
-    return ((cents * numerator + 50) // 100) / 100
 
 
 @dataclass
@@ -262,8 +255,10 @@ class MinuteSignalReplayer:
                         if prev_adj > 0 and adj > 0 and abs(adj - prev_adj) > 1e-9
                         else prev
                     )
-                    limit_up = _scalar_limit_up_price(
-                        reference, price_limit_pct(str(symbol), day, is_risk_warning=is_risk_warning_name(name)),
+                    limit_up = limit_price(
+                        reference,
+                        price_limit_pct(str(symbol), day, is_risk_warning=is_risk_warning_name(name)),
+                        up=True,
                     )
                     if minute_raw >= limit_up - 1e-9:
                         result.buy_limit_up += 1

@@ -68,22 +68,32 @@ function isValidPrice(v: number | null | undefined): v is number {
   return typeof v === 'number' && Number.isFinite(v) && v > 0
 }
 
+// 北交所是唯一的 ±30% 档: 涨停价向下、跌停价向上取整到分 (与后端 price_limits 同口径)。
+const BEIJING_LIMIT_RATE = 0.3
+
+function ruleLimitPrice(prevClose: number, pct: number, up: boolean, assetType?: string): number {
+  const ratio = 1 + (up ? pct : -pct)
+  if (assetType === 'etf' || Math.abs(pct - BEIJING_LIMIT_RATE) > 1e-9) {
+    return roundPriceToTick(prevClose * ratio, assetType)
+  }
+  const product = Math.round(prevClose * 100) * Math.round(ratio * 100)
+  return (up ? Math.floor(product / 100) : Math.ceil(product / 100)) / 100
+}
+
 export function getLimitPrices(prevClose: number, priceLimit?: PriceLimitInfo, assetType?: string): {
-  limitUp: number      // 涨停价 (四舍五入)
-  limitDown: number    // 跌停价 (四舍五入)
+  limitUp: number      // 涨停价
+  limitDown: number    // 跌停价
   upPct: number        // 实际涨停幅度 (如 9.97)
   downPct: number      // 实际跌停幅度 (如 -9.97)
 } {
   const pct = priceLimit && Number.isFinite(priceLimit.rate) ? priceLimit.rate : 0.10
-  const rawUp = prevClose * (1 + pct)
-  const rawDown = prevClose * (1 - pct)
   // 权威价格优先; 兜底按 ETF 0.001 元、股票 0.01 元的报价单位取整。
   const limitUp = isValidPrice(priceLimit?.limit_up)
     ? priceLimit.limit_up
-    : roundPriceToTick(rawUp, assetType)
+    : ruleLimitPrice(prevClose, pct, true, assetType)
   const limitDown = isValidPrice(priceLimit?.limit_down)
     ? priceLimit.limit_down
-    : roundPriceToTick(rawDown, assetType)
+    : ruleLimitPrice(prevClose, pct, false, assetType)
   const upPct = (limitUp - prevClose) / prevClose * 100
   const downPct = (limitDown - prevClose) / prevClose * 100
   return { limitUp, limitDown, upPct, downPct }

@@ -10,6 +10,7 @@ from app.api import kline
 from app.backtest.matrix import load_market_data_matrix_from_parquet
 from app.indicators import pipeline
 from app.price_limits import (
+    limit_price,
     numpy_limit_price,
     numpy_price_limit_matrix,
     polars_is_risk_warning_name,
@@ -101,6 +102,107 @@ def test_polars_and_numpy_limit_prices_use_identical_half_up_rounding():
         numpy_values = numpy_limit_price(previous, limits, up=up)
         np.testing.assert_allclose(polars_values, numpy_values)
     assert numpy_limit_price(previous, limits, up=False)[0] == pytest.approx(17.96)
+
+
+@pytest.mark.parametrize(
+    ("previous", "up", "expected"),
+    [
+        # 北交所涨停价向下、跌停价向上取至分 (实盘: 920096 前收 27.52, 2026-10-20 最高/收盘 35.77)
+        (27.52, True, 35.77),
+        (12.49, True, 16.23),
+        (20.42, False, 14.30),
+        (13.46, False, 9.43),
+        # 恰好整分时三种取整一致
+        (10.00, True, 13.00),
+        (10.00, False, 7.00),
+    ],
+)
+def test_beijing_limit_prices_round_inside_the_band(previous, up, expected):
+    numpy_value = numpy_limit_price(np.array([previous]), np.array([0.30]), up=up)[0]
+    polars_value = pl.select(
+        polars_limit_price(pl.lit(previous), pl.lit(0.30), up=up)
+    ).item()
+
+    assert numpy_value == pytest.approx(expected)
+    assert polars_value == pytest.approx(expected)
+    assert limit_price(previous, 0.30, up=up) == pytest.approx(expected)
+
+
+def test_non_beijing_limit_prices_keep_half_up_rounding():
+    # 沪深主板/双创仍为四舍五入: 12.49×1.1=13.739→13.74, 20.42×0.8=16.336→16.34
+    previous = np.array([12.49, 20.42, 18.90])
+    limits = np.array([0.10, 0.20, 0.05])
+    np.testing.assert_allclose(numpy_limit_price(previous, limits, up=True), [13.74, 24.50, 19.85])
+    np.testing.assert_allclose(numpy_limit_price(previous, limits, up=False), [11.24, 16.34, 17.96])
+
+
+def test_polars_and_numpy_limit_prices_match_across_boards():
+    rng = np.random.default_rng(7)
+    previous = np.round(rng.uniform(1.0, 300.0, 4000), 2)
+    limits = rng.choice(np.array([0.05, 0.10, 0.20, 0.30]), 4000)
+    frame = pl.DataFrame({"previous": previous, "limit": limits})
+    for up in (True, False):
+        polars_values = frame.select(
+            polars_limit_price(pl.col("previous"), pl.col("limit"), up=up)
+        ).to_series().to_numpy()
+        numpy_values = numpy_limit_price(previous, limits, up=up)
+        scalar_values = [limit_price(p, r, up=up) for p, r in zip(previous, limits, strict=True)]
+        np.testing.assert_allclose(polars_values, numpy_values)
+        np.testing.assert_allclose(scalar_values, numpy_values)
+
+
+def test_upgrade_does_not_reuse_half_up_beijing_matrix_cache(tmp_path, monkeypatch):
+    from app import price_limits
+    from app.backtest import matrix
+
+    root = tmp_path / "market"
+    dates = [date(2026, 10, 19), date(2026, 10, 20)]
+    for day, close in zip(dates, [27.52, 35.77], strict=True):
+        partition = root / f"date={day.isoformat()}"
+        partition.mkdir(parents=True)
+        pl.DataFrame({
+            "symbol": ["920096.BJ"], "date": [day],
+            "open": [close], "high": [close], "low": [close], "close": [close],
+            "raw_close": [close], "volume": [1000.0],
+        }).write_parquet(partition / "part.parquet")
+    kwargs = {
+        "field_columns": {"raw_close"},
+        "instruments": pl.DataFrame({"symbol": ["920096.BJ"], "name": ["北交所样本"]}),
+        "cache_root": tmp_path / "cache",
+    }
+    # 真实构造 v5 缓存: 旧规则北交所也四舍五入, 35.77 低于判定价 35.775。
+    with monkeypatch.context() as old:
+        old.setattr(matrix, "_DIRECT_MATRIX_LOADER_VERSION", 5)
+        old.setattr(price_limits, "_beijing_numerator", lambda up: -1)
+        legacy = matrix.load_market_data_matrix_from_parquet(root, dates[0], dates[-1], **kwargs)
+    assert legacy.limit_up_locked[1, 0] == 0
+
+    upgraded = matrix.load_market_data_matrix_from_parquet(root, dates[0], dates[-1], **kwargs)
+    assert upgraded.limit_up_locked[1, 0] == 1
+    assert upgraded.cache_path != legacy.cache_path
+
+
+def test_beijing_close_at_exchange_limit_counts_as_limit_up():
+    rows = pl.DataFrame({
+        "symbol": ["920096.BJ", "920096.BJ"],
+        "date": [date(2026, 10, 19), date(2026, 10, 20)],
+        "open": [27.52, 35.77],
+        "high": [27.52, 35.77],
+        "low": [27.52, 35.77],
+        "close": [27.52, 35.77],
+        "raw_close": [27.52, 35.77],
+        "raw_high": [27.52, 35.77],
+    })
+
+    result = pipeline.compute_limit_signals(
+        rows,
+        pl.DataFrame({"symbol": ["920096.BJ"], "name": ["北交所样本"]}),
+        needed={"signal_limit_up", "consecutive_limit_ups"},
+    )
+
+    assert result["limit_up_price"][-1] == pytest.approx(35.765)
+    assert result["signal_limit_up"][-1] is True
+    assert result["consecutive_limit_ups"][-1] == 1
 
 
 def test_matrix_uses_date_specific_st_limits_across_change(tmp_path):

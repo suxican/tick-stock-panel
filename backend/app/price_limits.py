@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 
@@ -177,12 +178,43 @@ def polars_is_risk_warning_name(name: pl.Expr) -> pl.Expr:
     return name.fill_null("").str.to_uppercase().str.contains("ST", literal=True)
 
 
+# 北交所(唯一的 ±30% 档)涨跌停价不四舍五入: 涨停价向下、跌停价向上取至分,
+# 保证不越出 ±30%; 沪深各板四舍五入。实盘核验: 两种取整不同的日子里, 北交所
+# 最高价从未到达四舍五入涨停价, 而是恰好停在向下取整价 (跌停侧对称)。
+_BEIJING_UP_NUMERATOR = round((1 + BEIJING_BOARD_LIMIT) * 100)
+_BEIJING_DOWN_NUMERATOR = round((1 - BEIJING_BOARD_LIMIT) * 100)
+_HALF_UP_OFFSET = 50
+
+
+def _beijing_offset(up: bool) -> int:
+    """Integer-cent offset that floors limit-up / ceils limit-down prices."""
+    return 0 if up else 99
+
+
+def _beijing_numerator(up: bool) -> int:
+    return _BEIJING_UP_NUMERATOR if up else _BEIJING_DOWN_NUMERATOR
+
+
+def limit_price(previous: float, limit_pct: float, *, up: bool) -> float:
+    """Scalar exchange limit price; same integer-cent rules as the vector versions."""
+    sign = 1 if up else -1
+    numerator = round((1 + sign * limit_pct) * 100)
+    cents = math.floor(previous * 100 + 0.5)
+    offset = _beijing_offset(up) if numerator == _beijing_numerator(up) else _HALF_UP_OFFSET
+    return ((cents * numerator + offset) // 100) / 100
+
+
 def polars_limit_price(previous: pl.Expr, limit_pct: pl.Expr, *, up: bool) -> pl.Expr:
-    """Calculate exchange half-up prices with integer-cent arithmetic."""
+    """Calculate exchange limit prices with integer-cent arithmetic."""
     sign = 1 if up else -1
     numerator = ((1 + sign * limit_pct) * 100).round(0).cast(pl.Int64)
     cents = (previous * 100 + 0.5).floor().cast(pl.Int64)
-    return ((cents * numerator + 50) // 100) / 100
+    offset = (
+        pl.when(numerator == _beijing_numerator(up))
+        .then(_beijing_offset(up))
+        .otherwise(_HALF_UP_OFFSET)
+    )
+    return ((cents * numerator + offset) // 100) / 100
 
 
 def numpy_limit_pct_vectors(
@@ -290,7 +322,11 @@ def numpy_limit_price(
     result = np.full(previous.shape, np.nan, dtype=np.float64)
     finite = np.isfinite(previous)
     cents = np.floor(previous[finite] * 100.0 + 0.5).astype(np.int64)
+    finite_numerator = numerator[finite]
+    offset = np.where(
+        finite_numerator == _beijing_numerator(up), _beijing_offset(up), _HALF_UP_OFFSET,
+    )
     result[finite] = (
-        ((cents * numerator[finite] + 50) // 100).astype(np.float64) / 100.0
+        ((cents * finite_numerator + offset) // 100).astype(np.float64) / 100.0
     )
     return result

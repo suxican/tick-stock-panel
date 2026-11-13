@@ -28,6 +28,13 @@ describe('价格按资产类型保留交易精度', () => {
     expect(getLimitPrices(0.752, { rate: 0.1, limit_up: 0.828, limit_down: 0.678, source: 'instrument' }, 'etf')).toMatchObject({ limitUp: 0.828, limitDown: 0.678 })
     expect(getLimitPrices(10.01)).toMatchObject({ limitUp: 11.01, limitDown: 9.01 })
   })
+
+  it('北交所兜底涨停价向下、跌停价向上取整, 沪深仍四舍五入', () => {
+    const rule = (rate: number) => ({ rate, limit_up: null, limit_down: null, source: 'rule' as const })
+    expect(getLimitPrices(27.52, rule(0.3), 'stock')).toMatchObject({ limitUp: 35.77, limitDown: 19.27 })
+    expect(getLimitPrices(10, rule(0.3), 'stock')).toMatchObject({ limitUp: 13, limitDown: 7 })
+    expect(getLimitPrices(12.49, rule(0.1), 'stock')).toMatchObject({ limitUp: 13.74, limitDown: 11.24 })
+  })
 })
 
 // 后端自选 added_at 是 datetime.utcnow() 写入的 naive UTC 串 (无 Z 后缀)。

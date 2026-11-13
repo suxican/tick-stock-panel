@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import math
 from datetime import date, datetime, time, timedelta
-from decimal import ROUND_HALF_UP, Decimal
 from statistics import median
 
 from app.market_time import CN_TZ
@@ -97,6 +96,7 @@ class PositionTMarket:
         from app.price_limits import (
             is_no_limit_day,
             is_risk_warning_name,
+            limit_price,
             parse_listing_date,
             price_limit_pct,
         )
@@ -121,8 +121,8 @@ class PositionTMarket:
         previous = raw.get("prev_close")
         upper = lower = None
         if isinstance(previous, (int, float)) and math.isfinite(previous) and previous > 0:
-            ratio = Decimal(str(price_limit_pct(symbol, now.date(), is_risk_warning=is_risk_warning_name(instrument.get("name")))))
-            upper, lower = [float((Decimal(str(previous)) * (1 + sign * ratio)).quantize(Decimal(".01"), rounding=ROUND_HALF_UP)) for sign in (1, -1)]
+            ratio = price_limit_pct(symbol, now.date(), is_risk_warning=is_risk_warning_name(instrument.get("name")))
+            upper, lower = limit_price(previous, ratio, up=True), limit_price(previous, ratio, up=False)
         actual_up, actual_down = raw.get("limit_up_price"), raw.get("limit_down_price")
         if all(isinstance(v, (int, float)) and math.isfinite(v) and v > 0 for v in (actual_up, actual_down)) and actual_up > actual_down:
             upper, lower = actual_up, actual_down
