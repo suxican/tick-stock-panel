@@ -521,3 +521,79 @@ def test_sector_new_limit_ups_exclude_listed_and_mine(user_env, monkeypatch):
     robot = _by_name(snap["sectors"])["机器人"]
     # R1 今天也涨停但它是盘前龙头, 不重复列出
     assert robot["new_limit_ups"] == [{"symbol": new8, "name": "新涨停", "boards_today": 1}]
+
+
+# ---------------------------------------------------------------- T-1 快缓存不可用时的回退
+class _Generation:
+    def __init__(self, token="g1"):
+        self.token = token
+
+    def through(self, end):
+        return self.token
+
+
+def test_reference_falls_back_to_computed_frame_when_cache_is_stale(env, monkeypatch):
+    """同步数据重写 T-1 分区后, 历史缓存代际不一致, get_enriched_range 返回 None。"""
+    generation = _Generation()
+    env.repo.get_enriched_generation_snapshot = lambda asset_type="stock": generation
+    calls = []
+
+    def compute(repo, reference):
+        calls.append(reference)
+        return env.prev_backup
+
+    env.prev_backup, env.prev = env.prev, None
+    monkeypatch.setattr(bw, "_compute_reference_frame", compute)
+    bw.invalidate_reference_cache()
+    snap = bw.build_snapshot(env.repo, now=NOON)
+    assert snap["status"] == "ready" and snap["items"][0]["symbol"] == DRAGON
+    bw.build_snapshot(env.repo, now=NOON)
+    assert calls == [REFERENCE], "同一代际只现算一次"
+    generation.token = "g2"
+    bw.build_snapshot(env.repo, now=NOON)
+    assert calls == [REFERENCE, REFERENCE], "T-1 数据换代后重新计算"
+    bw.invalidate_reference_cache()
+
+
+def test_reference_fallback_fails_closed_while_publication_is_incomplete(env, monkeypatch):
+    from app.enriched_generation import EnrichedGenerationUnavailableError
+
+    def unavailable(asset_type="stock"):
+        raise EnrichedGenerationUnavailableError("publishing")
+
+    env.prev = None
+    env.repo.get_enriched_generation_snapshot = unavailable
+    monkeypatch.setattr(bw, "_compute_reference_frame", lambda repo, reference: pytest.fail("不应计算"))
+    bw.invalidate_reference_cache()
+    snap = bw.build_snapshot(env.repo, now=NOON)
+    assert snap["status"] == "unavailable" and "正在更新" in snap["reason"]
+
+
+def test_reference_fallback_discards_result_if_data_changed_meanwhile(env, monkeypatch):
+    generation = _Generation()
+    env.repo.get_enriched_generation_snapshot = lambda asset_type="stock": generation
+    prev = env.prev
+
+    def compute(repo, reference):
+        generation.token = "changed"
+        return prev
+
+    env.prev = None
+    monkeypatch.setattr(bw, "_compute_reference_frame", compute)
+    bw.invalidate_reference_cache()
+    assert bw.build_snapshot(env.repo, now=NOON)["status"] == "unavailable"
+    bw.invalidate_reference_cache()
+
+
+def test_recent_limit_ups_read_stored_partitions_when_cache_is_stale(tmp_path):
+    root = tmp_path / "kline_daily_enriched"
+    for day, boards in ((date(2026, 11, 6), [1, 0]), (date(2026, 11, 9), [0, 2]), (date(2026, 11, 13), [5, 5])):
+        folder = root / f"date={day}"
+        folder.mkdir(parents=True)
+        pl.DataFrame({"symbol": [DRAGON, LEADER], "date": [day, day],
+                      "consecutive_limit_ups": boards}).write_parquet(folder / "part.parquet")
+    repo = SimpleNamespace(store=SimpleNamespace(data_dir=tmp_path), get_enriched_range=lambda *a, **kw: None)
+    sessions = [date(2026, 11, 6), date(2026, 11, 9), date(2026, 11, 10), date(2026, 11, 13)]
+    assert bw._recent_limit_ups(repo, sessions, date(2026, 11, 10)) == {DRAGON, LEADER}
+    # 只看截至 T-1 的窗口, 今天的分区不计入
+    assert bw._recent_limit_ups(repo, sessions[1:], date(2026, 11, 10)) == {LEADER}

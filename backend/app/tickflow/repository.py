@@ -20,7 +20,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from itertools import pairwise
 from datetime import time as dt_time
 from pathlib import Path
@@ -54,6 +54,8 @@ _VIEW_REGISTRATION_WORKERS = 6
 # 为空, K 线接口逐请求现算指标。仅 warmup 线程用, 同步/懒加载路径单次。
 _ENRICHED_WARMUP_MAX_ATTEMPTS = 3
 _ENRICHED_WARMUP_PUBLISH_WAIT_SECONDS = 5.0
+# 历史缓存与磁盘代际不一致(如盘中同步重写了历史日)时后台重建的最小间隔。
+_STALE_REBUILD_INTERVAL_SECONDS = 60.0
 _MINUTE_REQUIRED_COLUMNS = ["symbol", "datetime", "open", "high", "low", "close", "volume"]
 
 
@@ -420,6 +422,9 @@ class KlineRepository:
         self._on_warmup_done: Callable[[], None] | None = None
         # parquet/instruments 同步刷新完成后的轻量回调；用于调度派生缓存预热。
         self._on_refresh_done: Callable[[], None] | None = None
+        # 历史缓存过期时是否自动后台重建: 只由应用启动开启, 测试与离线脚本保持只降级
+        self._stale_rebuild_enabled = False
+        self._stale_rebuild_at: float | None = None
 
         # parquet glob 路径
         self._enriched_glob = str(store.data_dir / "kline_daily_enriched" / "**" / "*.parquet")
@@ -751,10 +756,7 @@ class KlineRepository:
                                 len(df_full), time.perf_counter() - step)
 
                     # 缓存完整历史 (含指标+必要基础信息) 供 filter_history/backtest 直接复用
-                    if self.get_matrix_data_generation("stock") != refresh_generation:
-                        raise EnrichedGenerationUnavailableError(
-                            "enriched data changed while refreshing its history cache"
-                        )
+                    latest_drifted = self._refresh_drift(refresh_snapshot, latest)
                     self._enriched_history_cache = df_full
                     self._enriched_history_start = df_full["date"].min()
                     self._enriched_history_generation = refresh_generation
@@ -764,6 +766,13 @@ class KlineRepository:
 
                     # 只取最新一天作为 enriched_cache
                     df_today = df_full.filter(pl.col("date") == latest)
+                    if latest_drifted and self._enriched_cache is not None and self._enriched_cache_date == latest:
+                        # 盘中写入方已在计算期间更新最新日缓存, 不能用读取时的旧行覆盖;
+                        # 历史缓存里今天的行由各读接口按代际 fail-closed。
+                        self._build_live_agg(self._live_agg_baseline_date(latest))
+                        logger.info("enriched 历史缓存已重建, 保留盘中最新日缓存 (%.2fs)",
+                                    time.perf_counter() - started)
+                        return
                     if not df_today.is_empty():
                         self._enriched_cache = df_today
                         self._enriched_cache_date = latest
@@ -1296,6 +1305,67 @@ class KlineRepository:
         if root is not None:
             assert_usable(root, asset_type, symbols=symbols, end=end, enriched_only=True)
 
+    def _refresh_drift(self, refresh_snapshot: EnrichedGenerationSnapshot, latest: date) -> bool:
+        """历史缓存重建计算期间磁盘数据是否变化; 返回最新日是否被改写。
+
+        只有今天(最新日即今天)的分区在计算期间被盘中写入时仍提交: 更早日期的
+        数据没变, 而重建要几十秒, 盘中几乎必然撞上实时写入; 若因此整份丢弃,
+        盘中同步重写历史日后缓存将整天无法恢复。更早日期被改写则抛出, 丢弃结果。
+        """
+        current = self.get_enriched_generation_snapshot("stock")
+        if current.generation == refresh_snapshot.generation:
+            return False
+        before = latest - timedelta(days=1)
+        if latest == cn_today() and current.through(before) == refresh_snapshot.through(before):
+            return True
+        raise EnrichedGenerationUnavailableError("enriched data changed while refreshing its history cache")
+
+    def enable_stale_history_rebuild(self) -> None:
+        """应用启动时开启: 读到过期历史缓存时后台重建, 而不是整天降级。"""
+        self._stale_rebuild_enabled = True
+
+    def _history_cache_current(self, end: date, *, live_today_ok: bool = False) -> bool:
+        """历史缓存截至 end 的数据是否与磁盘同一代际。
+
+        live_today_ok: 盘中今天的分区每隔几秒就被写入, 以今天为目标日读历史的调用方
+        (策略监控、首板)会用实时行情替换今天的行, 此时只校验今天之前的数据。
+        只有今天之前的日期被改写才调度后台重建; 今天的变化是盘中常态, 不触发。
+        """
+        cache = self._enriched_history_cache
+        data_dir = getattr(getattr(self, "store", None), "data_dir", None)
+        if data_dir is None:
+            return True
+        try:
+            current = self.get_enriched_generation_snapshot("stock")
+        except EnrichedGenerationUnavailableError:
+            return False  # 发布未完成, 不是缓存过期, 不触发重建
+        snapshot = self._enriched_history_snapshot
+        if snapshot is None or snapshot[0] is not cache:
+            fresh = self._enriched_history_generation == current.generation
+            if not fresh:
+                self._schedule_stale_rebuild()
+            return fresh
+        before_today = cn_today() - timedelta(days=1)
+        if snapshot[1].through(min(end, before_today)) != current.through(min(end, before_today)):
+            self._schedule_stale_rebuild()
+            return False
+        if end <= before_today or live_today_ok:
+            return True
+        return snapshot[1].through(end) == current.through(end)
+
+    def _schedule_stale_rebuild(self) -> None:
+        if not self._stale_rebuild_enabled or self._enriched_warming:
+            return
+        now = time.monotonic()
+        with self._warmup_lock:
+            last = self._stale_rebuild_at
+            if last is not None and now - last < _STALE_REBUILD_INTERVAL_SECONDS:
+                return
+            self._stale_rebuild_at = now
+        logger.info("enriched 历史缓存与磁盘代际不一致, 后台重建")
+        # 重建期间旧缓存继续提供(过期范围由读接口 fail-closed), 页面不会变空
+        self._start_enriched_warmup()
+
     def get_enriched_latest(self, *, symbols=None, end=None) -> tuple[pl.DataFrame, date | None]:
         """返回缓存的 enriched 最新日 DataFrame + 日期。如无缓存则懒加载。
 
@@ -1382,6 +1452,9 @@ class KlineRepository:
             return None
         if "date" not in cache.columns:
             return None
+        # 与 get_enriched_range 同一代际校验: 历史日被改写后不能继续给出旧数据
+        if not self._history_cache_current(target_date, live_today_ok=True):
+            return None
         cache_max = cache["date"].max()
         cache_min = cache["date"].min()
         from datetime import timedelta
@@ -1418,19 +1491,9 @@ class KlineRepository:
                 return None
             self._refresh_enriched()
         cache = self._enriched_history_cache
-        data_dir = getattr(getattr(self, "store", None), "data_dir", None)
-        if data_dir is not None:
-            try:
-                current = self.get_enriched_generation_snapshot("stock")
-            except EnrichedGenerationUnavailableError:
-                return None
-            snapshot = self._enriched_history_snapshot
-            if snapshot is not None and snapshot[0] is cache:
-                if snapshot[1].through(end) != current.through(end):
-                    return None
-            elif self._enriched_history_generation != current.generation:
-                return None
         if cache is None or cache.is_empty() or "date" not in cache.columns:
+            return None
+        if not self._history_cache_current(end):
             return None
 
         cache_min = cache["date"].min()

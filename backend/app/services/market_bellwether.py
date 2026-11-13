@@ -18,7 +18,7 @@ import math
 import threading
 import time
 from collections.abc import Iterable
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -278,6 +278,12 @@ def _prepare(repo, quote_service, now: datetime) -> tuple[dict | None, tuple[str
         return None, ("交易日历不可用, 无法确定上一交易日", as_of)
     prev = repo.get_enriched_range(reference, reference, columns=_PREV_COLUMNS)
     if prev is None or prev.is_empty():
+        # 历史缓存不覆盖或与磁盘代际不一致(如盘中同步重写了 T-1 分区)时返回 None,
+        # 且盘中持续写入会让缓存重建被丢弃; 改为从分区现算 T-1
+        prev, publishing = _reference_from_partitions(repo, reference)
+        if publishing:
+            return None, ("行情数据正在更新, 稍后自动重试", as_of)
+    if prev is None or prev.is_empty():
         return None, (f"缺少上一交易日({reference})的收盘数据, 暂无法选出风向标", as_of)
     live = as_of == now.astimezone(CN_TZ).date() and in_continuous_session(now)
     stamp = _finite(current["quote_ts"].max()) if "quote_ts" in current.columns else None
@@ -285,6 +291,76 @@ def _prepare(repo, quote_service, now: datetime) -> tuple[dict | None, tuple[str
     stale = live and (quote_time is None or (now - quote_time).total_seconds() > STALE_SECONDS)
     return {"current": current, "as_of": as_of, "reference": reference, "prev": prev, "sessions": sessions,
             "live": live, "stale": stale, "quote_time": quote_time}, None
+
+
+REFERENCE_WARMUP_DAYS = 45   # 现算 T-1 时向前读取的自然日, 覆盖涨跌停与涨跌幅所需的前收
+_reference_cache: tuple[tuple, pl.DataFrame] | None = None
+_reference_lock = threading.Lock()
+
+
+def invalidate_reference_cache() -> None:
+    global _reference_cache
+    with _reference_lock:
+        _reference_cache = None
+
+
+def _compute_reference_frame(repo, reference: date) -> pl.DataFrame | None:
+    """用落盘分区与仓库同一条计算流水线现算 T-1(涨跌幅、涨停/炸板信号、连板)。"""
+    from app.indicators.pipeline import compute_enriched_history_window
+    from app.parquet import scan_enriched_parquet
+
+    data_dir = repo.store.data_dir
+    read_cols = ["symbol", "date", "open", "high", "low", "close", "volume", "amount",
+                 "quote_ts", "raw_close", "raw_high", "raw_low"]
+    lf = scan_enriched_parquet(str(Path(data_dir) / "kline_daily_enriched" / "**" / "*.parquet")).filter(
+        pl.col("date").is_between(reference - timedelta(days=REFERENCE_WARMUP_DAYS), reference))
+    available = [column for column in read_cols if column in lf.collect_schema().names()]
+    history = lf.select(available).sort(["symbol", "date"]).collect()
+    if history.is_empty() or history.filter(pl.col("date") == reference).is_empty():
+        return None
+    instruments = repo.get_instruments()
+    full = compute_enriched_history_window(
+        history, data_dir, instruments=instruments,
+        historical_shares=repo.get_historical_shares() if instruments is not None and not instruments.is_empty()
+        else None,
+    )
+    day = full.filter(pl.col("date") == reference)
+    return day.select([column for column in _PREV_COLUMNS if column in day.columns])
+
+
+def _reference_from_partitions(repo, reference: date) -> tuple[pl.DataFrame | None, bool]:
+    """快缓存不可用时的 T-1: 按该日数据代际缓存, 同一份数据只算一次。
+
+    返回 (数据, 是否正在发布)。计算期间 T-1 被改写则丢弃结果, 不混用新旧数据。
+    """
+    global _reference_cache
+    snapshot_of = getattr(repo, "get_enriched_generation_snapshot", None)
+    if snapshot_of is None:
+        return None, False
+    from app.enriched_generation import EnrichedGenerationUnavailableError
+
+    try:
+        key = (str(repo.store.data_dir), reference, snapshot_of("stock").through(reference))
+    except EnrichedGenerationUnavailableError:
+        return None, True
+    with _reference_lock:
+        if _reference_cache is not None and _reference_cache[0] == key:
+            return _reference_cache[1], False
+        # 单次计算约 1 秒; 记录器与页面同时请求时只算一次
+        try:
+            frame = _compute_reference_frame(repo, reference)
+            after = snapshot_of("stock").through(reference)
+        except EnrichedGenerationUnavailableError:
+            return None, True
+        except Exception:  # noqa: BLE001 - 现算失败时按缺数据处理, 不返回半成品
+            logger.warning("bellwether: reference frame computation failed", exc_info=True)
+            return None, False
+        if after != key[2]:
+            logger.info("bellwether: %s data changed while computing, retry later", reference)
+            return None, False
+        if frame is not None and not frame.is_empty():
+            _reference_cache = (key, frame)
+        return frame, False
 
 
 def _quote_rows(current: pl.DataFrame, symbols: list[str]) -> dict[str, dict]:
@@ -572,6 +648,13 @@ def _recent_limit_ups(repo, sessions: list[date], reference: date) -> set[str] |
         return None
     try:
         history = repo.get_enriched_range(window[0], reference, columns=["symbol", "date", "consecutive_limit_ups"])
+        if history is None:
+            # 快缓存不可用: 连板数是落盘列, 直接读窗口内各日分区
+            paths = [Path(repo.store.data_dir) / "kline_daily_enriched" / f"date={day}" / "part.parquet"
+                     for day in window]
+            paths = [path for path in paths if path.exists()]
+            history = (pl.concat([pl.read_parquet(path, columns=["symbol", "consecutive_limit_ups"])
+                                  for path in paths], how="vertical_relaxed") if paths else None)
     except Exception:  # noqa: BLE001 - 取不到历史时退回全体成员
         logger.warning("bellwether: recent limit-up history unavailable", exc_info=True)
         return None

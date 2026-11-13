@@ -42,6 +42,9 @@ def _cache(days: list[date]) -> pl.DataFrame:
 def _repo(tmp_path: Path, cache: pl.DataFrame) -> KlineRepository:
     repo = KlineRepository(DataStore(tmp_path))
     repo._enriched_history_cache = cache
+    # 与生产建缓存路径一致地记录代际; 历史读接口会校验它, 否则视为过期缓存
+    repo._enriched_history_generation = repo.get_matrix_data_generation()
+    repo._enriched_history_snapshot = (cache, repo.get_enriched_generation_snapshot("stock"))
     return repo
 
 

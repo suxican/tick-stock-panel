@@ -188,6 +188,10 @@ async def _application_lifespan(app: FastAPI):
     # 指标异步预热标志: enriched 缓存在后台线程构建, 完成后置 True
     app.state.indicators_ready = False
     repo._on_warmup_done = lambda: setattr(app.state, "indicators_ready", True)  # noqa: SLF001
+    # 盘中同步重写历史日后, 读接口发现历史缓存过期时后台重建, 不整天降级
+    enable_stale_rebuild = getattr(repo, "enable_stale_history_rebuild", None)
+    if enable_stale_rebuild is not None:
+        enable_stale_rebuild()
 
     # Polars 缓存预热 — enriched 的重计算 (107万行 compute_indicators) 推后台,
     # instruments/index/ETF 仍同步 (毫秒级)。应用立即 ready, 指标算完后自动替换。
