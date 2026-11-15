@@ -72,6 +72,23 @@ def _key(source, account_id, symbol):
     return "h_" + _hash([source, account_id, symbol])[:24]
 
 
+def lots_invalidation_flags(data_dir, symbols: list[str]) -> dict[str, bool]:
+    """批次来源下各股票是否已登记研究失效条件; 研究文件不可读时全部为 False。"""
+    try:
+        from app.services.holding_analysis_store import HoldingAnalysisStore
+
+        profiles = HoldingAnalysisStore(Path(data_dir)).profiles()
+    except Exception as e:  # noqa: BLE001 - 只用于标注, 读不到按未登记处理
+        logger.info("lots invalidation flags unavailable: %s", e)
+        profiles = {}
+    return {
+        symbol: bool(str(
+            (profiles.get(_key("lots", "", symbol)) or {}).get("profile", {}).get("invalidation") or ""
+        ).strip())
+        for symbol in symbols
+    }
+
+
 def _active_facts(plans):
     # Monitor bookkeeping contains new quote/check timestamps every few
     # seconds. Only execution/resource facts invalidate a research source.

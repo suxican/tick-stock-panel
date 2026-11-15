@@ -1043,6 +1043,21 @@ export interface RecapSnapshot {
   holdings?: RecapHoldings | null
   /** 上一交易日给持仓的程序条件今日是否触发; 无条件或不紧邻时为 null */
   holdings_check?: RecapHoldingsCheck | null
+  /** 今日执行(批次与交易记录, 程序判定); 无内容为 null, 旧报告无此字段 */
+  execution?: RecapExecution | null
+}
+
+/** 复盘「今日执行」; pnl_pct 为百分数(卖出价相对登记成本, 不含费用) */
+export interface RecapExecution {
+  as_of: string
+  /** 复盘日买入的批次 */
+  opened: { symbol: string; name: string; has_invalidation: boolean }[]
+  /** 复盘日结清的记录; 归因由用户在结清时自选 */
+  closed: { symbol: string; name: string; pnl_pct: number; hold_days: number | null; reason: TradeReason; reason_label: string }[]
+  /** 收盘已触及止损价却仍未结清的批次(盘中或无收盘价时不判定) */
+  stop_breached: { symbol: string; name: string; stop_price: number; close: number }[]
+  /** 截至复盘日的累计统计 */
+  stats: TradeStats | null
 }
 
 export interface RecapHoldingsCheck {
@@ -2204,6 +2219,54 @@ export interface Lot {
   remind_date?: string | null
   lead_days: number
   created_at?: string
+}
+
+// ===== 交易记录 (批次结清留痕; 批次本身不做会计) =====
+export type TradeReason = 'planned_profit' | 'planned_stop' | 'early_exit' | 'late_stop' | 'unplanned'
+/** 归因中文名; 顺序即展示顺序, 与后端 trade_journal.REASONS 一致 */
+export const TRADE_REASON_LABELS: Record<TradeReason, string> = {
+  planned_profit: '按计划止盈',
+  planned_stop: '按计划止损',
+  early_exit: '提前卖出',
+  late_stop: '拖延未止损',
+  unplanned: '计划外交易',
+}
+export interface TradeJournalEntry {
+  id: string
+  lot_id: string
+  symbol: string
+  name: string
+  qty: number
+  cost_price: number
+  buy_date: string | null
+  sell_price: number
+  sell_date: string
+  reason: TradeReason
+  note: string
+  /** 结清时该股票是否已在「持仓分析与计划」登记失效条件 */
+  had_invalidation: boolean
+  /** 买入日的情绪周期阶段 key; 买入日未知或无数据为 null */
+  buy_phase: string | null
+  /** 持有交易日数(建仓当日记零); 日期缺失或非交易日为 null */
+  hold_days: number | null
+  /** 百分数; 卖出价相对登记成本, 不含费用 */
+  pnl_pct: number
+  created_at: string
+}
+/** 比率均为百分数; 无样本的项为 null */
+export interface TradeStatsGroup { key: string; label: string; total: number; win_rate: number | null; avg_pnl_pct: number | null }
+export interface TradeStats {
+  total: number
+  wins: number
+  losses: number
+  win_rate: number | null
+  avg_win_pct: number | null
+  /** 平均亏损幅度(正数) */
+  avg_loss_pct: number | null
+  payoff_ratio: number | null
+  avg_hold_days: number | null
+  by_reason: TradeStatsGroup[]
+  by_phase: TradeStatsGroup[]
 }
 
 // ===== Paper (虚拟账户/模拟盘) =====
@@ -6204,6 +6267,20 @@ export const api = {
 
   lotDelete: (id: string) =>
     request<{ ok: boolean }>(`/api/lots/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  /** 结清批次: 留下交易记录后移除批次与派生规则; 校验失败由弹窗内展示(quiet) */
+  lotClose: (id: string, body: { sell_price: number; sell_date: string; reason: TradeReason; note: string }) =>
+    request<{ ok: boolean; entry: TradeJournalEntry }>(`/api/lots/${encodeURIComponent(id)}/close`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      quiet: true,
+    }),
+
+  tradeJournalList: () =>
+    request<{ entries: TradeJournalEntry[]; stats: TradeStats | null }>('/api/trade-journal'),
+
+  tradeJournalDelete: (id: string) =>
+    request<{ ok: boolean }>(`/api/trade-journal/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // ===== Paper (虚拟账户/模拟盘: 虚拟资金 + 真实行情价格模拟撮合, 多账户) =====
   paperAccounts: () =>

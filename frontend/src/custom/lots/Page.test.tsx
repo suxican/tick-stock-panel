@@ -7,9 +7,10 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import extension from './extension'
 
 const mocks = vi.hoisted(() => ({ lots: vi.fn() }))
-vi.mock('@/lib/api', () => ({ api: {
+vi.mock('@/lib/api', () => ({ TRADE_REASON_LABELS: {}, api: {
   lotsList: (...args: unknown[]) => mocks.lots(...args),
   lotDelete: vi.fn(),
+  tradeJournalList: vi.fn().mockResolvedValue({ entries: [], stats: null }),
 } }))
 vi.mock('./PositionTMonitor', () => ({ PositionTMonitor: () => <div>持仓做 T 监控</div> }))
 vi.mock('./HoldingAnalysis', () => ({ HoldingAnalysis: () => <div>持仓研究工作区</div> }))

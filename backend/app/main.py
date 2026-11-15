@@ -49,6 +49,7 @@ from app.api import (
     strategy,
     strategy_pool,
     task_registry,
+    trade_journal,
     watchlist,
 )
 from app.api import auth as auth_api
@@ -802,6 +803,7 @@ app.include_router(monitor_rules.router)
 app.include_router(config_backup.router)
 app.include_router(import_center.router)
 app.include_router(lots.router)
+app.include_router(trade_journal.router)
 app.include_router(position_t.router)
 app.include_router(alerts.router)
 app.include_router(events.router)

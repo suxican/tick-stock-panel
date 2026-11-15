@@ -226,3 +226,76 @@ it('lists holding conditions triggered today', () => {
   expect(text).toContain('中天科技 收盘 ≥ 26.80(压力) → 站上压力, 联动走强(收盘 27.10)')
   expect(text).not.toContain('跌破支撑')
 })
+
+const execStats = {
+  total: 3, wins: 2, losses: 1, win_rate: 66.67, avg_win_pct: 6, avg_loss_pct: 4, payoff_ratio: 1.5, avg_hold_days: 4.5,
+  by_reason: [
+    { key: 'planned_profit', label: '按计划止盈', total: 2, win_rate: 100, avg_pnl_pct: 6 },
+    { key: 'late_stop', label: '拖延未止损', total: 1, win_rate: 0, avg_pnl_pct: -4 },
+  ],
+  by_phase: [{ key: 'rally', label: '主升', total: 2, win_rate: 100, avg_pnl_pct: 6 }, { key: 'unknown', label: '未知', total: 1, win_rate: 0, avg_pnl_pct: -4 }],
+}
+
+it("renders today's execution summary and keeps cumulative stats collapsed", () => {
+  const onOpenStock = vi.fn()
+  act(() => root.render(
+    <MemoryRouter>
+      <RecapSnapshotPanel onOpenStock={onOpenStock} snapshot={{
+        ...snapshot,
+        execution: {
+          as_of: '2026-11-11',
+          opened: [{ symbol: '000001.SZ', name: '平安银行', has_invalidation: false }, { symbol: '601318.SH', name: '中国平安', has_invalidation: true }],
+          closed: [{ symbol: '600519.SH', name: '贵州茅台', pnl_pct: 2.5, hold_days: 6, reason: 'planned_profit', reason_label: '按计划止盈' }],
+          stop_breached: [{ symbol: '300750.SZ', name: '宁德时代', stop_price: 95, close: 94.9 }],
+          stats: execStats,
+        },
+      }} />
+    </MemoryRouter>,
+  ))
+  const text = host.textContent ?? ''
+  for (const expected of ['今日执行', '新建 2 笔', '平安银行', '未登记失效条件', '结清 1 笔', '贵州茅台', '+2.50%', '按计划止盈',
+    '触及止损价仍持有 1 只', '宁德时代', '累计 3 笔', '样本不足', '不含费用']) {
+    expect(text).toContain(expected)
+  }
+  expect(text.split('未登记失效条件').length - 1).toBe(1)
+  expect(text).not.toContain('按买入时阶段')
+
+  act(() => [...host.querySelectorAll('button')].find(b => b.textContent?.includes('累计 3 笔'))!.click())
+  const open = host.textContent ?? ''
+  for (const expected of ['按买入时阶段', '按归因', '拖延未止损', '主升', '胜率 67%', '盈亏比 1.50', '平均持有 4.5 天', '-4.00%']) {
+    expect(open).toContain(expected)
+  }
+
+  act(() => [...host.querySelectorAll('button')].find(b => b.textContent === '宁德时代')!.click())
+  expect(onOpenStock).toHaveBeenCalledWith('300750.SZ')
+})
+
+it('omits the execution section when absent or null', () => {
+  act(() => root.render(<MemoryRouter><RecapSnapshotPanel snapshot={snapshot} /></MemoryRouter>))
+  expect(host.textContent).not.toContain('今日执行')
+  expect(host.textContent).toContain('特斯拉概念')
+  act(() => root.render(<MemoryRouter><RecapSnapshotPanel snapshot={{ ...snapshot, execution: null }} /></MemoryRouter>))
+  expect(host.textContent).not.toContain('今日执行')
+  expect(host.textContent).toContain('特斯拉概念')
+})
+
+it('hides empty execution rows and unknown stats values', () => {
+  act(() => root.render(
+    <MemoryRouter>
+      <RecapSnapshotPanel snapshot={{
+        ...snapshot,
+        execution: {
+          as_of: '2026-11-11', opened: [], closed: [], stop_breached: [],
+          stats: { ...execStats, total: 12, payoff_ratio: null, avg_hold_days: null },
+        },
+      }} />
+    </MemoryRouter>,
+  ))
+  const text = host.textContent ?? ''
+  expect(text).toContain('今日执行')
+  expect(text).toContain('今日没有新建或结清')
+  for (const hidden of ['新建 ', '结清 0', '触及止损价', '样本不足']) expect(text).not.toContain(hidden)
+  act(() => [...host.querySelectorAll('button')].find(b => b.textContent?.includes('累计 12 笔'))!.click())
+  expect(host.textContent).toContain('盈亏比 —')
+  expect(host.textContent).toContain('平均持有 —')
+})

@@ -200,6 +200,7 @@ export const QK = {
   monitorRules:         ['monitor-rules'] as const,
   monitorRuleOptions:   ['monitor-rule-options'] as const,
   lots:                 ['lots'] as const,
+  tradeJournal:         ['trade-journal'] as const,
   lotsKline:            (symbols: string) => ['lots-kline', symbols] as const,
   holdingAnalysisAll:   ['holding-analysis'] as const,
   holdingAnalysisOverview: (source: 'lots' | 'position_t', account: string) => ['holding-analysis', 'overview', source, account] as const,
@@ -229,6 +230,8 @@ export const QK = {
   reviewReports:        ['review-reports'] as const,
   reviewIntradayCheck:  ['review-intraday-check'] as const,
   reviewBellwethers:    (scope: string, groupId?: string | null) => ['review-bellwethers', scope, groupId ?? ''] as const,
+  /** 前缀键: 持仓变化后让各范围的风向标一起失效 */
+  reviewBellwethersAll: ['review-bellwethers'] as const,
 
   // 冻结报告按唯一 ID 隔离，行情 SSE 不改写历史决策。
   marketGameReports:    ['market-game-reports'] as const,

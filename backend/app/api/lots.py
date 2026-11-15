@@ -116,16 +116,81 @@ def upsert_lot(lot_in: LotModel, request: Request):
     return {"ok": True, "lot": lot}
 
 
+def _delete_locked(data_dir: Path, lot_id: str) -> bool:
+    """删批次文件与两条派生规则 (调用方须持有 _write_lock); 返回是否有任何文件被删。"""
+    deleted = lots_domain.delete_one(data_dir, lot_id)
+    # 两条派生规则都要删 (用 or 会短路跳过第二条)
+    deleted_p = monitor_rules.delete_one(data_dir, f"{lot_id}_p")
+    deleted_d = monitor_rules.delete_one(data_dir, f"{lot_id}_d")
+    return deleted or deleted_p or deleted_d
+
+
 @router.delete("/{lot_id}")
 def delete_lot(lot_id: str, request: Request):
     if not monitor_rules.ID_RE.match(lot_id):
         raise HTTPException(status_code=400, detail="批次 id 非法")
     data_dir = _data_dir(request)
     with _write_lock:
-        deleted = lots_domain.delete_one(data_dir, lot_id)
-        # 两条派生规则都要删 (用 or 会短路跳过第二条)
-        deleted_p = monitor_rules.delete_one(data_dir, f"{lot_id}_p")
-        deleted_d = monitor_rules.delete_one(data_dir, f"{lot_id}_d")
-    if deleted or deleted_p or deleted_d:
+        deleted = _delete_locked(data_dir, lot_id)
+    if deleted:
         _reload_engine(request)
     return {"ok": True}
+
+
+class CloseLotModel(BaseModel):
+    sell_price: float
+    sell_date: str
+    reason: str
+    note: str = ""
+
+
+def _find_lot(data_dir: Path, lot_id: str) -> dict | None:
+    return next((lot for lot in lots_domain.load_all(data_dir) if lot.get("id") == lot_id), None)
+
+
+@router.post("/{lot_id}/close")
+def close_lot(lot_id: str, body: CloseLotModel, request: Request):
+    """结清批次: 留下一条交易记录, 再按删除逻辑移除批次与派生规则。
+
+    与"删除"的区别只在留痕; 批次本身仍不做会计 (记录在 strategy.trade_journal)。
+    """
+    from app.api.trade_journal import with_pnl
+    from app.market_time import cn_today
+    from app.services import trade_journal_context
+    from app.services.holding_analysis import lots_invalidation_flags
+    from app.strategy import trade_journal
+
+    if not monitor_rules.ID_RE.match(lot_id):
+        raise HTTPException(status_code=400, detail="批次 id 非法")
+    data_dir = _data_dir(request)
+    lot = _find_lot(data_dir, lot_id)
+    if lot is None:
+        raise HTTPException(status_code=404, detail="批次不存在或已结清")
+    try:
+        trade_journal.validate_close(
+            lot, body.sell_price, body.sell_date, body.reason, body.note, today=cn_today(),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    # 上下文在锁外取 (日历/阶段历史是磁盘读取), 锁内只做文件写删
+    symbol = lot["symbol"]
+    try:
+        name = request.app.state.repo.get_name_map([symbol]).get(symbol) or symbol
+    except Exception:  # noqa: BLE001 - 名称只用于展示, 取不到退回代码
+        name = symbol
+    entry = trade_journal.build_entry(
+        lot, sell_price=body.sell_price, sell_date=body.sell_date, reason=body.reason, note=body.note,
+        name=name,
+        had_invalidation=lots_invalidation_flags(data_dir, [symbol])[symbol],
+        buy_phase=trade_journal_context.buy_phase(data_dir, lot.get("buy_date")),
+        hold_days=trade_journal_context.hold_days(lot.get("buy_date"), body.sell_date),
+    )
+    with _write_lock:
+        # 并发的另一次结清/删除可能已先完成: 批次不在就不再写记录
+        if _find_lot(data_dir, lot_id) is None:
+            raise HTTPException(status_code=404, detail="批次不存在或已结清")
+        trade_journal.save_one(data_dir, entry)
+        _delete_locked(data_dir, lot_id)
+    _reload_engine(request)
+    return {"ok": True, "entry": with_pnl(entry)}

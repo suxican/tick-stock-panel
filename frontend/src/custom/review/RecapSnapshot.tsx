@@ -15,6 +15,7 @@ import { cn } from '@/lib/cn'
 import { priceColorClass } from '@/lib/format'
 import { useChartTheme } from '@/lib/theme'
 import { HistoryChart } from '@/custom/market-game/HistoryChart'
+import { RecapExecutionPanel } from './RecapExecution'
 
 /**
  * 去掉正文末尾给系统核验用的 ```plan 代码块(含流式中尚未闭合的部分)。
@@ -446,6 +447,7 @@ export function RecapSnapshotPanel({ snapshot, onOpenStock }: { snapshot: RecapS
       {snapshot.holdings && snapshot.holdings.rows.length > 0 && (
         <HoldingsLinkage holdings={snapshot.holdings} check={snapshot.holdings_check} onOpenStock={onOpenStock} />
       )}
+      {snapshot.execution && <RecapExecutionPanel execution={snapshot.execution} onOpenStock={onOpenStock} />}
     </section>
   )
 }

@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { ArrowUpRight, CalendarClock, Pencil, Plus, Search, Trash2 } from 'lucide-react'
+import { ArrowUpRight, CalendarClock, CircleCheck, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import { api, type Lot } from '@/lib/api'
 import { fetchDailyBatchChunked } from '@/lib/klineBatchChunked'
 import { QK } from '@/lib/queryKeys'
@@ -16,6 +16,8 @@ import { toNavItems } from '@/lib/listNav'
 import { boardTag } from '@/components/stock-table/primitives'
 import { PositionTMonitor } from './PositionTMonitor'
 import { HoldingAnalysis } from './HoldingAnalysis'
+import { CloseLotDialog } from './CloseLotDialog'
+import { ClosedTrades } from './ClosedTrades'
 
 const emptyDraft = (): Lot => ({
   id: '',
@@ -73,6 +75,7 @@ function BatchLots() {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const [editing, setEditing] = useState<Lot | null>(null) // null=关闭
+  const [closing, setClosing] = useState<Lot | null>(null)
   const [confirmId, setConfirmId] = useState<string | null>(null)
   const [previewSymbol, setPreviewSymbol] = useState<string | null>(null)
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -227,6 +230,14 @@ function BatchLots() {
                             >
                               <Pencil className="h-3.5 w-3.5" />
                             </button>
+                            <button
+                              onClick={() => setClosing(lot)}
+                              title="结清 (卖出后留下交易记录)"
+                              aria-label={`结清 ${lot.symbol}`}
+                              className="p-1.5 rounded-md text-secondary transition-all hover:bg-accent/10 hover:text-accent cursor-pointer"
+                            >
+                              <CircleCheck className="h-3.5 w-3.5" />
+                            </button>
                             {confirmId === lot.id ? (
                               <button
                                 onClick={() => handleClickDelete(lot.id)}
@@ -254,6 +265,8 @@ function BatchLots() {
             </div>
           )}
 
+          <ClosedTrades />
+
           <div className="flex items-center justify-center gap-1 text-[11px] text-muted">
             生成的止盈止损 / 到期提醒规则已同步至监控中心
             <button onClick={() => navigate('/monitor')} className="inline-flex items-center gap-0.5 text-accent hover:text-accent/80 cursor-pointer">
@@ -264,6 +277,7 @@ function BatchLots() {
       </div>
 
       {editing && <LotDialog lot={editing} onClose={() => setEditing(null)} />}
+      {closing && <CloseLotDialog key={closing.id} lot={closing} name={symbolNames[closing.symbol] ?? ''} onClose={() => setClosing(null)} />}
 
       <StockPreviewDialog
         symbol={previewSymbol}

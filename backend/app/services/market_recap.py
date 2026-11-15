@@ -44,7 +44,7 @@ _SYSTEM_PROMPT = """你是一位有 15 年 A 股短线与波段实战经验的�
 
 读者会同时看到页面上的数据面板(核心指标今日/昨日/5日均对比表、成交额与涨停走势图、涨停主线表、连板梯队),所以**正文不复述面板数字**,只写判断、因果和计划。
 
-## 输出结构(严格按以下各节,有持仓输入时 6 节、否则 5 节,Markdown,不加标题行和其他章节,正文 400-800 字)
+## 输出结构(严格按以下各节:基础 5 节;输入含"持仓联动"时加「📦 持仓联动」;输入含"今日执行"时加「🧾 执行复盘」。Markdown,不加标题行和其他章节,正文 400-800 字)
 
 ## 🎯 定调
 一行:**【周期:<阶段> · 状态:偏强/中性/偏弱】** + 一句核心矛盾(不超过 40 字)。周期优先采用输入的"情绪周期"阶段;你判断不同时,在句中给出理由。盘中快照须注明"盘中"。
@@ -62,6 +62,9 @@ _SYSTEM_PROMPT = """你是一位有 15 年 A 股短线与波段实战经验的�
 
 ## 📦 持仓联动
 仅当输入含"持仓联动"时输出本节,否则整节省略。页面已展示持仓表与程序条件,本节只做解释,2-4 句:哪些持仓与今天的主线判断同向、哪些最弱,明日剧本的各情景分别会怎样影响它们。**不得新增或改动价位、数量和操作动作**,提到条件时只能原样引用输入中的条件;标注"只看市场联动"的持仓只谈联动,不谈仓位处理。输入含"昨日持仓条件今日触发"时,先用一句话说明哪些条件已触发(原样引用,不改判)。
+
+## 🧾 执行复盘
+仅当输入含"今日执行"时输出本节,否则整节省略。页面已展示执行表与累计统计,本节只做解释,2-4 句:今天的买卖与昨日剧本、持仓条件是否一致;累计统计里最该改的一类交易是什么。**不得改判归因,不得给出价位、数量或操作动作**;触及止损价仍持有的,只点名并说明这与计划不一致。
 
 ## ⛔ 失效条件
 1-3 条列表,出现即说明今天的定调错了。
@@ -202,7 +205,8 @@ def _build_emotion_block(overview: dict) -> str:
 def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context: str = "",
                        bench_context: str = "", snapshot_context: str = "",
                        prev_plan: dict | None = None, plan_check_context: str = "",
-                       plan_vocab_context: str = "", holdings_context: str = "") -> str:
+                       plan_vocab_context: str = "", holdings_context: str = "",
+                       execution_context: str = "") -> str:
     """构建用户消息:复盘日期 + 近期对比/周期/梯队/主线(快照) + 市场数据精简切片
     + 龙虎榜(可选) + 盘前风向标(可选) + 上一篇剧本 + 新闻 + 关注点。"""
     as_of = overview.get("as_of") or "今日"
@@ -250,6 +254,8 @@ def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context
         parts.extend(["", plan_vocab_context])
     if holdings_context:
         parts.extend(["", holdings_context])
+    if execution_context:
+        parts.extend(["", execution_context])
 
     if news:
         news_lines = []
@@ -304,11 +310,11 @@ def _extract_plan_sections(content: str) -> str:
 
 
 def strip_holdings_section(content: str) -> str:
-    """去掉「📦 持仓联动」二级小节(推送外发前调用, 个人持仓不出本机)。"""
+    """去掉「📦 持仓联动」「🧾 执行复盘」二级小节(推送外发前调用, 个人持仓与交易不出本机)。"""
     out, skipping = [], False
     for line in (content or "").splitlines(keepends=True):
         if line.startswith("## "):
-            skipping = "持仓联动" in line
+            skipping = "持仓联动" in line or "执行复盘" in line
         if not skipping:
             out.append(line)
     return "".join(out)
@@ -461,6 +467,7 @@ async def recap_market_stream(
     rs = _regime_state(overview)
 
     # 数据快照: 近期对比/周期/梯队/主线, 同时供 prompt 与前端结构化面板; 失败只降级
+    from app.services.market_recap_execution import execution_prompt_block
     from app.services.market_recap_holdings import holdings_check_prompt_block, holdings_prompt_block
     from app.services.market_recap_plan import plan_check_prompt_block, plan_vocabulary_block
     from app.services.market_recap_snapshot import build_recap_snapshot, snapshot_prompt_block
@@ -485,6 +492,14 @@ async def recap_market_stream(
             logger.warning("holdings linkage failed for %s: %s", as_of_str, e)
             snapshot["holdings"] = None
         attach_holdings_check(snapshot, repo, reports)
+        # 今日执行: 批次与交易记录 → 程序判定; 失败只降级为无该节
+        from app.services.market_recap_execution import build_execution
+
+        try:
+            snapshot["execution"] = build_execution(repo, snapshot)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("recap execution failed for %s: %s", as_of_str, e)
+            snapshot["execution"] = None
 
     # 2. meta 事件(前端据此先渲染信号灯/看板与数据面板)
     yield json.dumps({
@@ -523,6 +538,7 @@ async def recap_market_stream(
                 holdings_prompt_block((snapshot or {}).get("holdings")),
                 holdings_check_prompt_block((snapshot or {}).get("holdings_check")),
             ])),
+            execution_context=execution_prompt_block((snapshot or {}).get("execution")),
         )
         got_content = False
         async for delta in stream_ai_text(
