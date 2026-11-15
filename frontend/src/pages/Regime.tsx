@@ -496,6 +496,7 @@ export function Regime() {
     const speculation = rows.map(r => r.speculation_score ?? null)
     const resilience = rows.map(r => r.resilience_score ?? null)
     const trend = rows.map(r => r.trend_score ?? null)
+    const amountPctl = rows.map(r => r.amount_multiple_pctl ?? null)
 
     // 状态背景色带: 合并连续同状态日期段, 每段用状态色低透明度着色
     const stateBands: any[] = []
@@ -522,10 +523,10 @@ export function Regime() {
       tooltip: { trigger: 'axis', confine: true, backgroundColor: ct.tooltipBg, borderColor: ct.tooltipBorder, textStyle: { color: ct.tooltipText } },
       legend: {
         type: 'scroll', itemWidth: 12, itemHeight: 7, itemGap: 16, inactiveColor: ct.text,
-        data: ['综合分', '涨停数', '赚钱', '投机', '抗跌', '趋势'],
+        data: ['综合分', '涨停数', '赚钱', '投机', '抗跌', '趋势', '成交额分位'],
         textStyle: { color: ct.text, fontSize: 11 }, top: 0,
         // 综合分与低强调涨停柱同屏, 四维指标可按需叠加
-        selected: { '综合分': true, '涨停数': true, '赚钱': false, '投机': false, '抗跌': false, '趋势': false },
+        selected: { '综合分': true, '涨停数': true, '赚钱': false, '投机': false, '抗跌': false, '趋势': false, '成交额分位': false },
       },
       grid: { left: 40, right: 68, top: 44, bottom: 56 },
       xAxis: {
@@ -554,6 +555,9 @@ export function Regime() {
           lineStyle: { ...subLineStyle, color: '#10b981' }, z: 2 },
         { name: '趋势', type: 'line', itemStyle: { color: '#3b82f6' }, data: trend, smooth: true, symbol: 'none', yAxisIndex: 0,
           lineStyle: { ...subLineStyle, color: '#3b82f6' }, z: 2 },
+        // 成交额倍数的近一年分位(0–100), 与四维同轴; 倍数本身量纲不同, 只在资金卡显示。
+        { name: '成交额分位', type: 'line', itemStyle: { color: '#06b6d4' }, data: amountPctl, smooth: true, symbol: 'none', yAxisIndex: 0,
+          lineStyle: { ...subLineStyle, color: '#06b6d4' }, z: 2 },
         // 综合分主线 + 状态背景色带 + 阈值横虚线
         { name: '综合分', type: 'line', data: scores, smooth: true, symbol: 'none', yAxisIndex: 0,
           itemStyle: { color: ct.textStrong }, lineStyle: { width: 2.2, color: ct.textStrong }, areaStyle: { color: ct.textStrong, opacity: 0.035 }, z: 3,
@@ -800,6 +804,8 @@ export function Regime() {
               : '市场阶段(情绪周期)数据尚未生成 — 点击右上角「重算」即可回填全部历史阶段与主线'}
         </div>
       )}
+
+      {latest && <CapitalCard row={latest} />}
 
       {/* ── 阶段规律: 当前阶段的历史统计 + 下阶段转移分布 (窗口内 segments 提炼) ── */}
       {phaseStats && phaseStreak && (
@@ -1098,7 +1104,7 @@ export function Regime() {
         {rows.length > 0 && (
           <div className="regime-trend-grid">
             <section className={cardCls} aria-label="市场环境历史趋势">
-              <SectionTitle icon={Activity} title="环境综合分趋势" hint="点图例可叠加四维指标与涨停数" />
+              <SectionTitle icon={Activity} title="环境综合分趋势" hint="点图例可叠加四维指标、涨停数与成交额分位" />
               <div ref={trendRef} className="regime-chart" role="img" aria-label="环境综合分及四维指标历史趋势图" />
             </section>
             <section className={cardCls} aria-label="历史环境状态分布">
@@ -1172,6 +1178,40 @@ export function Regime() {
 // 宽基/风格标签(融资融券/沪深股通等数千成分)会霸占主线榜首。默认按成员数
 // 上限过滤; 用户可调阈值并按名称屏蔽特定概念, 保存后自动重算主线。
 // ST 剔除开关联动情绪周期口径 — 切换时额外触发 regime 全量重算。
+const CAPITAL_VOLUME_LABELS = { expand: '放量', flat: '平量', shrink: '缩量' } as const
+const CAPITAL_CONCENTRATION_LABELS = { concentrated: '集中', neutral: '中性', dispersed: '分散' } as const
+const CAPITAL_FLAG_LABELS = { volume_stall: '放量滞涨', shrink_advance: '缩量上涨' } as const
+
+/** 资金状态轴: 只描述成交活跃度与集中度, 与环境分、情绪周期相互独立。 */
+function CapitalCard({ row }: { row: RegimeRow }) {
+  const volume = row.capital_volume ? CAPITAL_VOLUME_LABELS[row.capital_volume] : null
+  const concentration = row.capital_concentration ? CAPITAL_CONCENTRATION_LABELS[row.capital_concentration] : null
+  const flag = row.capital_flag ? CAPITAL_FLAG_LABELS[row.capital_flag] : null
+  const pct = (value: number | null | undefined, signed = false) =>
+    value == null ? '—' : `${signed && value >= 0 ? '+' : ''}${(value * 100).toFixed(1)}%`
+  return (
+    <section className={cn(cardCls, 'regime-capital')} aria-label="资金状态">
+      <h2 className="regime-card-heading" title="成交额只反映交易活跃度，不等于资金流入；档位为相对近一年的分位。">
+        <Layers aria-hidden="true" />资金<time dateTime={row.date}>{row.date}</time>
+      </h2>
+      {volume || concentration ? (
+        <>
+          <p className="regime-capital-state">
+            {volume ?? '—'} · {concentration ?? '—'}
+            {flag && <span className="regime-capital-flag">{flag}</span>}
+          </p>
+          <p className="regime-capital-note">
+            成交额 {row.amount_multiple == null ? '—' : `${row.amount_multiple.toFixed(2)} 倍`}（20日中位） · 5日 {pct(row.amount_change_5d, true)}
+          </p>
+          <p className="regime-capital-note">前5%个股占成交 {pct(row.amount_top5_share)}</p>
+        </>
+      ) : (
+        <p className="regime-capital-note">未计算，点击右上角「重算」补全</p>
+      )}
+    </section>
+  )
+}
+
 function MainlineFilterPanel({ filter, onDone }: {
   filter: { min_members: number; max_members: number; blacklist: string[]; exclude_st?: boolean } | undefined
   onDone: () => Promise<void>

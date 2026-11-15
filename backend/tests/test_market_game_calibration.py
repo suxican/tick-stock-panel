@@ -244,4 +244,38 @@ def test_shadow_groups_split_and_publish_fixed_definitions():
     assert groups['shadow:volume_stall'] == groups['shadow:volume_stall@test'] == 1
     assert 'shadow:volume_stall@train' not in groups
     assert {item['group'] for item in result['shadow_definitions']} == {
-        'shadow:volume_stall', 'shadow:ease_down', 'shadow:first_drop_after_high'}
+        'shadow:volume_stall', 'shadow:ease_down', 'shadow:first_drop_after_high',
+        'shadow:capital_expand', 'shadow:capital_concentrated', 'shadow:capital_volume_stall'}
+
+
+def _capital(frame, day_index, **cols):
+    target = frame['date'][day_index]
+    return frame.with_columns(*[
+        pl.when(pl.col('date') == target).then(pl.lit(value)).otherwise(pl.lit(None, dtype=pl.Utf8)).alias(name)
+        for name, value in cols.items()])
+
+
+def test_capital_shadow_groups_follow_regime_labels():
+    frame = _capital(history(10), 5, capital_volume='expand', capital_concentration='concentrated')
+    assert _shadow(calibrate_history(frame))[5] == [
+        'shadow:capital_expand', 'shadow:capital_concentrated', 'shadow:capital_expand_advance']
+    stall = _capital(history(10), 5, capital_volume='expand', capital_flag='volume_stall')
+    assert _shadow(calibrate_history(stall))[5] == ['shadow:capital_expand', 'shadow:capital_volume_stall']
+    weak = _capital(history(10), 5, capital_volume='shrink', capital_concentration='dispersed')
+    assert _shadow(calibrate_history(weak))[5] == ['shadow:capital_shrink', 'shadow:capital_dispersed']
+    flat = _capital(history(10), 5, capital_volume='flat', capital_concentration='neutral')
+    assert _shadow(calibrate_history(flat))[5] == []
+
+
+def test_capital_shadow_absent_on_old_schema_and_keeps_other_groups():
+    old = calibrate_history(history(30))
+    new = calibrate_history(_capital(history(30), 5, capital_volume='expand'))
+    assert all(not any(key.startswith('shadow:capital') for key in keys) for keys in _shadow(old))
+
+    def others(result):
+        return {g['group']: g for g in result['groups'] if not g['group'].startswith('shadow:capital')}
+
+    assert others(old) == others(new)
+    assert old['coverage'] == new['coverage']
+    assert [row['complete_inputs'] for row in old['observations']] == [
+        row['complete_inputs'] for row in new['observations']]

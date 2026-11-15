@@ -198,6 +198,7 @@ def _refresh_market_statistics(repo, start: date, emit) -> None:
         rows = regime_builder.run_regime_batch(repo, start=start, end=end)
         regime_builder.replace_regime_range(root, start, end, rows)
         regime_builder.refresh_phase_labels(root, start=start)
+        regime_builder.refresh_capital_labels(root, start=start)
     for kind in ("concept", "industry"):
         if not market_mainline.load_mainline_history(root, kind).is_empty():
             rows = market_mainline.compute_mainline_range(repo, root, start, end, kind=kind)

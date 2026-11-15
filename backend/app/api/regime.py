@@ -161,6 +161,7 @@ def regime_recompute(request: Request, start: date | None = None, end: date | No
     if not new_rows.is_empty():
         regime_builder.upsert_regime_history(data_dir, new_rows)
     phase_days = regime_builder.refresh_phase_labels(data_dir)
+    capital_days = regime_builder.refresh_capital_labels(data_dir)
 
     from app.services import market_mainline
 
@@ -176,6 +177,7 @@ def regime_recompute(request: Request, start: date | None = None, end: date | No
         "ok": True,
         "computed": new_rows.height if not new_rows.is_empty() else 0,
         "phase_days": phase_days,
+        "capital_days": capital_days,
         "mainline_rows": mainline_rows,
     }
 

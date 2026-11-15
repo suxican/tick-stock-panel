@@ -118,6 +118,7 @@ def test_regime_recompute_defaults_to_beijing_today(monkeypatch) -> None:
     monkeypatch.setattr(regime_builder, "earliest_enriched_date", lambda repo: date(2026, 1, 1))
     monkeypatch.setattr(regime_builder, "run_regime_batch", fake_run_batch)
     monkeypatch.setattr(regime_builder, "refresh_phase_labels", lambda d: 0)
+    monkeypatch.setattr(regime_builder, "refresh_capital_labels", lambda d: 0)
 
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(repo=MagicMock())))
     regime_api.regime_recompute(request, start=None, end=None)

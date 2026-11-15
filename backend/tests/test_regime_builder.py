@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import date
+from datetime import date, timedelta
 
 import polars as pl
 import pytest
@@ -487,3 +487,80 @@ def test_build_regime_mask_first_formal_day_requires_warmup_predecessor(tmp_path
     )
     assert mask is not None
     assert mask.tolist() == [True, False, True]
+
+
+# ───────────────────────── 资金状态列 ─────────────────────────
+
+def _capital_enriched(n_symbols: int = 200) -> pl.DataFrame:
+    return pl.DataFrame({
+        "symbol": [f"{i:06d}.SZ" for i in range(n_symbols)],
+        "date": [date(2024, 1, 2)] * n_symbols,
+        "change_pct": [0.01] * n_symbols,
+        "amount": [float(i) for i in range(1, n_symbols + 1)],
+        "close": [10.0] * n_symbols, "ma20": [9.5] * n_symbols,
+        "signal_limit_up": [False] * n_symbols, "signal_limit_down": [False] * n_symbols,
+        "signal_broken_limit_up": [False] * n_symbols,
+    })
+
+
+def test_aggregate_daily_adds_capital_columns():
+    row = regime_builder._aggregate_daily(_capital_enriched()).to_dicts()[0]
+    assert row["amount_valid_count"] == 200
+    assert row["amount_top5_share"] == round(1955 / 20100, 6)
+    assert row["total_amount"] == 20100.0
+
+
+def test_aggregate_daily_without_amount_column_keeps_capital_null():
+    row = regime_builder._aggregate_daily(_capital_enriched().drop("amount")).to_dicts()[0]
+    assert row["amount_valid_count"] == 0 and row["amount_top5_share"] is None
+
+
+def _capital_history(n: int) -> pl.DataFrame:
+    days, cur = [], date(2024, 1, 1)
+    while len(days) < n:
+        if cur.weekday() < 5:
+            days.append(cur)
+        cur += timedelta(days=1)
+    return pl.DataFrame({
+        "date": days, "state": ["range"] * n, "score": [50] * n,
+        "total_amount": [100.0 + (i % 7) for i in range(n)], "median_pct": [0.001] * n,
+        "amount_valid_count": [5000] * n, "amount_top5_share": [0.4] * n,
+    })
+
+
+def test_refresh_capital_labels_roundtrip(tmp_path):
+    regime_builder.upsert_regime_history(tmp_path, _capital_history(120))
+    assert regime_builder.refresh_capital_labels(tmp_path) == 120
+    out = regime_builder.load_regime_history(tmp_path)
+    assert out["capital_volume"][-1] in {"expand", "flat", "shrink"}
+    cols = ["date", "state", "score", "total_amount"]
+    assert_frame_equal(out.select(cols), _capital_history(120).select(cols))
+
+
+def test_refresh_capital_labels_skips_old_schema(tmp_path):
+    old = _capital_history(120).drop("amount_valid_count", "amount_top5_share")
+    regime_builder.upsert_regime_history(tmp_path, old)
+    before = regime_builder.regime_path(tmp_path).stat().st_mtime_ns
+    assert regime_builder.refresh_capital_labels(tmp_path) == 0
+    assert regime_builder.regime_path(tmp_path).stat().st_mtime_ns == before
+
+
+def test_incremental_upsert_keeps_capital_labels(tmp_path):
+    full = _capital_history(121)
+    regime_builder.upsert_regime_history(tmp_path, full.head(120))
+    regime_builder.refresh_capital_labels(tmp_path)
+    regime_builder.upsert_regime_history(tmp_path, full.tail(1))  # 新行不含派生列
+    regime_builder.refresh_capital_labels(tmp_path)
+    out = regime_builder.load_regime_history(tmp_path)
+    assert out.height == 121
+    assert out["capital_volume"].head(120).null_count() < 120  # 旧日期标签仍在
+    assert out["capital_volume"][-1] is not None
+
+
+def test_refresh_capital_labels_with_start_keeps_earlier_rows(tmp_path):
+    regime_builder.upsert_regime_history(tmp_path, _capital_history(120))
+    regime_builder.refresh_capital_labels(tmp_path)
+    before = regime_builder.load_regime_history(tmp_path)
+    cut = before["date"][100]
+    assert regime_builder.refresh_capital_labels(tmp_path, start=cut) == 120
+    assert_frame_equal(regime_builder.load_regime_history(tmp_path), before)

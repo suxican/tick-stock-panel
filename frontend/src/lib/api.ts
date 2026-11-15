@@ -758,6 +758,16 @@ export interface RegimeRow {
   ladder_completeness?: number | null
   promo_rate?: number | null
   promo_pool?: number | null
+  // 资金状态轴(重算后才有; 旧数据可能缺)。占比与 5 日变化为小数制, 分位为 0–100。
+  amount_valid_count?: number | null
+  amount_top5_share?: number | null
+  amount_multiple?: number | null
+  amount_change_5d?: number | null
+  amount_multiple_pctl?: number | null
+  top5_share_pctl?: number | null
+  capital_volume?: 'expand' | 'flat' | 'shrink' | null
+  capital_concentration?: 'concentrated' | 'neutral' | 'dispersed' | null
+  capital_flag?: 'volume_stall' | 'shrink_advance' | null
 }
 
 export interface RegimeHistory {

@@ -198,3 +198,49 @@ it.each(['loading', 'empty', 'error'] as const)('加载状态 %s 有明确反馈
     expect(panel().querySelector('[aria-label="综合分 6，满分 100"]')).not.toBeNull()
   }
 })
+
+const capital = {
+  amount_valid_count: 5000, amount_top5_share: .412, amount_multiple: 1.32,
+  amount_change_5d: .084, amount_multiple_pctl: 88, top5_share_pctl: 81,
+  capital_volume: 'expand', capital_concentration: 'concentrated', capital_flag: 'volume_stall',
+} as const
+const capitalCard = () => host.querySelector<HTMLElement>('[aria-label="资金状态"]')!
+
+it('资金卡显示档位、倍数、5日变化和集中度', async () => {
+  vi.mocked(api.regimeHistory).mockResolvedValue({ rows: rows.map(row => ({ ...row, ...capital })), total: rows.length })
+  await render()
+  const text = capitalCard().textContent ?? ''
+  expect(text).toContain('放量 · 集中')
+  expect(text).toContain('放量滞涨')
+  expect(text).toContain('成交额 1.32 倍')
+  expect(text).toContain('5日 +8.4%')
+  expect(text).toContain('前5%个股占成交 41.2%')
+})
+
+it('旧数据没有资金列时显示未计算, 不显示数值', async () => {
+  await render()
+  const text = capitalCard().textContent ?? ''
+  expect(text).toContain('未计算')
+  expect(text).not.toMatch(/\d\s*倍|缩量|平量|放量|集中|分散/)
+})
+
+it('只有一项档位可用时另一项显示占位符, 缺失数值不显示为 0', async () => {
+  vi.mocked(api.regimeHistory).mockResolvedValue({ total: rows.length, rows: rows.map(row => ({
+    ...row, ...capital, capital_concentration: null, amount_top5_share: null, amount_change_5d: null, capital_flag: null,
+  })) })
+  await render()
+  const text = capitalCard().textContent ?? ''
+  expect(text).toContain('放量 · —')
+  expect(text).toContain('5日 —')
+  expect(text).toContain('前5%个股占成交 —')
+  expect(text).not.toContain('放量滞涨')
+})
+
+it('成交额分位可叠加到趋势图左轴, 默认不显示', async () => {
+  vi.mocked(api.regimeHistory).mockResolvedValue({ rows: rows.map(row => ({ ...row, ...capital })), total: rows.length })
+  await render()
+  const option = trendChart().option
+  expect(option.legend.selected['成交额分位']).toBe(false)
+  const series = (option.series as { name: string; data: (number | null)[]; yAxisIndex: number }[]).find(item => item.name === '成交额分位')
+  expect(series).toMatchObject({ data: rows.map(() => 88), yAxisIndex: 0 })
+})

@@ -97,6 +97,11 @@ html:not(.dark) .regime-page .regime-tone { color: color-mix(in srgb, var(--metr
 .regime-mainline-tags span { padding: 1px 5px; border-radius: 3px; background: #f59e0b12; color: #f59e0b; font-size: 10px; overflow-wrap: anywhere; }
 html:not(.dark) .regime-mainline-tags span { color: #955508; }
 .regime-phase-metric { padding: 14px 12px; }
+.regime-capital { margin-top: 12px; padding: 14px; }
+.regime-capital-state { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 8px; font-size: 18px; line-height: 1.3; font-weight: 650; }
+.regime-capital-flag { padding: 1px 6px; border-radius: 3px; background: #f59e0b12; color: #f59e0b; font-size: 11px; font-weight: 500; }
+html:not(.dark) .regime-capital-flag { color: #955508; }
+.regime-capital-note { margin-top: 5px; font-size: 11px; line-height: 1.6; color: hsl(var(--fg-secondary)); overflow-wrap: anywhere; }
 .regime-phase-metric h3 { font-size: 11px; font-weight: 500; line-height: 1.65; color: hsl(var(--fg-secondary)); }
 .regime-metric-value { margin-top: 15px; font-family: theme('fontFamily.mono'); font-size: 25px; font-weight: 600; line-height: 1.25; }
 .regime-metric-value small { margin-left: 3px; font-family: inherit; font-size: 11px; font-weight: 400; color: hsl(var(--fg-secondary)); }

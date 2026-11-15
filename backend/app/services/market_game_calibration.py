@@ -117,7 +117,9 @@ def prepare_history(regime: pl.DataFrame, *, premiums: dict | None = None,
         })
         # Shadow inputs stay outside _metrics: they must not change complete_inputs or coverage.
         rows.append({'date': day.isoformat(), **metrics, 'ew_return': _number(supplement.get('ew_return')),
-                     'index_recent_highs': _number(index_row.get('index_recent_highs'), 0)})
+                     'index_recent_highs': _number(index_row.get('index_recent_highs'), 0),
+                     # Labels from regime_history; absent on histories not yet recomputed.
+                     **{key: row.get(key) for key in CAPITAL_KEYS}})
         amounts.append(amount)
     return rows
 
@@ -136,6 +138,8 @@ NEW_HIGH_WINDOW = 60
 RECENT_HIGH_SESSIONS = 5
 RECENT_HIGH_MIN_INDICES = 2
 
+CAPITAL_KEYS = ('capital_volume', 'capital_concentration', 'capital_flag')
+
 SHADOW_DEFINITIONS = [
     {'group': 'shadow:volume_stall', 'control': 'shadow:volume_advance', 'label': '放量滞涨',
      'card': 'C1-4 浮动供给雪球', 'definition':
@@ -149,6 +153,16 @@ SHADOW_DEFINITIONS = [
      f'核心四指数当日均值≤{DROP_THRESHOLD:.1%}且此前{DROP_LOOKBACK}日无同级别下跌，'
      f'此前{RECENT_HIGH_SESSIONS}日内至少{RECENT_HIGH_MIN_INDICES}只创{NEW_HIGH_WINDOW}日收盘新高；'
      '对照组为同样首次急跌但无指数新高'},
+    # 资金状态轴(market_capital)的档位, 非书中命题; 阈值为滚动分位的研究初始值。
+    {'group': 'shadow:capital_expand', 'control': 'shadow:capital_shrink', 'label': '资金放量',
+     'card': '资金状态轴', 'definition':
+     '成交额倍数（对前20日中位数）相对此前252日分位≥75；对照组为分位≤25'},
+    {'group': 'shadow:capital_concentrated', 'control': 'shadow:capital_dispersed', 'label': '成交集中',
+     'card': '资金状态轴', 'definition':
+     '成交额前5%个股占比相对此前252日分位≥75；对照组为分位≤25'},
+    {'group': 'shadow:capital_volume_stall', 'control': 'shadow:capital_expand_advance',
+     'label': '放量滞涨（资金轴）', 'card': '资金状态轴', 'definition':
+     '资金放量且中位涨跌幅≤0；对照组为资金放量且中位涨跌幅>0'},
 ]
 
 
@@ -179,6 +193,17 @@ def _shadow_keys(rows: list[dict], index: int, trend: str) -> list[str]:
             keys.append('shadow:first_drop_after_high')
         elif highs == 0:
             keys.append('shadow:drop_no_high')
+    # Capital-axis labels are already past-only (market_capital); no trend condition.
+    volume = current.get('capital_volume')
+    if volume in ('expand', 'shrink'):
+        keys.append('shadow:capital_' + volume)
+    concentration = current.get('capital_concentration')
+    if concentration in ('concentrated', 'dispersed'):
+        keys.append('shadow:capital_' + concentration)
+    if current.get('capital_flag') == 'volume_stall':
+        keys.append('shadow:capital_volume_stall')
+    elif volume == 'expand' and median is not None and median > 0:
+        keys.append('shadow:capital_expand_advance')
     return keys
 
 
@@ -289,6 +314,7 @@ def calibrate_history(regime: pl.DataFrame, *, premiums: dict | None = None,
             'gate组来自本地zzshare情绪归档的逐日回放，只与更早交易日比较分位；供应商历史可能事后修订，未获时点认证。',
             'split只按日期把各组拆成train/test两段，用于检查方向是否一致，不做阈值拟合。',
             'shadow组检验书中定性命题，阈值在运行前固定，只与各自对照组比较；不进入规则、报告或仓位。',
+            'shadow:capital_*组取自环境历史的资金档位（滚动分位，研究初始阈值），不是书中命题；环境历史未重算时这些组为空。',
             '多组同时检验存在多重比较风险；单组方向一致不构成规则依据，需另行提升规则版本验证。',
         ],
         'shadow_definitions': SHADOW_DEFINITIONS,

@@ -162,7 +162,14 @@ def _aggregate_daily(df: pl.DataFrame, index_pct_map: dict | None = None) -> pl.
     index_pct_map: {date: 指数涨幅} 可选, 由调用方从指数数据预先算好。
     梯队指标(首板/N板宽度/晋级率)由 market_phase 提供; phase 列不在此算
     (需要完整日序做平滑), 由 refresh_phase_labels 在 upsert 后统一重标。
+    资金列同理: 这里只算当日的有效股票数与前 5% 成交占比, 倍数/分位/档位依赖
+    历史序列, 由 refresh_capital_labels 重标。资金列不进入 classify_state。
     """
+    from app.services.market_capital import (
+        capital_daily_aggs,
+        finalize_capital_row,
+        with_amount_rank,
+    )
     from app.services.market_phase import (
         finalize_ladder_row,
         ladder_daily_aggs,
@@ -179,6 +186,8 @@ def _aggregate_daily(df: pl.DataFrame, index_pct_map: dict | None = None) -> pl.
 
     if "consecutive_limit_ups" in avail and "symbol" in df.columns:
         df = with_prev_consecutive(df)
+    if "amount" in avail:
+        df = with_amount_rank(df)
 
     # 基础聚合 — 全部用 group_by 一次性向量化算出, 避免逐日 filter 扫全表(OOM/超时元凶)。
     has_ma20 = "close" in avail and "ma20" in avail
@@ -247,6 +256,7 @@ def _aggregate_daily(df: pl.DataFrame, index_pct_map: dict | None = None) -> pl.
             ladder_promo_aggs()
             if "consecutive_limit_ups" in avail and "_prev_consec" in df.columns else []
         ),
+        *(capital_daily_aggs() if "amount" in avail else []),
     ).sort("date")
 
     # 转成 dict 列表做分类(规则引擎需逐日算, 但只扫 grouped 行数=天数, 不再回扫全表)
@@ -322,6 +332,8 @@ def _aggregate_daily(df: pl.DataFrame, index_pct_map: dict | None = None) -> pl.
             "trend_score": round(sub["trend"]),
             # 梯队指标(阶段判定所需); phase 由 refresh_phase_labels 统一重标
             **finalize_ladder_row(r),
+            # 资金日聚合(有效股票数/前 5% 成交占比); 档位由 refresh_capital_labels 重标
+            **finalize_capital_row(r),
         })
     return pl.DataFrame(rows) if rows else pl.DataFrame()
 
@@ -570,6 +582,29 @@ def refresh_phase_labels(data_dir: Path, *, start: date | None = None) -> int:
     return labeled.height
 
 
+def refresh_capital_labels(data_dir: Path, *, start: date | None = None) -> int:
+    """对全量 regime 时序重标资金状态(成交额倍数/分位/档位/承接标记)。
+
+    与 refresh_phase_labels 对称: 派生列依赖此前最多一年的序列, 且 upsert 以新行的列
+    为准对齐旧行、会丢掉旧行的派生列, 因此每次写入后都要整体重标。
+    返回标注的天数; 缺少日聚合列(旧 schema 未重算)时返回 0 且不写文件。
+    """
+    from app.services.market_capital import REQUIRED_COLUMNS, classify_capital_series
+
+    df = load_regime_history(data_dir)
+    if df.is_empty() or not REQUIRED_COLUMNS.issubset(df.columns):
+        return 0
+    try:
+        labeled = classify_capital_series(df)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("refresh_capital_labels failed: %s", e)
+        return 0
+    if start is not None:
+        labeled = pl.concat([df.filter(pl.col("date") < start), labeled.filter(pl.col("date") >= start)], how="diagonal_relaxed").sort("date")
+    atomic_write_parquet(labeled, regime_path(data_dir))
+    return labeled.height
+
+
 def replace_regime_range(data_dir: Path, start: date, end: date, new_rows: pl.DataFrame) -> None:
     """历史修正允许删除已不再存在的统计行, 不保留旧的假结果。"""
     old = load_regime_history(data_dir)
@@ -704,6 +739,7 @@ def compute_regime_incremental(repo, data_dir: Path, *, today: date | None = Non
     if not new_rows.is_empty():
         upsert_regime_history(data_dir, new_rows)
         refresh_phase_labels(data_dir)
+        refresh_capital_labels(data_dir)
     return new_rows
 
 
