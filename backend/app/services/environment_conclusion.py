@@ -2,10 +2,11 @@
 
 系统不生成仓位建议: 仓位上限与打法全部来自用户在偏好里预设的 9 格。这里只做三件事:
 1. 按 regime_history 最新一行定位格子(情绪三档复用校准的 MATRIX_SENTIMENT);
-2. 与博弈页当日盘后计划的市场闸门 allocation.total_cap 取小值, 生效上限永不高于闸门;
+2. 与博弈页当日盘后计划的纯风险闸门 allocation.market_gate 取小值, 生效上限永不高于闸门。
+   不用 total_cap: 它在博弈页自己的入场形态未出现时即为 0, 不是风险判断;
 3. 附最新校准归档中该格的次日全市场等权统计(样本内代理, 不是个股或可成交收益)。
 
-单位: 预设与输出的 *_cap_pct 为 0-100 整数百分数; 博弈报告 total_cap 为小数, 在此换算。
+单位: 预设与输出的 *_cap_pct 为 0-100 整数百分数; 博弈报告 market_gate 为小数, 在此换算。
 """
 from __future__ import annotations
 
@@ -64,15 +65,21 @@ def _gate(data_dir: Path, day: str) -> dict | None:
             report = json.loads(path.read_text(encoding="utf-8"))["report"]
             if report.get("as_of") != day:
                 continue
-            cap = report["allocation"]["total_cap"]
-            if isinstance(cap, bool) or not isinstance(cap, (int, float)) or not 0 <= cap <= 1:
+            allocation = report["allocation"]
+            if not isinstance(allocation, dict):
+                continue
+            cap = allocation.get("market_gate")
+            if cap is not None and (isinstance(cap, bool) or not isinstance(cap, (int, float)) or not 0 <= cap <= 1):
                 continue
             created = str(report.get("created_at") or "")
         except (OSError, ValueError, KeyError, TypeError) as exc:
             logger.debug("skip market game report %s: %s", path.name, exc)
             continue
         if best is None or created > best[0]:
-            best = (created, {"cap_pct": round(cap * 100), "report_id": path.stem[3:], "as_of": day})
+            gate = {"cap_pct": None if cap is None else round(cap * 100), "report_id": path.stem[3:], "as_of": day}
+            if cap is None:
+                gate["note"] = "当日计划为旧版，未含风险闸门"
+            best = (created, gate)
     return best[1] if best else None
 
 
@@ -94,13 +101,16 @@ def build_conclusion(data_dir: Path, *, plan: dict | None = None) -> dict:
     out = {
         "date": None, "cell": None, "sentiment": None, "volume": None, "missing_reason": None,
         "plan": None, "gate": None, "effective_cap_pct": None, "limited_by": None,
-        "evidence": None, "evidence_as_of": None,
+        "evidence": None, "evidence_as_of": None, "archive": None,
     }
     row = _latest_row(data_dir)
     if row is None:
         out["missing_reason"] = "暂无环境历史"
         return out
     day = str(row["date"])
+    from app.services.environment_conclusion_archive import summarize_day
+
+    out["archive"] = summarize_day(data_dir, day)
     tier, volume, reason = _locate(row)
     out.update(date=day, sentiment=tier, volume=volume, missing_reason=reason)
     if reason is not None:
@@ -112,7 +122,7 @@ def build_conclusion(data_dir: Path, *, plan: dict | None = None) -> dict:
     out.update(cell=cell, plan=preset, gate=gate, evidence=evidence, evidence_as_of=evidence_as_of)
     if preset is not None:
         mine = preset["cap_pct"]
-        if gate is None or mine < gate["cap_pct"]:
+        if gate is None or gate["cap_pct"] is None or mine < gate["cap_pct"]:
             out.update(effective_cap_pct=mine, limited_by="plan")
         elif mine == gate["cap_pct"]:
             out.update(effective_cap_pct=mine, limited_by="both")

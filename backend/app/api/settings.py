@@ -1521,11 +1521,27 @@ def get_env_matrix_plan() -> dict:
     return {"plan": preferences.get_env_matrix_plan()}
 
 
+def _conclusion_data_dir():
+    from app.config import settings
+
+    return settings.data_dir
+
+
 @router.put("/preferences/env-matrix-plan")
 def update_env_matrix_plan(req: EnvMatrixPlanIn) -> dict:
     from app.services import preferences
 
-    return {"plan": preferences.set_env_matrix_plan(req.plan)}
+    plan = preferences.set_env_matrix_plan(req.plan)
+    # 晚间改预设也要留档, 复盘才能核对"开盘前最后一版"上限; 存档失败不影响保存。
+    try:
+        from app.services import environment_conclusion, environment_conclusion_archive
+
+        data_dir = _conclusion_data_dir()
+        conclusion = environment_conclusion.build_conclusion(data_dir, plan=plan)
+        environment_conclusion_archive.append_version(data_dir, conclusion, "preset")
+    except Exception:
+        logger.exception("environment conclusion archive after preset save failed")
+    return {"plan": plan}
 
 
 @router.put("/preferences/pipeline-index-symbols")

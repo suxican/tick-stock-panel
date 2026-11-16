@@ -1119,6 +1119,13 @@ def _scheduled_pipeline_task(pipeline_fn) -> None:
         logger.exception(
             "scheduled lab enqueue failed; daily pipeline remains succeeded"
         )
+    # 盘后定版: 补齐当日博弈计划(纯风险闸门)并存档环境结论; 软失败。
+    try:
+        from app.services.post_close_freeze import post_close_freeze
+
+        post_close_freeze(_get_app_state())
+    except Exception:
+        logger.exception("post-close freeze failed; daily pipeline remains succeeded")
 
 
 # ================================================================

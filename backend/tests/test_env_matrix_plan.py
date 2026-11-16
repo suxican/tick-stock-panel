@@ -65,8 +65,11 @@ def test_get_plan_cleans_bad_stored_values(_isolated):
     assert preferences.get_env_matrix_plan() == {}
 
 
-def test_api_put_then_get():
+def test_api_put_then_get(tmp_path, monkeypatch):
+    from app.api import settings as settings_api
     from app.api.settings import EnvMatrixPlanIn, get_env_matrix_plan, update_env_matrix_plan
+
+    monkeypatch.setattr(settings_api, "_conclusion_data_dir", lambda: tmp_path)
 
     body = EnvMatrixPlanIn(plan={"range_expand": {"cap_pct": 40, "styles": ["低吸"], "note": "轻仓"}})
     assert update_env_matrix_plan(body) == {"plan": {"range_expand": {"cap_pct": 40, "styles": ["低吸"], "note": "轻仓"}}}

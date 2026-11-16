@@ -1254,6 +1254,7 @@ function ConclusionCard({ rows }: { rows: RegimeRow[] }) {
                 {c.limited_by === 'gate' && c.gate && <small>（我的预设 {plan.cap_pct}%，被市场闸门 {c.gate.cap_pct}% 限制）</small>}
                 {c.limited_by === 'both' && <small>（预设与市场闸门相同）</small>}
                 {c.gate == null && <small>（当日未生成盘后计划，未叠加市场闸门）</small>}
+                {c.gate != null && c.gate.cap_pct == null && <small>（{c.gate.note ?? '当日计划未含风险闸门'}）</small>}
               </p>
               <p className="regime-conclusion-line">打法 {plan.styles.length ? plan.styles.join(' · ') : '—'}</p>
               {plan.note && <p className="regime-capital-note">备注 {plan.note}</p>}
@@ -1275,6 +1276,12 @@ function ConclusionCard({ rows }: { rows: RegimeRow[] }) {
             )}
           </div>
         </>
+      )}
+      {c.archive && (
+        <p className="regime-capital-note regime-conclusion-archive">
+          已存档 {c.archive.versions} 版{c.archive.latest_at && ` · 最新 ${c.archive.latest_at.slice(11, 16)}`}
+          {c.archive.latest_effective_cap_pct !== c.effective_cap_pct && ` · 存档时 ${c.archive.latest_effective_cap_pct == null ? '未设置' : `${c.archive.latest_effective_cap_pct}%`}`}
+        </p>
       )}
       {editing && <EnvPlanModal rows={rows} onClose={() => setEditing(false)} />}
     </section>

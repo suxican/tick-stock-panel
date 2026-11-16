@@ -50,6 +50,8 @@ class Allocation(Contract):
     min: Ratio
     max: Ratio
     total_cap: Ratio
+    # Risk-only market ceiling; absent on reports generated before it existed.
+    market_gate: Ratio | None = None
     single_cap: Ratio
     sector_cap: Ratio
     risk_per_trade: Ratio

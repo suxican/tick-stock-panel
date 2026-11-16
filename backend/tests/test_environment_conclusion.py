@@ -23,12 +23,12 @@ def _regime(tmp_path, *, state="strong", volume="expand", day=DAY):
 
 
 def _report(tmp_path, *, as_of=DAY, total_cap=0.5, created="2026-11-13T16:00:00+08:00",
-            mtime=None, name="0" * 32, payload=None):
+            mtime=None, name="0" * 32, payload=None, total_cap_only=False):
     root = tmp_path / "user_data" / "market_game"
     root.mkdir(parents=True, exist_ok=True)
     path = root / f"mg_{name}.json"
     report = {"id": name, "as_of": as_of.isoformat(), "created_at": created,
-              "allocation": {"total_cap": total_cap}}
+              "allocation": {"total_cap": 0.0} if total_cap_only else {"total_cap": 0.0, "market_gate": total_cap}}
     path.write_text(json.dumps(payload if payload is not None else {"report": report, "snapshot": {}}), encoding="utf-8")
     if mtime is not None:
         stamp = mtime.timestamp()
@@ -167,3 +167,21 @@ def test_api_returns_conclusion_for_empty_data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(regime_api, "_data_dir", lambda request: tmp_path)
     out = regime_api.regime_conclusion(SimpleNamespace())
     assert out["date"] is None and out["missing_reason"] == "暂无环境历史"
+
+
+
+def test_old_report_without_market_gate_is_unknown_not_zero(tmp_path):
+    _regime(tmp_path)
+    _report(tmp_path, total_cap_only=True)
+    out = ec.build_conclusion(tmp_path, plan=PLAN)
+    assert out["gate"]["cap_pct"] is None and "旧版" in out["gate"]["note"]
+    assert (out["effective_cap_pct"], out["limited_by"]) == (70, "plan")
+
+
+def test_gate_ignores_entry_pattern_total_cap(tmp_path):
+    # total_cap is zero on days without the market-game entry pattern; the risk gate is not.
+    _regime(tmp_path)
+    _report(tmp_path, total_cap=1.0)
+    out = ec.build_conclusion(tmp_path, plan=PLAN)
+    assert out["gate"]["cap_pct"] == 100
+    assert (out["effective_cap_pct"], out["limited_by"]) == (70, "plan")

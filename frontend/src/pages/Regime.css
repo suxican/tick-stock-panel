@@ -106,6 +106,7 @@ html:not(.dark) .regime-capital-flag { color: #955508; }
 .regime-conclusion-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin-top: 6px; font-size: 13px; line-height: 1.5; color: hsl(var(--fg-primary)); }
 .regime-conclusion-line strong { font-size: 16px; font-weight: 650; }
 .regime-conclusion-line small { font-size: 11px; color: hsl(var(--fg-secondary)); }
+.regime-conclusion-archive { margin-top: 8px; }
 .regime-conclusion-evidence { margin-top: 10px; padding-top: 8px; border-top: 1px dashed hsl(var(--border)); }
 .regime-plan-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .regime-plan-cell { min-width: 0; padding: 8px 10px 10px; border: 1px solid hsl(var(--border)); border-radius: 6px; }

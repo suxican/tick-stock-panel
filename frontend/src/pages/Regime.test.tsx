@@ -45,7 +45,7 @@ function conclusion(overrides: Partial<EnvConclusion> = {}): EnvConclusion {
   return {
     date: '2026-10-30', cell: 'strong_expand', sentiment: 'strong', volume: 'expand', missing_reason: null,
     plan: null, gate: null, effective_cap_pct: null, limited_by: null, evidence: null, evidence_as_of: null,
-    ...overrides,
+    archive: null, ...overrides,
   }
 }
 
@@ -350,4 +350,29 @@ it('重算后环境结论随之刷新', async () => {
   const before = vi.mocked(api.regimeConclusion).mock.calls.length
   await click('重算')
   expect(vi.mocked(api.regimeConclusion).mock.calls.length).toBeGreaterThan(before)
+})
+
+
+it('旧版计划时注明未含风险闸门, 并显示存档状态与存档时上限', async () => {
+  vi.mocked(api.regimeConclusion).mockResolvedValue(conclusion({
+    plan: { cap_pct: 40, styles: [], note: '' }, effective_cap_pct: 40, limited_by: 'plan',
+    gate: { cap_pct: null, report_id: 'a'.repeat(32), as_of: '2026-10-30', note: '当日计划为旧版，未含风险闸门' },
+    archive: { versions: 2, latest_at: '2026-10-30T16:42:10+08:00', latest_effective_cap_pct: 30 },
+  }))
+  await render()
+  const text = conclusionCard().textContent ?? ''
+  expect(text).toContain('当日计划为旧版，未含风险闸门')
+  expect(text).not.toContain('未叠加市场闸门')
+  expect(text).toContain('已存档 2 版 · 最新 16:42')
+  expect(text).toContain('存档时 30%')
+})
+
+it('存档与当前一致时不提示差异, 无存档时不显示存档行', async () => {
+  vi.mocked(api.regimeConclusion).mockResolvedValue(conclusion({
+    plan: { cap_pct: 40, styles: [], note: '' }, effective_cap_pct: 40, limited_by: 'plan',
+    archive: { versions: 1, latest_at: '2026-10-30T16:42:10+08:00', latest_effective_cap_pct: 40 },
+  }))
+  await render()
+  expect(conclusionCard().textContent).toContain('已存档 1 版')
+  expect(conclusionCard().textContent).not.toContain('存档时')
 })

@@ -811,11 +811,14 @@ export interface EnvConclusion {
   volume: 'expand' | 'flat' | 'shrink' | null
   missing_reason: string | null
   plan: EnvMatrixCellPlan | null
-  gate: { cap_pct: number; report_id: string; as_of: string } | null
+  /** cap_pct 为 null 表示当日计划为旧版、未含纯风险闸门(note 说明原因)。 */
+  gate: { cap_pct: number | null; report_id: string; as_of: string; note?: string } | null
   effective_cap_pct: number | null
   limited_by: 'plan' | 'gate' | 'both' | null
   evidence: { all: EnvCellStats; train: EnvCellStats; test: EnvCellStats } | null
   evidence_as_of: string | null
+  /** 当天的存档摘要(盘后定版与保存预设时追加); 无存档为 null。 */
+  archive: { versions: number; latest_at: string | null; latest_effective_cap_pct: number | null } | null
 }
 
 export interface RegimeCoverage {

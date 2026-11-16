@@ -514,6 +514,16 @@ def analyze_snapshot(snapshot: dict, risk: dict | None = None) -> dict:
         cap = math.floor(cap * 0.5 * 1e6) / 1e6
     if quality == "unavailable" or state["risk_vetoes"] or state["phase"] in {"退潮", "冰点"}:
         cap = 0.0
+    # Market-level ceiling from risk alone (vetoes, loss gate, phase, data quality). Unlike
+    # total_cap it ignores whether this page's own entry patterns matched, so other
+    # playbooks (the environment conclusion) can use it without being zeroed on quiet days.
+    market_gate = 1.0
+    if short_index_missing or quality == "limited":
+        market_gate = 0.1
+    if gate_level == "caution":
+        market_gate *= 0.5
+    if quality == "unavailable" or state["risk_vetoes"] or state["phase"] in {"退潮", "冰点"}:
+        market_gate = 0.0
     stocks = _stocks(snapshot)
     all_sectors, members = _sectors(stocks, current["median_return"], snapshot.get("mainline_filter"),
                                     snapshot.get("sector_member_counts"))
@@ -578,7 +588,7 @@ def analyze_snapshot(snapshot: dict, risk: dict | None = None) -> dict:
         "research_only": True, "summary": f"{state['trend']}背景，{state['phase']}。{reason}。",
         "market_state": state,
         "allocation": {
-            "min": 0.0, "max": maximum, "total_cap": cap,
+            "min": 0.0, "max": maximum, "total_cap": cap, "market_gate": market_gate,
             "single_cap": config["single_cap"], "sector_cap": config["sector_cap"],
             "risk_per_trade": config["risk_per_trade"], "reason": reason,
             "portfolio_risk_budget": config["portfolio_risk_budget"],

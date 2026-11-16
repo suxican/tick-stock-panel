@@ -168,3 +168,45 @@ def test_candidates_are_an_observation_list_without_new_exposure():
     from app.services.market_game_models import GameReport
 
     GameReport.model_validate({**report, "cutoff": "2026-11-06T16:00:00+08:00", "input_version": "t"})
+
+
+def test_market_gate_reflects_risk_only_not_entry_pattern():
+    snapshot = _snapshot()
+    normal = market_game.analyze_snapshot(snapshot)
+    assert normal["allocation"]["market_gate"] == 1.0
+    # No entry pattern: the model's own exposure is zero, the market gate is not.
+    snapshot["metrics"]["index_ret20"] = -0.01
+    snapshot["metrics"]["above_ma20"] = 0.3
+    no_mode = market_game.analyze_snapshot(snapshot)
+    assert no_mode["allocation"]["total_cap"] == 0
+    assert not no_mode["market_state"]["risk_vetoes"]
+    assert no_mode["allocation"]["market_gate"] == 1.0
+
+
+def test_market_gate_follows_loss_gate_quality_and_vetoes():
+    snapshot = _snapshot()
+    snapshot["sentiment"] = _sentiment("caution", 70.0)
+    assert market_game.analyze_snapshot(snapshot)["allocation"]["market_gate"] == 0.5
+    snapshot["sentiment"] = _sentiment("veto", 86.0)
+    assert market_game.analyze_snapshot(snapshot)["allocation"]["market_gate"] == 0
+    limited = {**_snapshot(), "quality": "limited"}
+    assert market_game.analyze_snapshot(limited)["allocation"]["market_gate"] == 0.1
+    missing_index = _snapshot()
+    missing_index["metrics"]["index_ret5"] = None
+    assert market_game.analyze_snapshot(missing_index)["allocation"]["market_gate"] == 0.1
+    vetoed = _snapshot()
+    vetoed["metrics"]["index_ret5"] = -0.06
+    assert market_game.analyze_snapshot(vetoed)["allocation"]["market_gate"] == 0
+
+
+def test_market_gate_zero_in_ebb_and_optional_on_old_reports():
+    neutral = _metrics(breadth_up=0.52, median_return=0.002, above_ma20=0.5)
+    strong = _metrics(**{**neutral, "max_boards": 7, "promotion_rate": 0.25})
+    collapsed = _metrics(**{**neutral, "max_boards": 4, "promotion_rate": 0.1})
+    report = market_game.analyze_snapshot({**_snapshot(), "metrics": collapsed, "previous": strong})
+    assert report["market_state"]["phase"] == "退潮"
+    assert report["allocation"]["market_gate"] == 0
+    from app.services.market_game_models import Allocation
+
+    old = {key: value for key, value in report["allocation"].items() if key != "market_gate"}
+    assert Allocation.model_validate(old).market_gate is None
