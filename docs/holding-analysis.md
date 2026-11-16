@@ -71,10 +71,12 @@ AI 复盘的数据面板据此显示“今日执行”，全部由程序判定�
 - 结清：卖出日为复盘日的记录及其盈亏、归因。
 - 触及止损价仍持有：设置了止损比例、复盘日原始收盘价 ≤ 成本 ×（1 − 止损%）且仍未结清的批次。盘中快照或取不到收盘价时不判定。
 - 累计统计：截至复盘日的胜率、盈亏比（平均盈利幅度 ÷ 平均亏损幅度）、平均持有天数，并按归因和买入日情绪周期阶段分组。盈亏为零的交易只计入总笔数。少于 10 笔时标注“样本不足”。
+- 仓位核对：复盘日收盘持仓市值 ÷ 账户规模，与前一交易日环境结论存档中复盘日 09:30 前最后一版的生效上限比较（盘前改预设算数，开盘后改的不算当天），超出即“超限”，恰好相等不算。持仓含买入日不晚于复盘日的未结清批次，以及复盘日之后才卖出的已结清记录；未结清批次缺买入日时按登记日推断并标注，已结清记录缺买入日不计入并标注。缺账户规模、盘中、缺收盘价或缺存档时只写原因，不判定。累计“仓位纪律”汇总最近最多 120 个有存档的交易日中可判定的天数与超限天数，按环境格子分组。既没填账户规模也没有可用上限时不显示。
+- 账户规模：批次页顶部填写（万元），按生效日期留档于偏好 `account_size_history`，修改只追加，历史日子按当时的规模计算；不提供删除。批次页对未填买入日期的批次标注“未填”。设计见 `docs/superpowers/specs/2026-11-16-recap-position-check-design.md`。
 
-复盘正文新增「🧾 执行复盘」一节，只解释、不改判。发给模型的只有股票名称、盈亏百分比、持有天数、归因和统计比率，不含数量、价格、成本金额和备注；该节与「📦 持仓联动」一样在外部推送前剥离。已自定义复盘提示词的用户需手动把该章节加入自己的提示词。
+复盘正文新增「🧾 执行复盘」一节，只解释、不改判。发给模型的只有股票名称、盈亏百分比、持有天数、归因、统计比率，以及仓位占比、上限与是否超限，不含数量、价格、成本金额、账户规模、持仓市值和备注；该节与「📦 持仓联动」一样在外部推送前剥离。已自定义复盘提示词的用户需手动把该章节加入自己的提示词。
 
-接口：`POST /api/lots/{lot_id}/close`、`GET /api/trade-journal`、`DELETE /api/trade-journal/{id}`。记录存放见 [data-directory.md](data-directory.md) 的 `trade_journal/`。验证：`test_trade_journal.py`、`test_trade_journal_api.py`、`test_trade_journal_context.py`、`test_market_recap_execution.py`，前端 `CloseLotDialog.test.tsx`、`ClosedTrades.test.tsx`、`RecapSnapshot.test.tsx`。
+接口：`POST /api/lots/{lot_id}/close`、`GET /api/trade-journal`、`DELETE /api/trade-journal/{id}`。记录存放见 [data-directory.md](data-directory.md) 的 `trade_journal/`。验证：`test_trade_journal.py`、`test_trade_journal_api.py`、`test_trade_journal_context.py`、`test_market_recap_execution.py`、`test_position_check.py`、`test_account_size.py`，前端 `CloseLotDialog.test.tsx`、`ClosedTrades.test.tsx`、`RecapSnapshot.test.tsx`、`RecapExecution.test.tsx`、`AccountSize.test.tsx`。
 
 ## 验证入口
 

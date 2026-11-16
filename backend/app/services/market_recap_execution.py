@@ -6,7 +6,10 @@
 - closed:  复盘日结清的记录, 盈亏与用户自选的归因;
 - stop_breached: 设了止损比例、复盘日收盘已触及止损价却仍未结清的批次
   (盘中或取不到收盘价时不判定, 宁缺勿错);
-- stats:   截至复盘日的累计统计。
+- stats:   截至复盘日的累计统计;
+- position_check / position_stats: 收盘持仓占比 vs 前一交易日环境结论上限 (position_check 模块)。
+
+账户规模与持仓市值只给页面, 提示词只含占比、上限与是否超限。
 
 提示词文本段不含数量、价格、成本金额与备注 (个人持仓细节不发给模型)。
 """
@@ -87,10 +90,25 @@ def build_execution(repo, snapshot: dict | None) -> dict | None:
 
     breached = _stop_breached(repo, snapshot, open_lots, names)
     stats = trade_journal.stats([e for e in entries if (e.get("sell_date") or "") <= as_of])
-    if not (opened or closed or breached or stats):
+    position, position_stats = _position(repo, as_of, open_lots, entries, bool(snapshot.get("intraday")))
+    if not (opened or closed or breached or stats or position or position_stats):
         return None
     return {"as_of": as_of, "opened": list(opened.values()), "closed": closed,
-            "stop_breached": breached, "stats": stats}
+            "stop_breached": breached, "stats": stats,
+            "position_check": position, "position_stats": position_stats}
+
+
+def _position(repo, as_of: str, open_lots: list[dict], entries: list[dict], intraday: bool) -> tuple[dict | None, dict | None]:
+    """既没填账户规模也没有可用上限时不展示(还没开始用这项核对)。"""
+    from app.services.position_check import build_position_check
+
+    try:
+        today, stats = build_position_check(repo, as_of, open_lots, entries, intraday=intraday)
+    except Exception as e:  # noqa: BLE001 - 核对失败不影响复盘其余内容
+        logger.warning("recap position check failed: %s", e)
+        return None, None
+    started = today["account_size"] is not None or today["cap_pct"] is not None
+    return (today if started else None), (stats if stats["checked"] else None)
 
 
 def _pct(v: float | None, signed: bool = False) -> str:
@@ -113,6 +131,17 @@ def execution_prompt_block(execution: dict | None) -> str:
         lines.append(f"- 结清: {c['name']} {_pct(c['pnl_pct'], signed=True)}{hold}, {c['reason_label']}")
     if execution.get("stop_breached"):
         lines.append("- 触及止损价仍持有: " + "、".join(b["name"] for b in execution["stop_breached"]))
+    position = execution.get("position_check")
+    if position:
+        cap = (f"上限 {position['cap_pct']}%({position['cell_label']})" if position.get("cap_pct") is not None
+               else "上限未知")
+        ratio = f"收盘占比 {position['ratio_pct']:.0f}%" if position.get("ratio_pct") is not None else "占比未知"
+        verdict = ("超限" if position["exceeded"] else "未超限") if position.get("exceeded") is not None \
+            else f"不判定({position.get('reason')})"
+        lines.append(f"- 仓位: {ratio}, {cap}, {verdict}")
+    position_stats = execution.get("position_stats")
+    if position_stats:
+        lines.append(f"- 仓位纪律: 已核对 {position_stats['checked']} 天, 超限 {position_stats['exceeded']} 天")
     stats = execution.get("stats")
     if stats:
         payoff = f"{stats['payoff_ratio']:.2f}" if stats.get("payoff_ratio") is not None else "—"

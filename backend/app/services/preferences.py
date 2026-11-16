@@ -9,9 +9,11 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import re
 import threading
 from contextlib import contextmanager
+from datetime import date as _date
 from pathlib import Path
 
 from app.services.fs_utils import atomic_write_text
@@ -640,6 +642,56 @@ def set_env_matrix_plan(plan: dict) -> dict:
     cleaned = _clean_env_matrix_plan(plan)
     save({"env_matrix_plan": cleaned})
     return cleaned
+
+
+# 账户规模(人民币元): 复盘仓位占比的分母。按生效日期留档, 历史核对用当时的规模;
+# 不提供删除, 否则已核对的日子会失去分母。
+def _valid_day(value) -> bool:
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        return False
+    try:
+        _date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _valid_amount(value) -> bool:
+    return (not isinstance(value, bool) and isinstance(value, (int, float))
+            and math.isfinite(value) and value > 0)
+
+
+def get_account_size_history() -> list[dict]:
+    raw = load().get("account_size_history")
+    if not isinstance(raw, list):
+        return []
+    by_day: dict[str, float] = {}
+    for item in raw:
+        if isinstance(item, dict) and _valid_day(item.get("effective_date")) and _valid_amount(item.get("amount")):
+            by_day[item["effective_date"]] = float(item["amount"])
+    return [{"effective_date": day, "amount": amount} for day, amount in sorted(by_day.items())]
+
+
+def add_account_size(effective_date, amount) -> list[dict]:
+    """追加一条账户规模; 同一生效日期覆盖。非法输入抛 ValueError。"""
+    if not _valid_day(effective_date):
+        raise ValueError("生效日期必须是 YYYY-MM-DD")
+    if not _valid_amount(amount):
+        raise ValueError("账户规模必须是正数")
+    with _SAVE_LOCK:
+        history = {item["effective_date"]: item["amount"] for item in get_account_size_history()}
+        history[effective_date] = float(amount)
+        save({"account_size_history": [{"effective_date": d, "amount": a} for d, a in sorted(history.items())]})
+    return get_account_size_history()
+
+
+def account_size_on(history: list[dict], day: str) -> float | None:
+    """生效日期不晚于 day 的最后一条; 没有则 None。"""
+    amount = None
+    for item in history:
+        if item["effective_date"] <= day:
+            amount = item["amount"]
+    return amount
 
 
 def set_mainline_filter_config(cfg: dict) -> dict:

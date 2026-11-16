@@ -15,6 +15,16 @@ AS_OF = "2026-11-13"
 NAMES = {"600519.SH": "贵州茅台", "000001.SZ": "平安银行", "300750.SZ": "宁德时代", "601318.SH": "中国平安"}
 
 
+@pytest.fixture(autouse=True)
+def _isolated_preferences(tmp_path, monkeypatch):
+    from app.services import preferences
+
+    monkeypatch.setattr(preferences, "_path", lambda: tmp_path / "preferences.json")
+    preferences._invalidate_cache()
+    yield
+    preferences._invalidate_cache()
+
+
 def _repo(tmp_path):
     return SimpleNamespace(
         store=SimpleNamespace(data_dir=tmp_path),
@@ -139,3 +149,55 @@ def test_push_strips_execution_section_like_holdings():
     out = market_recap.strip_holdings_section(content)
     assert "执行复盘" not in out and "乙" not in out and "甲" not in out
     assert "## 🗺️ 明日剧本" in out and "## ⛔ 失效条件" in out
+
+
+
+def _position_setup(tmp_path, monkeypatch, *, ratio_close=300.0, cap=80):
+    import json
+    from datetime import date
+
+    import polars as pl
+
+    from app.services import preferences, regime_builder
+
+    regime_builder.upsert_regime_history(tmp_path, pl.DataFrame({
+        "date": [date(2026, 11, 12), date(2026, 11, 13)], "state": ["strong", "strong"], "score": [60, 60]}))
+    root = tmp_path / "user_data" / "environment_conclusion"
+    root.mkdir(parents=True)
+    (root / "2026-11-12.json").write_text(json.dumps({"date": "2026-11-12", "versions": [
+        {"recorded_at": "2026-11-12T16:40:00+08:00", "trigger": "pipeline",
+         "conclusion": {"date": "2026-11-12", "cell": "strong_expand", "effective_cap_pct": cap}}]}), encoding="utf-8")
+    preferences.add_account_size("2026-11-01", 523456.0)
+    _lot(tmp_path, "lot_pos", "600519.SH", qty=1000, buy_date="2026-11-05", stop_pct=0)
+    repo = _repo(tmp_path)
+
+    def getter(start, end, symbols=None, columns=None):
+        return pl.DataFrame({"symbol": ["600519.SH"], "date": [date(2026, 11, 13)],
+                             "close": [ratio_close], "raw_close": [ratio_close]})
+
+    repo.get_enriched_range = getter
+    return repo
+
+
+def test_execution_includes_position_check_and_prompt_has_no_amounts(tmp_path, monkeypatch):
+    repo = _position_setup(tmp_path, monkeypatch, ratio_close=314.0)
+    execution = mx.build_execution(repo, {"as_of": AS_OF, "intraday": False})
+    position = execution["position_check"]
+    assert position["ratio_pct"] == pytest.approx(59.99, abs=0.01)
+    assert position["cap_pct"] == 80 and position["exceeded"] is False
+    assert execution["position_stats"] == {"checked": 1, "exceeded": 0, "by_cell": [
+        {"cell": "strong_expand", "label": "强·放量", "checked": 1, "exceeded": 0}]}
+    block = mx.execution_prompt_block(execution)
+    assert "- 仓位: 收盘占比 60%, 上限 80%(强·放量), 未超限" in block
+    assert "- 仓位纪律: 已核对 1 天, 超限 0 天" in block
+    for leaked in ("523456", "314000", "314,000", "1000"):
+        assert leaked not in block
+
+
+def test_execution_position_exceeded_and_undecidable(tmp_path, monkeypatch):
+    repo = _position_setup(tmp_path, monkeypatch, ratio_close=500.0, cap=50)
+    block = mx.execution_prompt_block(mx.build_execution(repo, {"as_of": AS_OF, "intraday": False}))
+    assert "上限 50%(强·放量), 超限" in block
+    intraday = mx.build_execution(repo, {"as_of": AS_OF, "intraday": True})
+    assert intraday["position_check"]["reason"] == "盘中不判定"
+    assert "不判定(盘中不判定)" in mx.execution_prompt_block(intraday)

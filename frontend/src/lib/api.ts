@@ -1102,6 +1102,37 @@ export interface RecapExecution {
   stop_breached: { symbol: string; name: string; stop_price: number; close: number }[]
   /** 截至复盘日的累计统计 */
   stats: TradeStats | null
+  /** 收盘持仓占比 vs 前一交易日环境结论上限; 未开始使用(无账户规模且无上限)为 null */
+  position_check?: RecapPositionCheck | null
+  /** 累计仓位纪律(只计可判定的日子) */
+  position_stats?: RecapPositionStats | null
+}
+
+/** 占比、上限为百分数; 金额为人民币元, 只在页面展示。exceeded 为 null 时看 reason。 */
+export interface RecapPositionCheck {
+  date: string
+  position_value: number | null
+  account_size: number | null
+  ratio_pct: number | null
+  cap_pct: number | null
+  cap_date: string | null
+  cell: string | null
+  cell_label: string | null
+  exceeded: boolean | null
+  inferred_lots: number
+  unknown_lots: number
+  reason: string | null
+}
+
+export interface RecapPositionStats {
+  checked: number
+  exceeded: number
+  by_cell: { cell: string; label: string | null; checked: number; exceeded: number }[]
+}
+
+export interface AccountSizeEntry {
+  effective_date: string
+  amount: number
 }
 
 export interface RecapHoldingsCheck {
@@ -6309,6 +6340,13 @@ export const api = {
   // ===== Lots (批次登记, 页面名"持仓提醒"; 保存/删除自动同步监控规则) =====
   lotsList: () =>
     request<{ lots: Lot[] }>('/api/lots'),
+  accountSize: () =>
+    request<{ history: AccountSizeEntry[] }>('/api/settings/preferences/account-size'),
+  accountSizeUpdate: (entry: AccountSizeEntry) =>
+    request<{ history: AccountSizeEntry[] }>('/api/settings/preferences/account-size', {
+      method: 'PUT',
+      body: JSON.stringify(entry),
+    }),
 
   lotSave: (lot: Lot) =>
     request<{ ok: boolean; lot: Lot }>('/api/lots', {

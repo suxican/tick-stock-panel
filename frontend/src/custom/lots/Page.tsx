@@ -14,6 +14,7 @@ import { DateShortcuts } from '@/components/DateShortcuts'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { toNavItems } from '@/lib/listNav'
 import { boardTag } from '@/components/stock-table/primitives'
+import { AccountSizeBar } from './AccountSize'
 import { PositionTMonitor } from './PositionTMonitor'
 import { HoldingAnalysis } from './HoldingAnalysis'
 import { CloseLotDialog } from './CloseLotDialog'
@@ -144,8 +145,11 @@ function BatchLots() {
     <div className="flex flex-col h-full">
       <div className="flex-1 min-h-0 px-5 py-4">
         <div className="mx-auto max-w-5xl space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="text-xs text-secondary">{lots.length} 个批次</div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <div className="text-xs text-secondary">{lots.length} 个批次</div>
+              <AccountSizeBar />
+            </div>
             <button
               onClick={() => setEditing(emptyDraft())}
               className="inline-flex h-9 items-center gap-1.5 rounded-btn border border-accent/30 bg-accent/10 px-3 text-xs font-medium text-accent transition-colors hover:bg-accent/15 cursor-pointer"
@@ -210,7 +214,9 @@ function BatchLots() {
                         <td className="px-2 py-2.5 text-right"><CostPnL close={lastPrices[lot.symbol]} cost={lot.cost_price} /></td>
                         <td className="px-2 py-2.5 text-right font-mono text-bull">{lot.target_pct > 0 ? `${lot.target_pct}%` : '—'}</td>
                         <td className="px-2 py-2.5 text-right font-mono text-bear">{lot.stop_pct > 0 ? `${lot.stop_pct}%` : '—'}</td>
-                        <td className="px-2 py-2.5 text-muted">{lot.buy_date || '—'}</td>
+                        <td className="px-2 py-2.5 text-muted">
+                          {lot.buy_date || <span className="text-warning" title="未填买入日期：复盘仓位核对会按登记日推断，历史日子可能不准">未填</span>}
+                        </td>
                         <td className="px-2 py-2.5 text-right"><RemainingDays remind={lot.remind_date} /></td>
                         <td className="px-2 py-2.5">
                           {lot.remind_date ? (

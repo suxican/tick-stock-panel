@@ -5,7 +5,7 @@
  */
 import { useState } from 'react'
 import { ChevronRight } from 'lucide-react'
-import type { RecapExecution, TradeStats, TradeStatsGroup } from '@/lib/api'
+import type { RecapExecution, RecapPositionCheck, RecapPositionStats, TradeStats, TradeStatsGroup } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { priceColorClass } from '@/lib/format'
 
@@ -83,6 +83,51 @@ function Stats({ stats }: { stats: TradeStats }) {
   )
 }
 
+/** 金额只用于页面悬停, 正文只显示占比与上限 */
+function PositionRow({ check }: { check: RecapPositionCheck }) {
+  const title = check.position_value != null && check.account_size != null
+    ? `持仓市值 ${(check.position_value / 10000).toFixed(1)} 万 / 账户规模 ${(check.account_size / 10000).toFixed(1)} 万`
+    : undefined
+  return (
+    <div aria-label="仓位核对" className="flex flex-wrap items-baseline gap-x-2 text-[12px]">
+      <span className="font-mono text-foreground" title={title}>仓位 {check.ratio_pct != null ? `${Math.round(check.ratio_pct)}%` : '—'}</span>
+      {check.cap_pct != null && (
+        <span className="text-secondary" title={check.cap_date ? `${check.cap_date} 收盘后定下的上限` : undefined}>
+          上限 {check.cap_pct}%{check.cell_label && `（${check.cell_label}）`}
+        </span>
+      )}
+      {check.exceeded == null
+        ? <span className="text-secondary">不判定：{check.reason}</span>
+        : <span className={check.exceeded ? 'text-warning' : 'text-secondary'}>{check.exceeded ? '超限' : '未超限'}</span>}
+      {check.inferred_lots > 0 && <span className="text-[11px] text-muted">{check.inferred_lots} 个批次买入日按登记日推断</span>}
+      {check.unknown_lots > 0 && <span className="text-[11px] text-muted">{check.unknown_lots} 笔已结清记录缺买入日未计入</span>}
+    </div>
+  )
+}
+
+function PositionStatsRow({ stats }: { stats: RecapPositionStats }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="space-y-1">
+      <button
+        onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
+        className="inline-flex cursor-pointer items-center gap-1 text-[11px] text-secondary hover:text-foreground"
+      >
+        <ChevronRight className={cn('h-3 w-3 transition-transform', open && 'rotate-90')} />
+        仓位纪律 · 已核对 {stats.checked} 天 · 超限 {stats.exceeded} 天
+      </button>
+      {open && (
+        <ul className="space-y-0.5 pl-4 text-[12px] text-secondary">
+          {stats.by_cell.map(row => (
+            <li key={row.cell}>{row.label ?? row.cell}：{row.checked} 天 · 超限 {row.exceeded}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 export function RecapExecutionPanel({ execution, onOpenStock }: {
   execution: RecapExecution
   onOpenStock?: (symbol: string) => void
@@ -131,6 +176,8 @@ export function RecapExecutionPanel({ execution, onOpenStock }: {
           )}
         </ul>
       )}
+      {execution.position_check && <PositionRow check={execution.position_check} />}
+      {execution.position_stats && <PositionStatsRow stats={execution.position_stats} />}
       {stats && <Stats stats={stats} />}
       <div className="text-[10px] text-muted">盈亏为卖出价相对登记成本，不含费用</div>
     </div>

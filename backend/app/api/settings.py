@@ -1521,6 +1521,30 @@ def get_env_matrix_plan() -> dict:
     return {"plan": preferences.get_env_matrix_plan()}
 
 
+class AccountSizeIn(BaseModel):
+    """账户规模(人民币元)与生效日期; 合法性由 preferences 层校验。"""
+
+    effective_date: str
+    amount: float
+
+
+@router.get("/preferences/account-size")
+def get_account_size() -> dict:
+    from app.services import preferences
+
+    return {"history": preferences.get_account_size_history()}
+
+
+@router.put("/preferences/account-size")
+def update_account_size(req: AccountSizeIn) -> dict:
+    from app.services import preferences
+
+    try:
+        return {"history": preferences.add_account_size(req.effective_date, req.amount)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 def _conclusion_data_dir():
     from app.config import settings
 

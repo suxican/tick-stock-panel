@@ -200,6 +200,7 @@ export const QK = {
   monitorRules:         ['monitor-rules'] as const,
   monitorRuleOptions:   ['monitor-rule-options'] as const,
   lots:                 ['lots'] as const,
+  accountSize:          ['account-size'] as const,
   tradeJournal:         ['trade-journal'] as const,
   lotsKline:            (symbols: string) => ['lots-kline', symbols] as const,
   holdingAnalysisAll:   ['holding-analysis'] as const,
