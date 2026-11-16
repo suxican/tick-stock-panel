@@ -40,6 +40,8 @@
 | `shadow:capital_expand` | `shadow:capital_shrink` | 影子（资金轴）：成交额倍数相对此前252日分位≥75 对比 ≤25 |
 | `shadow:capital_concentrated` | `shadow:capital_dispersed` | 影子（资金轴）：成交额前5%个股占比相对此前252日分位≥75 对比 ≤25 |
 | `shadow:capital_volume_stall` | `shadow:capital_expand_advance` | 影子（资金轴）：资金放量且中位涨跌≤0 对比 >0 |
+| `shadow:matrix:<强/震荡/弱>_expand` | 同档 `_shrink` | 影子（情绪×资金矩阵）：环境分三档内资金放量 对比 缩量，共 3 对 |
+| `shadow:matrix:strong_<放/平/缩量>` | 同量 `weak_` | 影子（情绪×资金矩阵）：同一总量档位内环境分强 对比 弱，共 3 对 |
 
 影子分组检验书中定性命题，阈值在运行前固定、未做搜索，不进入规则、报告或仓位；其输入不计入 `complete_inputs` 与 `coverage`，因此原有分组结果不变。资金轴三组取自环境历史的资金档位（口径见 [market-capital.md](market-capital.md)），不是书中命题，阈值为滚动分位的研究初始值，同样不进入规则、报告或仓位；环境历史未重算时这三组为空。多组同时检验有多重比较风险，“方向一致”只是样本内两段同向，不是收益保证，也不会自动改变规则。
 

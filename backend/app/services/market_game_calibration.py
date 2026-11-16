@@ -119,7 +119,8 @@ def prepare_history(regime: pl.DataFrame, *, premiums: dict | None = None,
         rows.append({'date': day.isoformat(), **metrics, 'ew_return': _number(supplement.get('ew_return')),
                      'index_recent_highs': _number(index_row.get('index_recent_highs'), 0),
                      # Labels from regime_history; absent on histories not yet recomputed.
-                     **{key: row.get(key) for key in CAPITAL_KEYS}})
+                     **{key: row.get(key) for key in CAPITAL_KEYS},
+                     'regime_state': row.get('state')})
         amounts.append(amount)
     return rows
 
@@ -139,6 +140,10 @@ RECENT_HIGH_SESSIONS = 5
 RECENT_HIGH_MIN_INDICES = 2
 
 CAPITAL_KEYS = ('capital_volume', 'capital_concentration', 'capital_flag')
+# 5-state regime score folded to three tiers so each sentiment x volume cell keeps usable samples.
+MATRIX_SENTIMENT = {'strong': 'strong', 'lean_strong': 'strong', 'range': 'range',
+                    'lean_weak': 'weak', 'weak': 'weak'}
+_MATRIX_VOLUMES = ('expand', 'flat', 'shrink')
 
 SHADOW_DEFINITIONS = [
     {'group': 'shadow:volume_stall', 'control': 'shadow:volume_advance', 'label': '放量滞涨',
@@ -163,6 +168,16 @@ SHADOW_DEFINITIONS = [
     {'group': 'shadow:capital_volume_stall', 'control': 'shadow:capital_expand_advance',
      'label': '放量滞涨（资金轴）', 'card': '资金状态轴', 'definition':
      '资金放量且中位涨跌幅≤0；对照组为资金放量且中位涨跌幅>0'},
+    # 情绪×资金矩阵: 同一情绪档比较放量与缩量, 同一资金档比较情绪强与弱; 格子可被两对复用。
+    *[{'group': f'shadow:matrix:{tier}_expand', 'control': f'shadow:matrix:{tier}_shrink',
+       'label': f'{name}下放量', 'card': '情绪×资金矩阵', 'definition':
+       f'环境分{scope}且资金放量；对照组为同档资金缩量'}
+      for tier, name, scope in (('strong', '强势', '强势或偏强'), ('range', '震荡', '震荡'),
+                                ('weak', '弱势', '偏弱或弱势'))],
+    *[{'group': f'shadow:matrix:strong_{volume}', 'control': f'shadow:matrix:weak_{volume}',
+       'label': f'{name}下情绪强', 'card': '情绪×资金矩阵', 'definition':
+       f'资金{name}且环境分强势或偏强；对照组为资金{name}且偏弱或弱势'}
+      for volume, name in (('expand', '放量'), ('flat', '平量'), ('shrink', '缩量'))],
 ]
 
 
@@ -204,6 +219,9 @@ def _shadow_keys(rows: list[dict], index: int, trend: str) -> list[str]:
         keys.append('shadow:capital_volume_stall')
     elif volume == 'expand' and median is not None and median > 0:
         keys.append('shadow:capital_expand_advance')
+    tier = MATRIX_SENTIMENT.get(current.get('regime_state'))
+    if tier is not None and volume in _MATRIX_VOLUMES:
+        keys.append(f'shadow:matrix:{tier}_{volume}')
     return keys
 
 

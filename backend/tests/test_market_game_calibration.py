@@ -245,7 +245,9 @@ def test_shadow_groups_split_and_publish_fixed_definitions():
     assert 'shadow:volume_stall@train' not in groups
     assert {item['group'] for item in result['shadow_definitions']} == {
         'shadow:volume_stall', 'shadow:ease_down', 'shadow:first_drop_after_high',
-        'shadow:capital_expand', 'shadow:capital_concentrated', 'shadow:capital_volume_stall'}
+        'shadow:capital_expand', 'shadow:capital_concentrated', 'shadow:capital_volume_stall',
+        'shadow:matrix:strong_expand', 'shadow:matrix:range_expand', 'shadow:matrix:weak_expand',
+        'shadow:matrix:strong_flat', 'shadow:matrix:strong_shrink'}
 
 
 def _capital(frame, day_index, **cols):
@@ -279,3 +281,33 @@ def test_capital_shadow_absent_on_old_schema_and_keeps_other_groups():
     assert old['coverage'] == new['coverage']
     assert [row['complete_inputs'] for row in old['observations']] == [
         row['complete_inputs'] for row in new['observations']]
+
+
+@pytest.mark.parametrize('state,volume,key', [
+    ('strong', 'expand', 'shadow:matrix:strong_expand'), ('lean_strong', 'flat', 'shadow:matrix:strong_flat'),
+    ('range', 'shrink', 'shadow:matrix:range_shrink'), ('lean_weak', 'expand', 'shadow:matrix:weak_expand'),
+    ('weak', 'shrink', 'shadow:matrix:weak_shrink'),
+])
+def test_matrix_shadow_cell(state, volume, key):
+    keys = _shadow(calibrate_history(_capital(history(10), 5, state=state, capital_volume=volume)))[5]
+    assert [k for k in keys if k.startswith('shadow:matrix')] == [key]
+
+
+def test_matrix_shadow_skips_missing_or_unknown():
+    for cols in ({'state': 'strong'}, {'capital_volume': 'expand'},
+                 {'state': 'mystery', 'capital_volume': 'expand'}):
+        keys = _shadow(calibrate_history(_capital(history(10), 5, **cols)))[5]
+        assert not any(k.startswith('shadow:matrix') for k in keys)
+
+
+def test_matrix_cell_shared_by_two_pairs_counts_once():
+    frame = history(20).with_columns(
+        pl.lit('strong').alias('state'),
+        pl.when(pl.col('date') < date(2026, 1, 8)).then(pl.lit('expand')).otherwise(pl.lit('shrink'))
+        .alias('capital_volume'))
+    result = calibrate_history(frame)
+    days = {row['group']: row['days'] for row in result['groups']}
+    assert days['shadow:matrix:strong_expand'] == 7
+    assert days['shadow:matrix:strong_shrink'] == 13
+    pairs = [item for item in result['shadow_definitions'] if 'strong_expand' in item['group']]
+    assert {item['control'] for item in pairs} == {'shadow:matrix:strong_shrink', 'shadow:matrix:weak_expand'}
