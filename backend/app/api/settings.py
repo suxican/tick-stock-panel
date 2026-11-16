@@ -1508,6 +1508,26 @@ def update_mainline_filter(req: MainlineFilterIn) -> dict:
     return preferences.set_mainline_filter_config(payload)
 
 
+class EnvMatrixPlanIn(BaseModel):
+    """环境结论 9 格预设(整表替换); 字段合法性由 preferences 层清洗。"""
+
+    plan: dict = {}
+
+
+@router.get("/preferences/env-matrix-plan")
+def get_env_matrix_plan() -> dict:
+    from app.services import preferences
+
+    return {"plan": preferences.get_env_matrix_plan()}
+
+
+@router.put("/preferences/env-matrix-plan")
+def update_env_matrix_plan(req: EnvMatrixPlanIn) -> dict:
+    from app.services import preferences
+
+    return {"plan": preferences.set_env_matrix_plan(req.plan)}
+
+
 @router.put("/preferences/pipeline-index-symbols")
 def update_pipeline_index_symbols(req: PipelineIndexSymbolsIn) -> dict:
     """保存指数自定义拉取代码。"""

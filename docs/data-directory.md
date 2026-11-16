@@ -163,7 +163,7 @@ user_data / strategies / pools → 用户定义与配置 → 各业务模块
 
 | 文件或类别 | 内容与维护方式 |
 | --- | --- |
-| `preferences.json`、`secrets.json`、`auth.json`、`api_tokens.json` | 偏好、数据源/AI 等凭据、登录配置和开放接口访问凭证。通过相应设置功能维护，需私密备份。 |
+| `preferences.json`、`secrets.json`、`auth.json`、`api_tokens.json` | 偏好、数据源/AI 等凭据、登录配置和开放接口访问凭证。通过相应设置功能维护，需私密备份。偏好中的 `env_matrix_plan` 是市场环境页「环境结论」的 9 格仓位上限与打法预设，由环境页编辑弹窗写入，删除后各格回到「未设置」。 |
 | `watchlist.parquet`、`watchlist_groups.json` | 自选标的和分组，由自选管理操作更新，不等于 `pools/` 的上游标的池缓存。 |
 | `alerts.jsonl`、`assistant_sessions.json` | 告警历史与助手会话，随事件/会话更新；包含历史上下文，不能由行情自动还原。 |
 | `research_candidates.json` | 挖掘候选及其研究状态，不等于已经发布的策略。 |

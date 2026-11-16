@@ -3,7 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { api, type RegimeRow } from '@/lib/api'
+import { api, type EnvConclusion, type RegimeRow } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { Regime } from './Regime'
 
@@ -41,6 +41,14 @@ const rows: RegimeRow[] = ['2026-10-26', '2026-10-27', '2026-10-28', '2026-10-29
   promo_pool: 39, ladder_completeness: .75,
 }))
 
+function conclusion(overrides: Partial<EnvConclusion> = {}): EnvConclusion {
+  return {
+    date: '2026-10-30', cell: 'strong_expand', sentiment: 'strong', volume: 'expand', missing_reason: null,
+    plan: null, gate: null, effective_cap_pct: null, limited_by: null, evidence: null, evidence_as_of: null,
+    ...overrides,
+  }
+}
+
 let host: HTMLDivElement
 let root: Root
 let client: QueryClient
@@ -61,6 +69,8 @@ beforeEach(() => {
     { state: 'strong', label: '强势', count: 2, pct: 40 }, { state: 'weak', label: '弱势', count: 3, pct: 60 },
   ] })
   vi.spyOn(api, 'regimePhases').mockResolvedValue({ segments: [], total: 0 })
+  vi.spyOn(api, 'regimeConclusion').mockResolvedValue(conclusion())
+  vi.spyOn(api, 'envMatrixPlan').mockResolvedValue({ plan: {} })
   vi.spyOn(api, 'regimeMainline').mockResolvedValue({ rows: [], leaders: [], membership_note: '', filter: { min_members: 4, max_members: 600, blacklist: [], exclude_st: true } })
   host = document.createElement('div')
   document.body.append(host)
@@ -243,4 +253,101 @@ it('成交额分位可叠加到趋势图左轴, 默认不显示', async () => {
   expect(option.legend.selected['成交额分位']).toBe(false)
   const series = (option.series as { name: string; data: (number | null)[]; yAxisIndex: number }[]).find(item => item.name === '成交额分位')
   expect(series).toMatchObject({ data: rows.map(() => 88), yAxisIndex: 0 })
+})
+
+const conclusionCard = () => host.querySelector<HTMLElement>('[aria-label="环境结论"]')!
+const evidence = {
+  all: { n: 238, mean: .0036, positive_rate: .58, p10: -.012 },
+  train: { n: 91, mean: .0044, positive_rate: .6, p10: -.011 },
+  test: { n: 147, mean: .0031, positive_rate: .57, p10: -.013 },
+}
+
+it('环境结论显示格子、生效上限、闸门限制、打法与证据', async () => {
+  vi.mocked(api.regimeConclusion).mockResolvedValue(conclusion({
+    plan: { cap_pct: 70, styles: ['打板', '半路'], note: '主线龙头为主' },
+    gate: { cap_pct: 50, report_id: 'a'.repeat(32), as_of: '2026-10-30' },
+    effective_cap_pct: 50, limited_by: 'gate', evidence, evidence_as_of: '2026-11-16T08:12:44+08:00',
+  }))
+  await render()
+  const text = conclusionCard().textContent ?? ''
+  expect(text).toContain('强 · 放量')
+  expect(text).toContain('仓位上限 50%')
+  expect(text).toContain('我的预设 70%，被市场闸门 50% 限制')
+  expect(text).toContain('打板 · 半路')
+  expect(text).toContain('主线龙头为主')
+  expect(text).toContain('238 天')
+  expect(text).toContain('均值 +0.36%')
+  expect(text).toContain('上涨比例 58%')
+  expect(text).toContain('第10百分位 -1.20%')
+  expect(text).not.toMatch(/建议|推荐/)
+})
+
+it('未设置的格子不显示任何仓位数字, 闸门缺失与证据不足都有说明', async () => {
+  vi.mocked(api.regimeConclusion).mockResolvedValue(conclusion({
+    evidence: { all: { n: 36, mean: null, positive_rate: null, p10: null }, train: { n: 16, mean: null, positive_rate: null, p10: null }, test: { n: 20, mean: null, positive_rate: null, p10: null } },
+  }))
+  await render()
+  const text = conclusionCard().textContent ?? ''
+  expect(text).toContain('未设置')
+  expect(text).not.toMatch(/\d+%/)
+  expect(text).toContain('样本不足（36 天）')
+})
+
+it('只有预设时注明未叠加市场闸门', async () => {
+  vi.mocked(api.regimeConclusion).mockResolvedValue(conclusion({
+    plan: { cap_pct: 40, styles: [], note: '' }, effective_cap_pct: 40, limited_by: 'plan',
+  }))
+  await render()
+  expect(conclusionCard().textContent).toContain('当日未生成盘后计划，未叠加市场闸门')
+})
+
+it('无格子时只显示缺失原因', async () => {
+  vi.mocked(api.regimeConclusion).mockResolvedValue(conclusion({
+    cell: null, volume: null, missing_reason: '资金档位未计算',
+  }))
+  await render()
+  const text = conclusionCard().textContent ?? ''
+  expect(text).toContain('资金档位未计算')
+  expect(text).not.toContain('仓位上限')
+})
+
+async function openEditor() {
+  const button = conclusionCard().querySelector<HTMLButtonElement>('button')!
+  await act(async () => button.click())
+  await settle()
+  return document.querySelector<HTMLElement>('[aria-label="编辑环境预设"]')!
+}
+function setInput(el: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+  setter.call(el, value)
+  el.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
+it('编辑预设保存整表, 取消后再打开显示已保存的值', async () => {
+  vi.mocked(api.envMatrixPlan).mockResolvedValue({ plan: { weak_shrink: { cap_pct: 0, styles: ['空仓观望'], note: '' } } })
+  const update = vi.spyOn(api, 'envMatrixPlanUpdate').mockImplementation(async plan => ({ plan }))
+  await render()
+  let dialog = await openEditor()
+  const cap = dialog.querySelector<HTMLInputElement>('[aria-label="强·放量仓位上限"]')!
+  await act(async () => setInput(cap, '35'))
+  await click('取消')
+  dialog = await openEditor()
+  expect(dialog.querySelector<HTMLInputElement>('[aria-label="强·放量仓位上限"]')!.value).toBe('')
+  expect(dialog.querySelector<HTMLInputElement>('[aria-label="弱·缩量仓位上限"]')!.value).toBe('0')
+  await act(async () => setInput(dialog.querySelector<HTMLInputElement>('[aria-label="强·放量仓位上限"]')!, '60'))
+  await act(async () => dialog.querySelector<HTMLInputElement>('[aria-label="强·放量打法打板"]')!.click())
+  await click('保存')
+  expect(update).toHaveBeenCalledWith({
+    strong_expand: { cap_pct: 60, styles: ['打板'], note: '' },
+    weak_shrink: { cap_pct: 0, styles: ['空仓观望'], note: '' },
+  })
+})
+
+
+it('重算后环境结论随之刷新', async () => {
+  vi.spyOn(api, 'regimeRecompute').mockResolvedValue({ ok: true, computed: 1 })
+  await render()
+  const before = vi.mocked(api.regimeConclusion).mock.calls.length
+  await click('重算')
+  expect(vi.mocked(api.regimeConclusion).mock.calls.length).toBeGreaterThan(before)
 })

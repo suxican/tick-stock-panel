@@ -101,6 +101,23 @@ html:not(.dark) .regime-mainline-tags span { color: #955508; }
 .regime-capital-state { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 8px; font-size: 18px; line-height: 1.3; font-weight: 650; }
 .regime-capital-flag { padding: 1px 6px; border-radius: 3px; background: #f59e0b12; color: #f59e0b; font-size: 11px; font-weight: 500; }
 html:not(.dark) .regime-capital-flag { color: #955508; }
+.regime-conclusion { margin-top: 12px; padding: 14px; }
+.regime-conclusion-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.regime-conclusion-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin-top: 6px; font-size: 13px; line-height: 1.5; color: hsl(var(--fg-primary)); }
+.regime-conclusion-line strong { font-size: 16px; font-weight: 650; }
+.regime-conclusion-line small { font-size: 11px; color: hsl(var(--fg-secondary)); }
+.regime-conclusion-evidence { margin-top: 10px; padding-top: 8px; border-top: 1px dashed hsl(var(--border)); }
+.regime-plan-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.regime-plan-cell { min-width: 0; padding: 8px 10px 10px; border: 1px solid hsl(var(--border)); border-radius: 6px; }
+.regime-plan-cell legend { padding: 0 4px; font-size: 12px; font-weight: 600; color: hsl(var(--fg-primary)); }
+.regime-plan-cell legend small { margin-left: 6px; font-weight: 400; color: hsl(var(--fg-secondary)); }
+.regime-plan-cap { display: flex; align-items: center; gap: 6px; font-size: 11px; color: hsl(var(--fg-secondary)); }
+.regime-plan-cap input, .regime-plan-note { height: 28px; min-width: 0; border: 1px solid hsl(var(--border)); border-radius: 4px; background: hsl(var(--base)); padding: 0 6px; font-size: 12px; color: hsl(var(--fg-primary)); }
+.regime-plan-cap input { width: 64px; }
+.regime-plan-note { width: 100%; margin-top: 6px; }
+.regime-plan-styles { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; font-size: 11px; color: hsl(var(--fg-secondary)); }
+.regime-plan-styles label { display: inline-flex; align-items: center; gap: 3px; }
+@media (max-width: 640px) { .regime-plan-grid { grid-template-columns: minmax(0, 1fr); } }
 .regime-capital-note { margin-top: 5px; font-size: 11px; line-height: 1.6; color: hsl(var(--fg-secondary)); overflow-wrap: anywhere; }
 .regime-phase-metric h3 { font-size: 11px; font-weight: 500; line-height: 1.65; color: hsl(var(--fg-secondary)); }
 .regime-metric-value { margin-top: 15px; font-family: theme('fontFamily.mono'); font-size: 25px; font-weight: 600; line-height: 1.25; }

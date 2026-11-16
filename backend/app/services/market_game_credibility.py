@@ -48,6 +48,25 @@ def _verdict(train: dict, test: dict) -> str:
     return 'consistent' if same else 'inconsistent'
 
 
+_MATRIX_PREFIX = 'shadow:matrix:'
+
+
+def _cell_segment(group: dict | None) -> dict:
+    stats = (group or {}).get(METRIC, {})
+    n = stats.get('n', 0)
+    if n < MIN_DAYS:
+        return {'n': n, 'mean': None, 'positive_rate': None, 'p10': None}
+    return {'n': n, 'mean': stats.get('mean'), 'positive_rate': stats.get('positive_rate'), 'p10': stats.get('p10')}
+
+
+def _matrix_cells(groups: dict) -> dict:
+    """Per-cell next-day stats for the environment conclusion; thin segments keep only n."""
+    cells = sorted({key[len(_MATRIX_PREFIX):].split('@')[0] for key in groups if key.startswith(_MATRIX_PREFIX)})
+    return {cell: {segment: _cell_segment(groups.get(_MATRIX_PREFIX + cell + suffix))
+                   for segment, suffix in (('all', ''), ('train', '@train'), ('test', '@test'))}
+            for cell in cells}
+
+
 def summarize(result: dict) -> dict:
     """Signal minus control on next-day equal-weight return, per train/test segment."""
     if not result.get('split'):
@@ -65,7 +84,7 @@ def summarize(result: dict) -> dict:
         'schema_version': SCHEMA_VERSION, 'status': result.get('status'), 'metric': METRIC, 'min_days': MIN_DAYS,
         'scope': result.get('scope'), 'rule_version': result.get('rule_version'),
         'start': result.get('start'), 'end': result.get('end'), 'split': result.get('split'),
-        'sentiment_days': result.get('sentiment_days'), 'rows': rows,
+        'sentiment_days': result.get('sentiment_days'), 'rows': rows, 'cells': _matrix_cells(groups),
         'limitations': [
             *result.get('limitations', []),
             f'结论比较信号组与对照组的次日全市场等权涨幅之差；训练段与测试段各需至少{MIN_DAYS}天，同号才记为方向一致。',

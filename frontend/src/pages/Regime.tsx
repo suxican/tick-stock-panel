@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import {
   api, type RegimeRow, type RegimeState, type MarketPhase,
+  type EnvCellStats, type EnvMatrixPlan, type EnvMatrixStyle,
   REGIME_STATE_LABELS, REGIME_STATE_COLORS,
   MARKET_PHASE_LABELS, MARKET_PHASE_COLORS, MARKET_PHASE_ORDER,
 } from '@/lib/api'
@@ -661,6 +662,7 @@ export function Regime() {
         qc.invalidateQueries({ queryKey: ['regime-phases'] }),
         qc.invalidateQueries({ queryKey: ['regime-mainline'] }),
         qc.invalidateQueries({ queryKey: QK.regimeCoverage }),
+        qc.invalidateQueries({ queryKey: QK.regimeConclusion }),
       ])
     } catch (e) {
       toast(`重算失败 · ${String((e as Error)?.message || e)}`, 'error')
@@ -806,6 +808,7 @@ export function Regime() {
       )}
 
       {latest && <CapitalCard row={latest} />}
+      <ConclusionCard rows={rows} />
 
       {/* ── 阶段规律: 当前阶段的历史统计 + 下阶段转移分布 (窗口内 segments 提炼) ── */}
       {phaseStats && phaseStreak && (
@@ -1209,6 +1212,176 @@ function CapitalCard({ row }: { row: RegimeRow }) {
         <p className="regime-capital-note">未计算，点击右上角「重算」补全</p>
       )}
     </section>
+  )
+}
+
+const ENV_SENTIMENTS = [['strong', '强'], ['range', '震荡'], ['weak', '弱']] as const
+const ENV_VOLUMES = [['expand', '放量'], ['flat', '平量'], ['shrink', '缩量']] as const
+const ENV_STYLES: EnvMatrixStyle[] = ['打板', '半路', '低吸', '趋势持股', '空仓观望']
+const ENV_TIER: Record<string, 'strong' | 'range' | 'weak'> = {
+  strong: 'strong', lean_strong: 'strong', range: 'range', lean_weak: 'weak', weak: 'weak',
+}
+const envLabel = (sentiment: string | null, volume: string | null) =>
+  `${ENV_SENTIMENTS.find(([k]) => k === sentiment)?.[1] ?? '—'} · ${ENV_VOLUMES.find(([k]) => k === volume)?.[1] ?? '—'}`
+const signedPct = (v: number) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%`
+const segmentMean = (s: EnvCellStats) => (s.mean == null ? `样本不足（${s.n} 天）` : signedPct(s.mean))
+
+/** 环境结论: 仓位与打法完全来自用户预设, 系统只定位格子、叠加市场闸门、摆出历史证据。 */
+function ConclusionCard({ rows }: { rows: RegimeRow[] }) {
+  const [editing, setEditing] = useState(false)
+  const conclusion = useQuery({ queryKey: QK.regimeConclusion, queryFn: () => api.regimeConclusion(), staleTime: 5 * 60 * 1000 })
+  const c = conclusion.data
+  if (!c) return null
+  const plan = c.plan
+  const ev = c.evidence
+  return (
+    <section className={cn(cardCls, 'regime-conclusion')} aria-label="环境结论">
+      <div className="regime-conclusion-head">
+        <h2 className="regime-card-heading"><Gauge aria-hidden="true" />环境结论{c.date && <time dateTime={c.date}>{c.date}</time>}</h2>
+        <button type="button" className="regime-action" onClick={() => setEditing(true)}><Pencil aria-hidden="true" />编辑预设</button>
+      </div>
+      {c.missing_reason ? (
+        <p className="regime-capital-note">{c.missing_reason}，暂无法定位格子</p>
+      ) : (
+        <>
+          <p className="regime-capital-state">{envLabel(c.sentiment, c.volume)}</p>
+          {plan == null || c.effective_cap_pct == null ? (
+            <p className="regime-conclusion-line">仓位上限 · 打法：未设置</p>
+          ) : (
+            <>
+              <p className="regime-conclusion-line">
+                <strong>仓位上限 {c.effective_cap_pct}%</strong>
+                {c.limited_by === 'gate' && c.gate && <small>（我的预设 {plan.cap_pct}%，被市场闸门 {c.gate.cap_pct}% 限制）</small>}
+                {c.limited_by === 'both' && <small>（预设与市场闸门相同）</small>}
+                {c.gate == null && <small>（当日未生成盘后计划，未叠加市场闸门）</small>}
+              </p>
+              <p className="regime-conclusion-line">打法 {plan.styles.length ? plan.styles.join(' · ') : '—'}</p>
+              {plan.note && <p className="regime-capital-note">备注 {plan.note}</p>}
+            </>
+          )}
+          <div className="regime-conclusion-evidence" title="全市场次日等权涨幅，样本内统计，不是个股或可成交收益。">
+            {ev == null ? (
+              <p className="regime-capital-note">本格历史证据待校准</p>
+            ) : ev.all.mean == null ? (
+              <p className="regime-capital-note">本格历史：样本不足（{ev.all.n} 天）</p>
+            ) : (
+              <>
+                <p className="regime-capital-note">本格历史（次日全市场等权） {ev.all.n} 天</p>
+                <p className="regime-capital-note">
+                  均值 {signedPct(ev.all.mean)} · 上涨比例 {Math.round((ev.all.positive_rate ?? 0) * 100)}% · 第10百分位 {ev.all.p10 == null ? '—' : signedPct(ev.all.p10)}
+                </p>
+                <p className="regime-capital-note">训练段 {segmentMean(ev.train)} · 测试段 {segmentMean(ev.test)}</p>
+              </>
+            )}
+          </div>
+        </>
+      )}
+      {editing && <EnvPlanModal rows={rows} onClose={() => setEditing(false)} />}
+    </section>
+  )
+}
+
+type DraftCell = { cap: string; styles: EnvMatrixStyle[]; note: string }
+
+function EnvPlanModal({ rows, onClose }: { rows: RegimeRow[]; onClose: () => void }) {
+  const qc = useQueryClient()
+  const saved = useQuery({ queryKey: QK.envMatrixPlan, queryFn: () => api.envMatrixPlan() })
+  const [draft, setDraft] = useState<Record<string, DraftCell> | null>(null)
+  const [saving, setSaving] = useState(false)
+  // 每次打开都从已保存的值初始化; 取消即随弹窗卸载丢弃草稿
+  useEffect(() => {
+    if (!saved.data || draft) return
+    const init: Record<string, DraftCell> = {}
+    for (const [s] of ENV_SENTIMENTS) for (const [v] of ENV_VOLUMES) {
+      const item = saved.data.plan[`${s}_${v}`]
+      init[`${s}_${v}`] = { cap: item ? String(item.cap_pct) : '', styles: item?.styles ?? [], note: item?.note ?? '' }
+    }
+    setDraft(init)
+  }, [saved.data, draft])
+  const days = useMemo(() => {
+    const out: Record<string, number> = {}
+    for (const r of rows) {
+      const tier = ENV_TIER[r.state]
+      if (tier && r.capital_volume) out[`${tier}_${r.capital_volume}`] = (out[`${tier}_${r.capital_volume}`] ?? 0) + 1
+    }
+    return out
+  }, [rows])
+  const update = (key: string, patch: Partial<DraftCell>) => setDraft(d => (d ? { ...d, [key]: { ...d[key], ...patch } } : d))
+  const save = async () => {
+    if (!draft) return
+    const plan: EnvMatrixPlan = {}
+    for (const [key, cell] of Object.entries(draft)) {
+      if (cell.cap.trim() === '') continue
+      const cap = Number(cell.cap)
+      if (!Number.isInteger(cap) || cap < 0 || cap > 100) {
+        toast('仓位上限须为 0 ~ 100 的整数', 'error')
+        return
+      }
+      plan[key] = { cap_pct: cap, styles: cell.styles, note: cell.note.slice(0, 60) }
+    }
+    setSaving(true)
+    try {
+      await api.envMatrixPlanUpdate(plan)
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: QK.envMatrixPlan }),
+        qc.invalidateQueries({ queryKey: QK.regimeConclusion }),
+      ])
+      toast('环境预设已保存', 'success')
+      onClose()
+    } catch (e) {
+      toast(`保存失败 · ${String((e as Error)?.message || e)}`, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+  return (
+    <Modal onClose={onClose} ariaLabel="编辑环境预设"
+      panelClassName="w-[94vw] max-w-4xl max-h-[88vh] overflow-y-auto bg-surface border border-border rounded-card shadow-xl p-4">
+      <div className="space-y-3">
+        <div>
+          <div className="text-xs font-medium text-foreground">编辑环境预设</div>
+          <div className="mt-0.5 text-[12px] text-muted">为每格填写你自己的仓位上限与打法；留空表示未设置。天数为所选区间内该格出现的交易日数。</div>
+        </div>
+        {!draft ? <p className="text-[12px] text-muted">{saved.isError ? '读取预设失败' : '加载中…'}</p> : (
+          <div className="regime-plan-grid">
+            {ENV_SENTIMENTS.map(([s, sl]) => ENV_VOLUMES.map(([v, vl]) => {
+              const key = `${s}_${v}`
+              const cell = draft[key]
+              const label = `${sl}·${vl}`
+              return (
+                <fieldset key={key} className="regime-plan-cell">
+                  <legend>{sl} · {vl}<small>{days[key] ?? 0} 天</small></legend>
+                  <label className="regime-plan-cap">
+                    <span>仓位上限</span>
+                    <input type="number" min={0} max={100} step={1} inputMode="numeric" aria-label={`${label}仓位上限`}
+                      value={cell.cap} onChange={e => update(key, { cap: e.target.value })} placeholder="未设置" />
+                    <span>%</span>
+                  </label>
+                  <div className="regime-plan-styles">
+                    {ENV_STYLES.map(style => (
+                      <label key={style}>
+                        <input type="checkbox" aria-label={`${label}打法${style}`} checked={cell.styles.includes(style)}
+                          onChange={e => update(key, { styles: ENV_STYLES.filter(x => (x === style ? e.target.checked : cell.styles.includes(x))) })} />
+                        {style}
+                      </label>
+                    ))}
+                  </div>
+                  <input type="text" maxLength={60} aria-label={`${label}备注`} placeholder="备注" value={cell.note}
+                    onChange={e => update(key, { note: e.target.value })} className="regime-plan-note" />
+                </fieldset>
+              )
+            }))}
+          </div>
+        )}
+        <div className="flex justify-end gap-2 pt-1">
+          <button onClick={onClose} className="h-7 rounded-btn px-3 text-xs text-secondary hover:text-foreground transition-colors">取消</button>
+          <button onClick={save} disabled={!draft || saving}
+            className="h-7 rounded-btn bg-accent px-3 text-xs font-medium text-white hover:bg-accent/90 transition-colors disabled:opacity-60">
+            保存
+          </button>
+        </div>
+      </div>
+    </Modal>
   )
 }
 

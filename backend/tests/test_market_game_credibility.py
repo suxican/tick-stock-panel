@@ -75,3 +75,24 @@ def test_archive_refuses_unsplit_results_without_writing(tmp_path):
     with pytest.raises(ValueError):
         archive.save(result([], split=None))
     assert not (tmp_path / 'user_data' / 'market_game' / 'calibration').exists()
+
+
+def _ew(n, mean=.003, positive=.6, p10=-.01):
+    return {'group': None, 'days': n, 'ew_1': {'n': n, 'mean': mean, 'positive_rate': positive, 'p05': -.02, 'p10': p10}}
+
+
+def test_summary_reports_matrix_cell_stats_and_hides_thin_segments():
+    groups = []
+    for key, n in (('shadow:matrix:strong_expand', 40), ('shadow:matrix:strong_expand@train', 10),
+                   ('shadow:matrix:strong_expand@test', 30)):
+        groups.append({**_ew(n), 'group': key})
+    cells = summarize({'split': '2023-01-01', 'groups': groups})['cells']
+    assert set(cells) == {'strong_expand'}
+    cell = cells['strong_expand']
+    assert cell['all'] == {'n': 40, 'mean': .003, 'positive_rate': .6, 'p10': -.01}
+    assert cell['test']['mean'] == .003
+    assert cell['train'] == {'n': 10, 'mean': None, 'positive_rate': None, 'p10': None}
+
+
+def test_summary_without_matrix_groups_has_empty_cells():
+    assert summarize({'split': '2023-01-01', 'groups': [{**_ew(50), 'group': 'baseline'}]})['cells'] == {}

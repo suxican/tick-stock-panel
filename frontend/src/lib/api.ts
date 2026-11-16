@@ -787,6 +787,37 @@ export interface RegimeStates {
   days: number
 }
 
+/** 环境结论 9 格预设: 仓位上限为 0–100 整数百分数, 打法取固定列表。 */
+export type EnvMatrixStyle = '打板' | '半路' | '低吸' | '趋势持股' | '空仓观望'
+export interface EnvMatrixCellPlan {
+  cap_pct: number
+  styles: EnvMatrixStyle[]
+  note: string
+}
+export type EnvMatrixPlan = Record<string, EnvMatrixCellPlan>
+
+/** 某格次日全市场等权涨幅统计(小数制); 样本不足 30 天时只有 n。 */
+export interface EnvCellStats {
+  n: number
+  mean: number | null
+  positive_rate: number | null
+  p10: number | null
+}
+
+export interface EnvConclusion {
+  date: string | null
+  cell: string | null
+  sentiment: 'strong' | 'range' | 'weak' | null
+  volume: 'expand' | 'flat' | 'shrink' | null
+  missing_reason: string | null
+  plan: EnvMatrixCellPlan | null
+  gate: { cap_pct: number; report_id: string; as_of: string } | null
+  effective_cap_pct: number | null
+  limited_by: 'plan' | 'gate' | 'both' | null
+  evidence: { all: EnvCellStats; train: EnvCellStats; test: EnvCellStats } | null
+  evidence_as_of: string | null
+}
+
 export interface RegimeCoverage {
   rows: number
   earliest_date: string | null
@@ -4917,6 +4948,13 @@ export const api = {
     if (end) params.set('end', end)
     return request<MainlineResult>(`/api/regime/mainline?${params.toString()}`)
   },
+  regimeConclusion: () => request<EnvConclusion>('/api/regime/conclusion'),
+  envMatrixPlan: () => request<{ plan: EnvMatrixPlan }>('/api/settings/preferences/env-matrix-plan'),
+  envMatrixPlanUpdate: (plan: EnvMatrixPlan) =>
+    request<{ plan: EnvMatrixPlan }>('/api/settings/preferences/env-matrix-plan', {
+      method: 'PUT',
+      body: JSON.stringify({ plan }),
+    }),
   regimeMainlineRecompute: () =>
     request<{ ok: boolean; rows: number }>('/api/regime/mainline/recompute', { method: 'POST' }),
   mainlineFilterUpdate: (payload: { min_members?: number; max_members?: number; blacklist?: string[]; exclude_st?: boolean }) =>

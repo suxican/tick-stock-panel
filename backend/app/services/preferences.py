@@ -600,6 +600,48 @@ def set_emotion_score_config(cfg: dict | None) -> dict | None:
     return normalized
 
 
+# 环境结论 9 格预设: 情绪三档(环境分) x 资金总量档位。仓位与打法完全由用户填写,
+# 系统不给默认值; 读写两端都清洗, 手改坏的 preferences.json 不会让接口报错。
+ENV_MATRIX_CELLS: tuple[str, ...] = tuple(
+    f"{tier}_{volume}" for tier in ("strong", "range", "weak") for volume in ("expand", "flat", "shrink"))
+ENV_MATRIX_STYLES: tuple[str, ...] = ("打板", "半路", "低吸", "趋势持股", "空仓观望")
+ENV_MATRIX_NOTE_MAX = 60
+
+
+def _clean_env_matrix_plan(raw) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+    plan: dict = {}
+    for cell in ENV_MATRIX_CELLS:
+        item = raw.get(cell)
+        if not isinstance(item, dict):
+            continue
+        cap = item.get("cap_pct")
+        if isinstance(cap, bool) or not isinstance(cap, int) or not 0 <= cap <= 100:
+            continue
+        styles = item.get("styles")
+        styles = styles if isinstance(styles, list) else []
+        note = item.get("note")
+        plan[cell] = {
+            "cap_pct": cap,
+            "styles": [s for s in ENV_MATRIX_STYLES if s in styles],
+            "note": ("" if note is None else str(note))[:ENV_MATRIX_NOTE_MAX],
+        }
+    return plan
+
+
+def get_env_matrix_plan() -> dict:
+    """环境结论预设: {格键: {cap_pct: 0-100 整数, styles: [...], note: str}}; 未设置的格不出现。"""
+    return _clean_env_matrix_plan(load().get("env_matrix_plan"))
+
+
+def set_env_matrix_plan(plan: dict) -> dict:
+    """整表替换(不做部分合并), 返回清洗后的结果。"""
+    cleaned = _clean_env_matrix_plan(plan)
+    save({"env_matrix_plan": cleaned})
+    return cleaned
+
+
 def set_mainline_filter_config(cfg: dict) -> dict:
     """保存主线过滤配置(白名单字段, 部分更新)。修改后需重算主线生效。"""
     updates: dict = {}

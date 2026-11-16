@@ -182,6 +182,14 @@ def regime_recompute(request: Request, start: date | None = None, end: date | No
     }
 
 
+@router.get("/conclusion")
+def regime_conclusion(request: Request):
+    """最新交易日的环境结论: 当天格子、用户预设、叠加市场闸门后的上限与该格历史证据。"""
+    from app.services.environment_conclusion import build_conclusion
+
+    return build_conclusion(_data_dir(request))
+
+
 @router.get("/phases")
 def regime_phases(
     request: Request,
