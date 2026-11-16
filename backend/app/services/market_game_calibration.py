@@ -168,6 +168,11 @@ SHADOW_DEFINITIONS = [
     {'group': 'shadow:capital_volume_stall', 'control': 'shadow:capital_expand_advance',
      'label': '放量滞涨（资金轴）', 'card': '资金状态轴', 'definition':
      '资金放量且中位涨跌幅≤0；对照组为资金放量且中位涨跌幅>0'},
+    # 混杂检验: 放量日多为普涨日, 等权涨幅本身有短期惯性; 按当日中位涨跌方向分层后再比较。
+    *[{'group': f'shadow:capital_{side}_expand', 'control': f'shadow:capital_{side}_shrink',
+       'label': f'{name}日放量', 'card': '资金状态轴', 'definition':
+       f'当日中位涨跌幅{cond}且资金放量；对照组为同方向且资金缩量'}
+      for side, name, cond in (('up', '上涨', '>0'), ('down', '下跌', '≤0'))],
     # 情绪×资金矩阵: 同一情绪档比较放量与缩量, 同一资金档比较情绪强与弱; 格子可被两对复用。
     *[{'group': f'shadow:matrix:{tier}_expand', 'control': f'shadow:matrix:{tier}_shrink',
        'label': f'{name}下放量', 'card': '情绪×资金矩阵', 'definition':
@@ -219,6 +224,10 @@ def _shadow_keys(rows: list[dict], index: int, trend: str) -> list[str]:
         keys.append('shadow:capital_volume_stall')
     elif volume == 'expand' and median is not None and median > 0:
         keys.append('shadow:capital_expand_advance')
+    # Confounding check: expansion days skew to up days, and equal-weight returns carry
+    # short-term momentum; compare expand vs shrink within the same same-day direction.
+    if volume in ('expand', 'shrink') and median is not None:
+        keys.append(f"shadow:capital_{'up' if median > 0 else 'down'}_{volume}")
     tier = MATRIX_SENTIMENT.get(current.get('regime_state'))
     if tier is not None and volume in _MATRIX_VOLUMES:
         keys.append(f'shadow:matrix:{tier}_{volume}')

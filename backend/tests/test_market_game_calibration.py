@@ -247,7 +247,8 @@ def test_shadow_groups_split_and_publish_fixed_definitions():
         'shadow:volume_stall', 'shadow:ease_down', 'shadow:first_drop_after_high',
         'shadow:capital_expand', 'shadow:capital_concentrated', 'shadow:capital_volume_stall',
         'shadow:matrix:strong_expand', 'shadow:matrix:range_expand', 'shadow:matrix:weak_expand',
-        'shadow:matrix:strong_flat', 'shadow:matrix:strong_shrink'}
+        'shadow:matrix:strong_flat', 'shadow:matrix:strong_shrink',
+        'shadow:capital_up_expand', 'shadow:capital_down_expand'}
 
 
 def _capital(frame, day_index, **cols):
@@ -260,11 +261,14 @@ def _capital(frame, day_index, **cols):
 def test_capital_shadow_groups_follow_regime_labels():
     frame = _capital(history(10), 5, capital_volume='expand', capital_concentration='concentrated')
     assert _shadow(calibrate_history(frame))[5] == [
-        'shadow:capital_expand', 'shadow:capital_concentrated', 'shadow:capital_expand_advance']
+        'shadow:capital_expand', 'shadow:capital_concentrated', 'shadow:capital_expand_advance',
+        'shadow:capital_up_expand']
     stall = _capital(history(10), 5, capital_volume='expand', capital_flag='volume_stall')
-    assert _shadow(calibrate_history(stall))[5] == ['shadow:capital_expand', 'shadow:capital_volume_stall']
+    assert _shadow(calibrate_history(stall))[5] == [
+        'shadow:capital_expand', 'shadow:capital_volume_stall', 'shadow:capital_up_expand']
     weak = _capital(history(10), 5, capital_volume='shrink', capital_concentration='dispersed')
-    assert _shadow(calibrate_history(weak))[5] == ['shadow:capital_shrink', 'shadow:capital_dispersed']
+    assert _shadow(calibrate_history(weak))[5] == [
+        'shadow:capital_shrink', 'shadow:capital_dispersed', 'shadow:capital_up_shrink']
     flat = _capital(history(10), 5, capital_volume='flat', capital_concentration='neutral')
     assert _shadow(calibrate_history(flat))[5] == []
 
@@ -311,3 +315,23 @@ def test_matrix_cell_shared_by_two_pairs_counts_once():
     assert days['shadow:matrix:strong_shrink'] == 13
     pairs = [item for item in result['shadow_definitions'] if 'strong_expand' in item['group']]
     assert {item['control'] for item in pairs} == {'shadow:matrix:strong_shrink', 'shadow:matrix:weak_expand'}
+
+
+@pytest.mark.parametrize('volume,median,key', [
+    ('expand', .01, 'shadow:capital_up_expand'), ('shrink', .01, 'shadow:capital_up_shrink'),
+    ('expand', 0., 'shadow:capital_down_expand'), ('shrink', -.01, 'shadow:capital_down_shrink'),
+])
+def test_capital_split_by_same_day_direction(volume, median, key):
+    frame = _capital(history(10), 5, capital_volume=volume).with_columns(
+        pl.when(pl.col('date') == date(2026, 1, 6)).then(median).otherwise(pl.col('median_pct')).alias('median_pct'))
+    keys = _shadow(calibrate_history(frame))[5]
+    assert [k for k in keys if k.startswith(('shadow:capital_up', 'shadow:capital_down'))] == [key]
+
+
+def test_capital_direction_split_needs_volume_and_median():
+    flat = _capital(history(10), 5, capital_volume='flat')
+    no_median = _capital(history(10), 5, capital_volume='expand').with_columns(
+        pl.when(pl.col('date') == date(2026, 1, 6)).then(None).otherwise(pl.col('median_pct')).alias('median_pct'))
+    for frame in (flat, no_median):
+        keys = _shadow(calibrate_history(frame))[5]
+        assert not any(k.startswith(('shadow:capital_up', 'shadow:capital_down')) for k in keys)
