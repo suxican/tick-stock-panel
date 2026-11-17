@@ -76,3 +76,23 @@ it('未开始使用仓位核对时不显示该行, 也不显示金额', async ()
   await render(execution())
   expect(host.textContent).not.toMatch(/312000|500000|31\.2万|50万/)
 })
+
+
+it('累计统计展开后按买入前格子分组, 旧数据缺该字段不报错', async () => {
+  const stats = {
+    total: 3, wins: 2, losses: 1, win_rate: 66.7, avg_win_pct: 5, avg_loss_pct: 3, payoff_ratio: 1.67, avg_hold_days: 2,
+    by_reason: [], by_phase: [],
+    by_cell: [
+      { key: 'strong_expand', label: '强·放量', total: 2, win_rate: 100, avg_pnl_pct: 5 },
+      { key: 'unknown', label: '未知', total: 1, win_rate: 0, avg_pnl_pct: -3 },
+    ],
+  }
+  await render(execution({ position_check: null, stats }))
+  const toggle = [...host.querySelectorAll('button')].find(el => el.textContent?.includes('累计 3 笔'))!
+  await act(async () => toggle.click())
+  expect(host.textContent).toContain('按买入前格子')
+  expect(host.textContent).toContain('强·放量')
+  const { by_cell: _ignored, ...old } = stats
+  await render(execution({ position_check: null, stats: old }))
+  expect(host.textContent).not.toContain('按买入前格子')
+})

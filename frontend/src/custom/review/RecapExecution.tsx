@@ -9,6 +9,9 @@ import type { RecapExecution, RecapPositionCheck, RecapPositionStats, TradeStats
 import { cn } from '@/lib/cn'
 import { priceColorClass } from '@/lib/format'
 
+/** 后端 stats.by_cell: 按买入前一交易日环境格子分组; 旧数据可能缺。 */
+type TradeStatsWithCells = TradeStats & { by_cell?: TradeStatsGroup[] }
+
 /** 样本少于此数时统计只作参考 */
 const MIN_SAMPLE = 10
 
@@ -53,7 +56,7 @@ function GroupTable({ title, groups }: { title: string; groups: TradeStatsGroup[
   )
 }
 
-function Stats({ stats }: { stats: TradeStats }) {
+function Stats({ stats }: { stats: TradeStatsWithCells }) {
   const [open, setOpen] = useState(false)
   return (
     <div className="space-y-1.5">
@@ -76,6 +79,7 @@ function Stats({ stats }: { stats: TradeStats }) {
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <GroupTable title="按归因" groups={stats.by_reason} />
             <GroupTable title="按买入时阶段" groups={stats.by_phase} />
+            {stats.by_cell && <GroupTable title="按买入前格子" groups={stats.by_cell} />}
           </div>
         </div>
       )}

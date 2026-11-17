@@ -99,6 +99,7 @@ def test_close_without_buy_date_succeeds_with_null_context(tmp_path, request_):
     lots_api.sync_lot(request_, _lot(buy_date=None))
     entry = lots_api.close_lot("lot_test1", _close(), request_)["entry"]
     assert entry["buy_date"] is None and entry["hold_days"] is None and entry["buy_phase"] is None
+    assert entry["buy_cell"] is None
 
 
 def test_close_on_non_trading_sell_date_keeps_hold_days_null(tmp_path, request_):
@@ -142,3 +143,16 @@ def test_delete_rejects_bad_id(request_, bad):
     with pytest.raises(HTTPException) as exc:
         journal_api.delete_entry(bad, request_)
     assert exc.value.status_code == 400
+
+
+def test_close_freezes_buy_cell_from_previous_trading_day(tmp_path, request_, monkeypatch):
+    from datetime import date as _d
+
+    import polars as pl
+
+    monkeypatch.setattr("app.services.regime_builder.load_regime_history", lambda _dir: pl.DataFrame({
+        "date": [_d(2026, 11, 4), _d(2026, 11, 5)], "state": ["strong", "weak"],
+        "capital_volume": ["expand", "shrink"], "phase": ["rally", "ebb"]}))
+    lots_api.sync_lot(request_, _lot())
+    entry = lots_api.close_lot("lot_test1", _close(), request_)["entry"]
+    assert entry["buy_cell"] == "strong_expand"

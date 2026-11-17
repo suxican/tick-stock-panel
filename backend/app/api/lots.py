@@ -184,6 +184,7 @@ def close_lot(lot_id: str, body: CloseLotModel, request: Request):
         name=name,
         had_invalidation=lots_invalidation_flags(data_dir, [symbol])[symbol],
         buy_phase=trade_journal_context.buy_phase(data_dir, lot.get("buy_date")),
+        buy_cell=trade_journal_context.buy_cell(data_dir, lot.get("buy_date")),
         hold_days=trade_journal_context.hold_days(lot.get("buy_date"), body.sell_date),
     )
     with _write_lock:

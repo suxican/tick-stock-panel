@@ -1,4 +1,4 @@
-"""结清批次时冻结进交易记录的上下文: 持有交易日数、买入日情绪周期阶段。
+"""结清批次时冻结进交易记录的上下文: 持有交易日数、买入日情绪周期阶段、买入前环境格子。
 
 任何一项取不到都返回 None (宁缺勿错): 不用自然日替代交易日, 不用相邻日阶段顶替。
 """
@@ -56,3 +56,34 @@ def buy_phase(data_dir: Path, buy_date: str | None) -> str | None:
         logger.debug("trade journal: regime phase unavailable for %s: %s", buy_date, e)
         return None
     return rows[-1] or None if rows else None
+
+
+def buy_cell(data_dir: Path, buy_date: str | None) -> str | None:
+    """买入前一交易日的环境格子(情绪三档 x 资金档位), 如 "strong_expand"。
+
+    前一交易日收盘后的格子与仓位上限决定了买入当天的操作, 与复盘仓位核对同口径。
+    取 regime 历史中早于买入日的最后一行; 任一项缺失为 None, 不用相邻日顶替。
+    """
+    bought = _day(buy_date)
+    if bought is None:
+        return None
+    try:
+        import polars as pl
+
+        from app.services import regime_builder
+        from app.services.market_game_calibration import MATRIX_SENTIMENT
+
+        df = regime_builder.load_regime_history(data_dir)
+        if df.is_empty() or not {"date", "state", "capital_volume"}.issubset(df.columns):
+            return None
+        rows = df.filter(pl.col("date") < bought).sort("date").tail(1).to_dicts()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("trade journal: regime cell unavailable for %s: %s", buy_date, e)
+        return None
+    if not rows:
+        return None
+    tier = MATRIX_SENTIMENT.get(rows[0].get("state"))
+    volume = rows[0].get("capital_volume")
+    if tier is None or volume not in ("expand", "flat", "shrink"):
+        return None
+    return f"{tier}_{volume}"

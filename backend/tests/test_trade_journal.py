@@ -75,3 +75,21 @@ def test_stats_empty_and_one_sided():
     assert tj.stats([]) is None
     one = tj.stats([_entry(sell_price=1848.0)])
     assert one["payoff_ratio"] is None and one["avg_loss_pct"] is None
+
+
+def test_build_entry_freezes_buy_cell_default_none():
+    assert _entry()["buy_cell"] is None
+    assert _entry(buy_cell="strong_expand")["buy_cell"] == "strong_expand"
+
+
+def test_stats_groups_by_buy_cell_in_fixed_order_with_unknown_last():
+    es = [_entry(sell_price=1848.0, buy_cell="weak_flat"),          # +10%
+          _entry(sell_price=1596.0, buy_cell="strong_expand"),      # -5%
+          _entry(sell_price=1764.0, buy_cell="strong_expand"),      # +5%
+          _entry(sell_price=1680.0, buy_cell="mystery")]            # 0%, 未知
+    old = {key: value for key, value in _entry(sell_price=1848.0).items() if key != "buy_cell"}  # 旧记录无字段
+    cells = tj.stats([*es, old])["by_cell"]
+    assert [g["key"] for g in cells] == ["strong_expand", "weak_flat", "unknown"]
+    assert cells[0] == {"key": "strong_expand", "label": "强·放量", "total": 2,
+                        "win_rate": pytest.approx(50), "avg_pnl_pct": pytest.approx(0)}
+    assert cells[-1]["label"] == "未知" and cells[-1]["total"] == 2

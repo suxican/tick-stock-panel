@@ -55,7 +55,8 @@ def validate_close(lot: dict, sell_price, sell_date, reason, note, *, today: _da
 
 
 def build_entry(lot: dict, *, sell_price: float, sell_date: str, reason: str, note: str, name: str,
-                had_invalidation: bool, buy_phase: str | None, hold_days: int | None) -> dict:
+                had_invalidation: bool, buy_phase: str | None, hold_days: int | None,
+                buy_cell: str | None = None) -> dict:
     """批次 + 结清输入 → 冻结的交易记录 (不校验)。"""
     return {
         "id": entry_id(lot["id"]),
@@ -73,6 +74,7 @@ def build_entry(lot: dict, *, sell_price: float, sell_date: str, reason: str, no
         "note": note.strip(),
         "had_invalidation": bool(had_invalidation),
         "buy_phase": buy_phase,
+        "buy_cell": buy_cell,
         "hold_days": hold_days,
         "created_at": datetime.now(UTC).isoformat(),
     }
@@ -111,6 +113,8 @@ def stats(entries: list[dict]) -> dict | None:
     if not entries:
         return None
     from app.services.market_phase import PHASE_LABELS
+    from app.services.position_check import cell_label
+    from app.services.preferences import ENV_MATRIX_CELLS
 
     pnls = [pnl_pct(e) for e in entries]
     wins = [p for p in pnls if p > 0]
@@ -120,10 +124,13 @@ def stats(entries: list[dict]) -> dict | None:
 
     by_reason: dict[str, list[float]] = {}
     by_phase: dict[str, list[float]] = {}
+    by_cell: dict[str, list[float]] = {}
     for e, p in zip(entries, pnls, strict=True):
         by_reason.setdefault(e.get("reason") or "", []).append(p)
         phase = e.get("buy_phase")
         by_phase.setdefault(phase if phase in PHASE_LABELS else "unknown", []).append(p)
+        cell = e.get("buy_cell")
+        by_cell.setdefault(cell if cell in ENV_MATRIX_CELLS else "unknown", []).append(p)
     phase_labels = {**PHASE_LABELS, "unknown": "未知"}
     return {
         "total": len(entries),
@@ -136,4 +143,7 @@ def stats(entries: list[dict]) -> dict | None:
         "avg_hold_days": _mean(holds),
         "by_reason": [_group(k, label, by_reason[k]) for k, label in REASONS.items() if k in by_reason],
         "by_phase": [_group(k, label, by_phase[k]) for k, label in phase_labels.items() if k in by_phase],
+        # 买入前一交易日的环境格子, 用于回头核对 9 格仓位预设
+        "by_cell": [_group(k, cell_label(k) if k != "unknown" else "未知", by_cell[k])
+                    for k in (*ENV_MATRIX_CELLS, "unknown") if k in by_cell],
     }

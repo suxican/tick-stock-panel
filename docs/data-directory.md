@@ -156,7 +156,7 @@ user_data / strategies / pools → 用户定义与配置 → 各业务模块
 | `removed_integrations/` | 本地按集成名与批次留存的移除材料；当前未找到统一读写或自动恢复契约。保留到确认不再需要，不能仅凭名称承诺可一键恢复。 |
 | `strategy_guardian/` | `<strategy_id>.json` 策略基线、复验历史与状态，`combinations.json` 组合建议，由 [guardian_store.py](../backend/app/services/guardian_store.py) 维护；删除丢失守护历史，不等于删除策略源码。 |
 | `strategy_overrides/` | `<strategy_id>.json` 策略参数覆盖，由 [strategy/config.py](../backend/app/strategy/config.py) 保存、运行时合并；删除会回退默认参数并改变运行行为。 |
-| `trade_journal/` | `tj_<批次id>.json` 批次结清后留下的交易记录：冻结的批次成本/数量/买入日、卖出价、卖出日、用户自选归因、备注、结清时是否已登记失效条件、买入日情绪周期阶段、持有交易日数。只存价格，盈亏在读取时计算（卖出价相对登记成本，不含费用）。由批次页“结清”写入（[lots.py](../backend/app/api/lots.py) → [trade_journal.py](../backend/app/strategy/trade_journal.py)），批次页“已结清”列表与 AI 复盘“今日执行”读取；同一批次重复结清只覆盖同一文件。不设条数上限。删除后累计统计丢失，无法从行情或批次重建。含个人交易数据，按用户数据管理；数量、价格与备注不进入 AI 提示词或外部推送。 |
+| `trade_journal/` | `tj_<批次id>.json` 批次结清后留下的交易记录：冻结的批次成本/数量/买入日、卖出价、卖出日、用户自选归因、备注、结清时是否已登记失效条件、买入日情绪周期阶段、买入前一交易日环境格子、持有交易日数。只存价格，盈亏在读取时计算（卖出价相对登记成本，不含费用）。由批次页“结清”写入（[lots.py](../backend/app/api/lots.py) → [trade_journal.py](../backend/app/strategy/trade_journal.py)），批次页“已结清”列表与 AI 复盘“今日执行”读取；同一批次重复结清只覆盖同一文件。不设条数上限。删除后累计统计丢失，无法从行情或批次重建。含个人交易数据，按用户数据管理；数量、价格与备注不进入 AI 提示词或外部推送。 |
 
 以上除 `bellwether_timeline/`(首次在盘中记录到风向标变化时创建)外为当前 13 个子目录。代码还支持按需创建 `position_policies/` 保存自定义仓位策略源码，见 [position_policies.py](../backend/app/backtest/position_policies.py)；启用其他功能后也可能有新增目录，需按第 11 节更新说明。
 
