@@ -86,3 +86,9 @@ it('历史留档带 expression 时显示当日晋级率', async () => {
   await render({ snapshot: snapshot({ expression: { kpl_promo_2: 0.5 } }), onThemeSelect: vi.fn() })
   expect(host.textContent).toContain('二板晋级 50.0%')
 })
+
+it('与梯队不同日时隐藏题材行', async () => {
+  await render({ snapshot: snapshot(), onThemeSelect: vi.fn(), showThemes: false })
+  expect(host.querySelectorAll('button[data-theme]')).toHaveLength(0)
+  expect(host.textContent).toContain('涨停 41')
+})

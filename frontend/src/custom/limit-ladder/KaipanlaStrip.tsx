@@ -9,10 +9,12 @@ function pct(v: number | null | undefined): string | null {
 }
 
 /** 连板梯队页的开盘啦（非官方）情绪条 + 题材行。只展示, 不参与任何计算。 */
-export function KaipanlaStrip({ snapshot, error, selectedTheme, onThemeSelect }: {
+export function KaipanlaStrip({ snapshot, error, selectedTheme, onThemeSelect, showThemes = true }: {
   snapshot: KplSnapshot | null | undefined
   error?: string
   selectedTheme?: string
+  /** 开盘啦快照与梯队同日时才显示题材行 */
+  showThemes?: boolean
   onThemeSelect: (code: string | undefined) => void
 }) {
   if (!snapshot) {
@@ -31,7 +33,7 @@ export function KaipanlaStrip({ snapshot, error, selectedTheme, onThemeSelect }:
     promo,
   ].filter(Boolean) as string[]
   const stale = snapshot.stale_seconds > STALE_SECONDS
-  const themes = snapshot.themes.slice(0, MAX_THEMES)
+  const themes = showThemes ? snapshot.themes.slice(0, MAX_THEMES) : []
   return (
     <div className="px-5 pb-1 text-xs" aria-label="开盘啦盘中情绪">
       <div className="flex flex-wrap items-baseline gap-x-2 text-secondary">

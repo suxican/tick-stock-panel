@@ -1147,7 +1147,6 @@ export interface RecapHoldingsCheck {
   }[]
 }
 
-/** 10:00 盘中剧本核验结果 */
 /** 开盘啦（非官方）涨停股; 比率为小数制, 时间为北京时间 ISO */
 export interface KplStock {
   symbol: string
@@ -1206,6 +1205,7 @@ export interface KplSnapshot {
 
 export interface KplStatus { enabled: boolean; last_success_at: string | null; last_error: string | null }
 
+/** 10:00 盘中剧本核验结果 */
 export interface RecapIntradayCheck {
   id?: string
   date: string
@@ -4039,7 +4039,8 @@ export const api = {
   }),
   /** 不传日期取当日盘中快照; 历史日期读收盘留档 (无档 404) */
   kaipanlaIntraday: (date?: string) =>
-    request<KplSnapshot>(`/api/kaipanla/intraday${date ? `?date=${date}` : ''}`, { quiet: true }),
+    // 一轮 9 个上游请求 (间隔 1 秒, 慢时单个 2.5 秒), 可能超过默认 30 秒
+    request<KplSnapshot>(`/api/kaipanla/intraday${date ? `?date=${date}` : ''}`, { quiet: true, timeoutMs: 90_000 }),
   huichunConfig: () => request<HuichunConfig>('/api/huichun/config', { quiet: true }),
   huichunSaveConfig: (body: { rules: HuichunRules; expected_revision: number }) => request<HuichunConfig>('/api/huichun/config', {
     method: 'PUT', body: JSON.stringify(body), quiet: true,

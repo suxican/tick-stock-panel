@@ -17,7 +17,7 @@ import { useTheme } from '@/lib/theme'
 import { useCapabilities, usePreferences } from '@/lib/useSharedQueries'
 import { useZzshareReasons } from '@/lib/useZzshareReasons'
 import { useKaipanlaIntraday, useKaipanlaStatus } from '@/lib/useKaipanla'
-import { filterTiersBySymbols, mergeReasons, type LadderReason } from './kaipanlaReasons'
+import { filterTiersBySymbols, mergeReasons, themeSymbolsFor, type LadderReason } from './kaipanlaReasons'
 import { KaipanlaStrip } from './KaipanlaStrip'
 import { SealedBadge } from '@/components/SealedBadge'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
@@ -1584,7 +1584,7 @@ export function LimitUpLadder() {
   const kpl = useKaipanlaIntraday(asOf || undefined, kplOn)
   const kplSnapshot = kplOn ? kpl.data : undefined
   const [kplTheme, setKplTheme] = useState<string>()
-  const kplThemeSymbols = kplTheme ? kplSnapshot?.themes.find(t => t.code === kplTheme)?.symbols : undefined
+  const kplThemeSymbols = themeSymbolsFor(kplSnapshot, kplTheme, data?.as_of)
   const ladderReasons = useMemo(
     () => mergeReasons(reasonDate ? reasons.data : undefined,
       reasonDate && kplSnapshot?.date === reasonDate ? kplSnapshot.stocks : undefined),
@@ -1826,6 +1826,7 @@ export function LimitUpLadder() {
           snapshot={kplSnapshot}
           error={kpl.isError ? (kpl.error instanceof Error ? kpl.error.message : '开盘啦暂不可用') : undefined}
           selectedTheme={kplThemeSymbols ? kplTheme : undefined}
+          showThemes={!!kplSnapshot && kplSnapshot.date === data.as_of}
           onThemeSelect={setKplTheme}
         />
       )}

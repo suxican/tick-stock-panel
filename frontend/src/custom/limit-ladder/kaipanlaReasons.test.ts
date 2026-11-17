@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import type { KplStock } from '@/lib/api'
-import { filterTiersBySymbols, mergeReasons } from './kaipanlaReasons'
+import { filterTiersBySymbols, mergeReasons, themeSymbolsFor } from './kaipanlaReasons'
 
 function stock(symbol: string, reason: string): KplStock {
   return {
@@ -32,4 +32,12 @@ it('按题材成分过滤梯队, 空档去掉', () => {
   ]
   expect(filterTiersBySymbols(tiers, ['B'])).toEqual([{ boards: 2, count: 1, stocks: [{ symbol: 'B' }] }])
   expect(filterTiersBySymbols(tiers, undefined)).toBe(tiers)
+})
+
+it('题材成分只在开盘啦快照与梯队同日时生效', () => {
+  const snap = { date: '2026-11-17', themes: [{ code: '801', name: '芯片', count: 1, symbols: ['A'] }] }
+  expect(themeSymbolsFor(snap, '801', '2026-11-17')).toEqual(['A'])
+  expect(themeSymbolsFor(snap, '801', '2026-11-16')).toBeUndefined()
+  expect(themeSymbolsFor(snap, undefined, '2026-11-17')).toBeUndefined()
+  expect(themeSymbolsFor(undefined, '801', '2026-11-17')).toBeUndefined()
 })
