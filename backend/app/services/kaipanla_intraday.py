@@ -9,10 +9,11 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from collections import OrderedDict
 from concurrent.futures import Future
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 from pathlib import Path
 from threading import Lock
 
@@ -21,7 +22,7 @@ from app.plugins.kaipanla.client import KaipanlaClient, KaipanlaError
 from app.services.fs_utils import atomic_write_text
 
 TTL_SECONDS = 30
-CLOSE_AT = time(15, 5)
+CLOSE_AT = dtime(15, 5)
 _VERSION_DIR = ("kaipanla", "v1")
 
 _lock = Lock()
@@ -100,7 +101,10 @@ def _prev_expression(data_dir: Path, day: str) -> dict | None:
     for d in sorted((p for p in root.iterdir() if p.is_dir() and p.name < day), key=lambda p: p.name, reverse=True):
         f = d / "expression.json"
         if f.exists():
-            return {"date": d.name, **json.loads(f.read_text(encoding="utf-8"))}
+            try:
+                return {"date": d.name, **json.loads(f.read_text(encoding="utf-8"))}
+            except (OSError, ValueError, TypeError):
+                return None
     return None
 
 
@@ -157,12 +161,17 @@ def _stale(snap: dict, now: datetime) -> dict:
     return {**snap, "stale_seconds": max(age, 0)}
 
 
+def _same_day(snap: dict | None, now: datetime) -> dict | None:
+    """只把当日快照当作「过期的当日数据」沿用; 前一交易日的快照不冒充当日。"""
+    return snap if snap and snap.get("fetched_at", "")[:10] == now.date().isoformat() else None
+
+
 def read_intraday(data_dir: Path, *, now: datetime | None = None, client: KaipanlaClient | None = None) -> dict:
     """当日快照。30 秒内的调用 (含并发) 共享一轮抓取。"""
     now = now or cn_now()
     key = Path(data_dir)
     with _lock:
-        latest = _latest.get(key)
+        latest = _same_day(_latest.get(key), now)
         if latest and (now - datetime.fromisoformat(latest["fetched_at"])).total_seconds() < TTL_SECONDS:
             return latest
         retry = _retry_after.get(key)
@@ -174,29 +183,39 @@ def read_intraday(data_dir: Path, *, now: datetime | None = None, client: Kaipan
         if pending is None:
             _pending[key] = task = Future()
     if pending is not None:
-        return pending.result()
+        return pending.result(timeout=120)
+    started = time.monotonic()
+    result = error = None
     try:
         snap = _fetch(key, client or _client(key), now)
-    except KaipanlaError as exc:
+    except Exception as exc:  # noqa: BLE001 -- 任何异常都必须唤醒等待者, 否则后续请求永久阻塞
+        reason = str(exc) if isinstance(exc, KaipanlaError) else f"返回解析失败（{exc.__class__.__name__}）"
+        # 退避从本轮结束算起: 慢失败轮次本身可能超过 TTL
+        elapsed = time.monotonic() - started
         with _lock:
-            _status["last_error"] = str(exc)
-            _retry_after[key] = now + timedelta(seconds=TTL_SECONDS)
-            latest = _latest.get(key)
-        result = _stale(latest, now) if latest else None
-        error = None if latest else KaipanlaUnavailableError(f"开盘啦暂不可用：{exc}")
+            _status["last_error"] = reason
+            _retry_after[key] = now + timedelta(seconds=elapsed + TTL_SECONDS)
+            latest = _same_day(_latest.get(key), now)
+        if latest:
+            result = _stale(latest, now)
+        else:
+            error = KaipanlaUnavailableError(f"开盘啦暂不可用：{reason}")
     else:
         with _lock:
             _latest[key] = snap
             _retry_after.pop(key, None)
             _status["last_success_at"] = snap["fetched_at"]
             _status["last_error"] = None
-        result, error = snap, None
-    with _lock:
-        _pending.pop(key, None)
-    if error:
-        task.set_exception(error)
+        result = snap
+    finally:
+        with _lock:
+            _pending.pop(key, None)
+        if error is not None:
+            task.set_exception(error)
+        else:
+            task.set_result(result)
+    if error is not None:
         raise error
-    task.set_result(result)
     return result
 
 

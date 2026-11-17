@@ -165,3 +165,47 @@ def test_device_id_is_persisted(tmp_path):
     first = svc._device_id(tmp_path)
     assert first and svc._device_id(tmp_path) == first
     assert (tmp_path / "kaipanla" / "device_id").read_text(encoding="utf-8").strip() == first
+
+
+def test_unexpected_exception_does_not_wedge_later_reads(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    bad = fake_client()
+    bad.limit_up_stocks.side_effect = KeyError("x")
+    with pytest.raises(KaipanlaUnavailableError):
+        read_intraday(tmp_path, now=NOW, client=bad)
+    svc._retry_after.clear()
+    with ThreadPoolExecutor(1) as pool:
+        snap = pool.submit(read_intraday, tmp_path, now=NOW, client=fake_client()).result(timeout=5)
+    assert snap["summary"]["limit_up"] == 41
+
+
+def test_previous_day_snapshot_is_not_served_as_today(tmp_path):
+    read_intraday(tmp_path, now=NOW, client=fake_client())
+    next_day = NOW + timedelta(days=1)
+    with pytest.raises(KaipanlaUnavailableError):
+        read_intraday(tmp_path, now=next_day, client=fake_client(fail={"limit_up_stocks"}))
+
+
+def test_retry_backoff_counts_from_end_of_slow_failed_round(tmp_path, monkeypatch):
+    read_intraday(tmp_path, now=NOW, client=fake_client())
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(svc.time, "monotonic", lambda: clock["t"])
+    slow = fake_client()
+
+    def slow_fail(_pid):
+        clock["t"] += 40
+        raise KaipanlaError("timeout")
+
+    slow.limit_up_stocks.side_effect = slow_fail
+    start = NOW + timedelta(seconds=60)
+    read_intraday(tmp_path, now=start, client=slow)
+    assert slow.limit_up_stocks.call_count == 1
+    snap = read_intraday(tmp_path, now=start + timedelta(seconds=45), client=slow)
+    assert slow.limit_up_stocks.call_count == 1 and snap["stale_seconds"] == 105
+
+
+def test_corrupt_previous_expression_is_ignored(tmp_path):
+    prev = _day_dir(tmp_path, "2026-11-16")
+    prev.mkdir(parents=True)
+    (prev / "expression.json").write_text("{broken", encoding="utf-8")
+    assert read_intraday(tmp_path, now=NOW, client=fake_client())["prev_expression"] is None

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from datetime import date, datetime
 from threading import Lock
@@ -42,11 +43,14 @@ def to_symbol(code: str) -> str:
 
 
 def _num(value) -> float:
+    """有限数值; NaN/Inf 与非数字一律视为上游结构异常。"""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         try:
-            return float(value)
+            value = float(value)
         except (TypeError, ValueError):
             raise KaipanlaError(f"数值字段无效: {value!r}") from None
+    if not math.isfinite(value):
+        raise KaipanlaError(f"数值字段无效: {value!r}")
     return value
 
 
@@ -149,7 +153,7 @@ class KaipanlaClient:
             raise KaipanlaError("涨停列表结构不符")
         try:
             return str(info[1]), [_limit_up_row(r) for r in info[0]]
-        except (IndexError, TypeError) as exc:
+        except (IndexError, TypeError, KeyError, ValueError, OverflowError, OSError) as exc:
             raise KaipanlaError("涨停行字段缺失") from exc
 
     def first_board_broken(self) -> list[dict]:
@@ -162,7 +166,7 @@ class KaipanlaClient:
             raise KaipanlaError("破板列表结构不符")
         try:
             return [_broken_row(r) for r in info[0]]
-        except (IndexError, TypeError) as exc:
+        except (IndexError, TypeError, KeyError, ValueError, OverflowError, OSError) as exc:
             raise KaipanlaError("破板行字段缺失") from exc
 
     def sentiment(self) -> dict:

@@ -134,3 +134,14 @@ def test_requests_are_spaced_and_carry_common_params(monkeypatch):
     p = seen[0]
     assert p["DeviceID"] == "dev-1" and p["PhoneOSNew"] == "2" and p["VerSion"] == "5.23.0.1" and p["apiv"] == "w44"
     assert "Token" not in p and "UserID" not in p
+
+
+def test_malformed_rows_raise_kaipanla_error():
+    bad_rows = [
+        {"errcode": "0", "info": [[{"a": 1}], "2026-11-17"]},
+        {"errcode": "0", "info": [[["000001", "x", 0, "", float("inf")] + [0] * 18], "2026-11-17"]},
+    ]
+    for body in bad_rows:
+        c = _client(lambda _r, body=body: httpx.Response(200, text=json.dumps(body).replace("Infinity", "1e400")))
+        with pytest.raises(KaipanlaError):
+            c.limit_up_stocks(1)
