@@ -16,6 +16,9 @@ import { ErrorState } from '@/components/ErrorState'
 import { useTheme } from '@/lib/theme'
 import { useCapabilities, usePreferences } from '@/lib/useSharedQueries'
 import { useZzshareReasons } from '@/lib/useZzshareReasons'
+import { useKaipanlaIntraday, useKaipanlaStatus } from '@/lib/useKaipanla'
+import { filterTiersBySymbols, mergeReasons, type LadderReason } from './kaipanlaReasons'
+import { KaipanlaStrip } from './KaipanlaStrip'
 import { SealedBadge } from '@/components/SealedBadge'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
 import type { ExtColumnDisplayConfig } from '@/lib/watchlist-columns'
@@ -226,7 +229,7 @@ function useSealedDegrade(asOf: string, latestDate: string | undefined, sealedRe
 
 const StockCard = React.memo(function StockCard({ stock, reason, extFields, direction, sealMode, monitored, monitorRule, onMonitorChange, hasDepth, onClick, onDimensionClick, active }: {
   stock: LimitLadderStock
-  reason?: string
+  reason?: LadderReason
   extFields: ExtFieldConfig
   direction: Direction
   sealMode: 'vol' | 'amount'
@@ -400,9 +403,14 @@ const StockCard = React.memo(function StockCard({ stock, reason, extFields, dire
     {reason && (
       <details className="group/reason mt-1 rounded bg-elevated/40 px-2 py-1 text-xs">
         <summary className="cursor-pointer truncate text-secondary focus-visible:outline-accent">
-          涨停归因<span className="ml-2 text-muted group-open/reason:hidden">{reason}</span>
+          涨停归因
+          <span className="ml-1 text-[10px] text-muted" title={reason.source === 'kpl' ? '开盘啦（盘中）' : 'ZZShare（盘后）'}>
+            {reason.source === 'kpl' ? '开' : 'zz'}
+          </span>
+          <span className="ml-2 text-muted group-open/reason:hidden">{reason.text}</span>
         </summary>
-        <p className="mt-1.5 max-w-prose whitespace-pre-wrap break-words leading-relaxed text-foreground">{reason}</p>
+        <p className="mt-1.5 max-w-prose whitespace-pre-wrap break-words leading-relaxed text-foreground">{reason.text}</p>
+        {reason.alt && <p className="mt-1 text-secondary">开盘啦：{reason.alt}</p>}
       </details>
     )}
     </div>
@@ -996,7 +1004,7 @@ function sortLadderStocks(
 
 function TierGroup({ tier, reasons, defaultOpen, extFields, filterKeys, bf, onStockClick, selectedTag, onSelectTag, onDimensionClick, direction, sealMode, monitoredSymbols, ladderRules, onMonitorChange, hasDepth, activeSymbol }: {
   tier: LimitLadderTier
-  reasons?: ReadonlyMap<string, string>
+  reasons?: ReadonlyMap<string, LadderReason>
   defaultOpen: boolean
   extFields: ExtFieldConfig
   filterKeys: Set<FilterKey>
@@ -1570,6 +1578,18 @@ export function LimitUpLadder() {
   })
   const reasonDate = direction === 'up' && data?.tiers.length ? data.as_of : undefined
   const reasons = useZzshareReasons(reasonDate)
+  // 开盘啦（非官方）: 仅涨停方向且设置中开启时请求; 只展示, 不参与梯队计算
+  const kplStatus = useKaipanlaStatus()
+  const kplOn = direction === 'up' && !!kplStatus.data?.enabled
+  const kpl = useKaipanlaIntraday(asOf || undefined, kplOn)
+  const kplSnapshot = kplOn ? kpl.data : undefined
+  const [kplTheme, setKplTheme] = useState<string>()
+  const kplThemeSymbols = kplTheme ? kplSnapshot?.themes.find(t => t.code === kplTheme)?.symbols : undefined
+  const ladderReasons = useMemo(
+    () => mergeReasons(reasonDate ? reasons.data : undefined,
+      reasonDate && kplSnapshot?.date === reasonDate ? kplSnapshot.stocks : undefined),
+    [reasonDate, reasons.data, kplSnapshot],
+  )
   const handleOpenDimension = useCallback((kind: DimensionKind, value: string, sourceField?: string) => {
     if (!sourceField) return
     setDimensionTarget({ kind, value, sourceField, date: (data?.as_of ?? asOf) || undefined })
@@ -1577,7 +1597,10 @@ export function LimitUpLadder() {
 
   const rawTiers = data?.tiers ?? []
   // filterTiers 每次返回新数组, 不 memo 会破坏 React.memo(StockCard) 且全梯队二次排序
-  const tiers = useMemo(() => filterTiers(rawTiers, filterKeys, extFields.bf), [rawTiers, filterKeys, extFields.bf])
+  const tiers = useMemo(
+    () => filterTiersBySymbols(filterTiers(rawTiers, filterKeys, extFields.bf), kplThemeSymbols),
+    [rawTiers, filterKeys, extFields.bf, kplThemeSymbols],
+  )
   const displayDate = data?.as_of ?? asOf
 
   // 单源: 梯队按展示同款过滤+排序一次 (监控优先 → 状态 → 封单量),
@@ -1798,6 +1821,14 @@ export function LimitUpLadder() {
           <button type="button" className="ml-2 text-accent" disabled={reasons.isFetching} onClick={() => void reasons.refetch()}>重试</button>
         </div>
       )}
+      {kplOn && (
+        <KaipanlaStrip
+          snapshot={kplSnapshot}
+          error={kpl.isError ? (kpl.error instanceof Error ? kpl.error.message : '开盘啦暂不可用') : undefined}
+          selectedTheme={kplThemeSymbols ? kplTheme : undefined}
+          onThemeSelect={setKplTheme}
+        />
+      )}
 
       {/* 概念统计 */}
       {(extFields.showConceptStats ?? true) && (
@@ -1843,7 +1874,7 @@ export function LimitUpLadder() {
           <TierGroup
             key={t.boards}
             tier={t}
-            reasons={reasonDate ? reasons.data : undefined}
+            reasons={ladderReasons}
             defaultOpen={t.boards >= 1 || t.count <= 8}
             extFields={resolvedExtFields}
             filterKeys={filterKeys}
