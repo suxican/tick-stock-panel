@@ -1148,6 +1148,64 @@ export interface RecapHoldingsCheck {
 }
 
 /** 10:00 盘中剧本核验结果 */
+/** 开盘啦（非官方）涨停股; 比率为小数制, 时间为北京时间 ISO */
+export interface KplStock {
+  symbol: string
+  name: string
+  boards: number
+  first_limit_at: string | null
+  reason: string
+  theme_code: string
+  plates: string[]
+  seal_amount: number
+  max_seal: number
+  reseal: boolean
+  label: string | null
+  price: number
+  change_pct: number
+}
+
+export interface KplTheme { code: string; name: string; count: number; symbols: string[] }
+
+export interface KplSummary {
+  kpl_strong: number | null
+  limit_up: number
+  limit_down: number | null
+  max_boards: number
+  sharp_drawdown: number | null
+  first_board_broken: number | null
+  broken_rate: number | null
+}
+
+export interface KplExpression {
+  date?: string
+  limit_up?: number
+  boards_2?: number
+  boards_3?: number
+  max_boards?: number
+  kpl_promo_2?: number
+  kpl_promo_3?: number
+  kpl_promo_top?: number
+  kpl_broken_rate?: number
+  kpl_summary?: string
+}
+
+export interface KplSnapshot {
+  date: string
+  fetched_at: string
+  stale_seconds: number
+  summary: KplSummary
+  tiers: { boards: number; count: number }[]
+  stocks: KplStock[]
+  themes: KplTheme[]
+  prev_expression?: KplExpression | null
+  /** 历史日期留档才有: 当日晋级率 (次日补取) */
+  expression?: KplExpression | null
+  missing: string[]
+}
+
+export interface KplStatus { enabled: boolean; last_success_at: string | null; last_error: string | null }
+
 export interface RecapIntradayCheck {
   id?: string
   date: string
@@ -3974,6 +4032,14 @@ export const api = {
   etfLedgerAppend: () => request<EtfLedgerAppendResult>('/api/etf-observation/ledger/append', {
     method: 'POST', quiet: true, timeoutMs: 300_000,
   }),
+  /** 开盘啦（非官方）开关与最近采集状态 */
+  kaipanlaStatus: () => request<KplStatus>('/api/kaipanla/status', { quiet: true }),
+  kaipanlaSetEnabled: (enabled: boolean) => request<{ enabled: boolean }>('/api/kaipanla/enabled', {
+    method: 'PUT', body: JSON.stringify({ enabled }), quiet: true,
+  }),
+  /** 不传日期取当日盘中快照; 历史日期读收盘留档 (无档 404) */
+  kaipanlaIntraday: (date?: string) =>
+    request<KplSnapshot>(`/api/kaipanla/intraday${date ? `?date=${date}` : ''}`, { quiet: true }),
   huichunConfig: () => request<HuichunConfig>('/api/huichun/config', { quiet: true }),
   huichunSaveConfig: (body: { rules: HuichunRules; expected_revision: number }) => request<HuichunConfig>('/api/huichun/config', {
     method: 'PUT', body: JSON.stringify(body), quiet: true,

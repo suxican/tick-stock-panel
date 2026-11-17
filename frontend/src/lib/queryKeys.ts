@@ -122,6 +122,9 @@ export const QK = {
   marketSnapshot:       ['market-snapshot'] as const,
   marketSnapshotForSymbols: (symbols: string) => ['market-snapshot', 'symbols', symbols] as const,
   limitLadder:          (asOf?: string) => ['limit-ladder', asOf] as const,
+  kaipanlaAll:          ['kaipanla'] as const,
+  kaipanlaStatus:       ['kaipanla', 'status'] as const,
+  kaipanla:             (date?: string) => ['kaipanla', 'intraday', date ?? 'today'] as const,
 
   // Backtest
   backtestStatus:       ['backtest-status'] as const,
