@@ -17,7 +17,7 @@ import { useTheme } from '@/lib/theme'
 import { useCapabilities, usePreferences } from '@/lib/useSharedQueries'
 import { useZzshareReasons } from '@/lib/useZzshareReasons'
 import { useKaipanlaIntraday, useKaipanlaStatus } from '@/lib/useKaipanla'
-import { filterTiersBySymbols, mergeReasons, themeSymbolsFor, type LadderReason } from './kaipanlaReasons'
+import { filterTiersBySymbols, mergeReasons, sealText, themeSymbolsFor, type LadderReason } from './kaipanlaReasons'
 import { KaipanlaStrip } from './KaipanlaStrip'
 import { SealedBadge } from '@/components/SealedBadge'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
@@ -411,6 +411,7 @@ const StockCard = React.memo(function StockCard({ stock, reason, extFields, dire
         </summary>
         <p className="mt-1.5 max-w-prose whitespace-pre-wrap break-words leading-relaxed text-foreground">{reason.text}</p>
         {reason.alt && <p className="mt-1 text-secondary">开盘啦：{reason.alt}</p>}
+        {reason.seal && <p className="mt-1 tabular-nums text-muted">{sealText(reason.seal)}</p>}
       </details>
     )}
     </div>

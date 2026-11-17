@@ -32,7 +32,7 @@ _latest: dict[Path, dict] = {}          # 最近一次成功快照
 _retry_after: dict[Path, datetime] = {}  # 失败后短暂不再请求
 _pending: dict[Path, Future] = {}
 _appended: dict[Path, str] = {}          # 最近追加到 observations 的 fetched_at
-_status = {"last_success_at": None, "last_error": None}
+_status: dict[Path, dict] = {}         # 每个数据目录的最近成功时间与最近错误
 
 
 class KaipanlaUnavailableError(RuntimeError):
@@ -42,12 +42,17 @@ class KaipanlaUnavailableError(RuntimeError):
 def _reset_for_tests() -> None:
     with _lock:
         _clients.clear(); _latest.clear(); _retry_after.clear(); _pending.clear(); _appended.clear()
-        _status.update(last_success_at=None, last_error=None)
+        _status.clear()
 
 
-def status() -> dict:
+def _status_of(key: Path) -> dict:
+    """调用方须持有 _lock。"""
+    return _status.setdefault(key, {"last_success_at": None, "last_error": None})
+
+
+def status(data_dir: Path) -> dict:
     with _lock:
-        return dict(_status)
+        return dict(_status_of(Path(data_dir)))
 
 
 def _root(data_dir: Path) -> Path:
@@ -178,7 +183,7 @@ def read_intraday(data_dir: Path, *, now: datetime | None = None, client: Kaipan
         if retry and now < retry:
             if latest:
                 return _stale(latest, now)
-            raise KaipanlaUnavailableError(_status["last_error"] or "开盘啦暂不可用")
+            raise KaipanlaUnavailableError(_status_of(key)["last_error"] or "开盘啦暂不可用")
         pending = _pending.get(key)
         if pending is None:
             _pending[key] = task = Future()
@@ -193,7 +198,7 @@ def read_intraday(data_dir: Path, *, now: datetime | None = None, client: Kaipan
         # 退避从本轮结束算起: 慢失败轮次本身可能超过 TTL
         elapsed = time.monotonic() - started
         with _lock:
-            _status["last_error"] = reason
+            _status_of(key)["last_error"] = reason
             _retry_after[key] = now + timedelta(seconds=elapsed + TTL_SECONDS)
             latest = _same_day(_latest.get(key), now)
         if latest:
@@ -204,8 +209,7 @@ def read_intraday(data_dir: Path, *, now: datetime | None = None, client: Kaipan
         with _lock:
             _latest[key] = snap
             _retry_after.pop(key, None)
-            _status["last_success_at"] = snap["fetched_at"]
-            _status["last_error"] = None
+            _status_of(key).update(last_success_at=snap["fetched_at"], last_error=None)
         result = snap
     finally:
         with _lock:
@@ -257,7 +261,7 @@ def _backfill_expression(data_dir: Path, today: date, client: KaipanlaClient) ->
         exp = client.expression(date.fromisoformat(target.name))
     except KaipanlaError as exc:
         with _lock:
-            _status["last_error"] = str(exc)
+            _status_of(Path(data_dir))["last_error"] = str(exc)
         return
     if exp is None:
         return
@@ -293,8 +297,14 @@ def read_day(data_dir: Path, day: date) -> dict | None:
     close = d / "close.json"
     if not close.exists():
         return None
-    snap = json.loads(close.read_text(encoding="utf-8"))
+    try:
+        snap = json.loads(close.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None  # 留档损坏按无档处理, 路由返回 404
     exp = d / "expression.json"
-    snap["expression"] = json.loads(exp.read_text(encoding="utf-8")) if exp.exists() else None
+    try:
+        snap["expression"] = json.loads(exp.read_text(encoding="utf-8")) if exp.exists() else None
+    except (OSError, ValueError):
+        snap["expression"] = None
     snap["stale_seconds"] = 0
     return snap

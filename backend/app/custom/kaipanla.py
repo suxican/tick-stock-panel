@@ -49,7 +49,7 @@ async def _lifespan(app):
     registered = False
     if scheduler is not None:
         try:
-            # 连续竞价留观测、15:05 定版; 21 点一轮只补前一交易日晋级率
+            # 连续竞价留观测、15:05 后定版 (定版失败时 21 点再补); 每轮都会补前一交易日晋级率
             scheduler.add_job(
                 _capture, "cron", args=[app.state.repo.store.data_dir],
                 day_of_week="mon-fri", hour="9-15,21", minute="*/5", timezone="Asia/Shanghai",
@@ -73,8 +73,8 @@ class EnabledIn(BaseModel):
 
 
 @router.get("/status")
-def get_status() -> dict:
-    return {"enabled": _enabled(), **status()}
+def get_status(request: Request) -> dict:
+    return {"enabled": _enabled(), **status(request.app.state.repo.store.data_dir)}
 
 
 @router.put("/enabled")

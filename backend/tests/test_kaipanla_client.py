@@ -145,3 +145,9 @@ def test_malformed_rows_raise_kaipanla_error():
         c = _client(lambda _r, body=body: httpx.Response(200, text=json.dumps(body).replace("Infinity", "1e400")))
         with pytest.raises(KaipanlaError):
             c.limit_up_stocks(1)
+
+
+def test_unknown_code_prefix_raises_kaipanla_error():
+    with pytest.raises(KaipanlaError):
+        to_symbol("123456")
+    assert to_symbol("002451.SZ") == "002451.SZ"

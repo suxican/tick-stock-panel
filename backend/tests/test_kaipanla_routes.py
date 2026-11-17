@@ -27,7 +27,7 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(kaipanla, "read_intraday", live)
     monkeypatch.setattr(kaipanla, "read_day", day)
     monkeypatch.setattr(kaipanla, "capture", cap)
-    monkeypatch.setattr(kaipanla, "status", lambda: {"last_success_at": None, "last_error": "x"})
+    monkeypatch.setattr(kaipanla, "status", lambda _data_dir: {"last_success_at": None, "last_error": "x"})
     app = FastAPI()
     app.state.repo = SimpleNamespace(store=SimpleNamespace(data_dir=tmp_path))
     app.state.scheduler = Mock()

@@ -86,7 +86,7 @@ def test_core_failure_returns_previous_snapshot_as_stale(tmp_path):
     later = NOW + timedelta(seconds=95)
     snap = read_intraday(tmp_path, now=later, client=fake_client(fail={"limit_up_stocks"}))
     assert snap["stale_seconds"] == 95 and snap["summary"]["limit_up"] == 41
-    assert svc.status()["last_error"]
+    assert svc.status(tmp_path)["last_error"]
 
 
 def test_never_succeeded_raises_unavailable(tmp_path):
@@ -209,3 +209,22 @@ def test_corrupt_previous_expression_is_ignored(tmp_path):
     prev.mkdir(parents=True)
     (prev / "expression.json").write_text("{broken", encoding="utf-8")
     assert read_intraday(tmp_path, now=NOW, client=fake_client())["prev_expression"] is None
+
+
+def test_read_day_with_corrupt_archive_returns_none(tmp_path):
+    d = _day_dir(tmp_path, "2026-11-16")
+    d.mkdir(parents=True)
+    (d / "close.json").write_text("{broken", encoding="utf-8")
+    assert read_day(tmp_path, date(2026, 11, 16)) is None
+    (d / "close.json").write_text(json.dumps({"summary": {}}), encoding="utf-8")
+    (d / "expression.json").write_text("{broken", encoding="utf-8")
+    assert read_day(tmp_path, date(2026, 11, 16))["expression"] is None
+
+
+def test_status_is_tracked_per_data_dir(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    read_intraday(a, now=NOW, client=fake_client())
+    with pytest.raises(KaipanlaUnavailableError):
+        read_intraday(b, now=NOW, client=fake_client(fail={"limit_up_stocks"}))
+    assert svc.status(a) == {"last_success_at": NOW.isoformat(), "last_error": None}
+    assert svc.status(b)["last_success_at"] is None and svc.status(b)["last_error"] == "down"

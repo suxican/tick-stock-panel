@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import type { KplStock } from '@/lib/api'
-import { filterTiersBySymbols, mergeReasons, themeSymbolsFor } from './kaipanlaReasons'
+import { filterTiersBySymbols, mergeReasons, sealText, themeSymbolsFor } from './kaipanlaReasons'
 
 function stock(symbol: string, reason: string): KplStock {
   return {
@@ -11,12 +11,12 @@ function stock(symbol: string, reason: string): KplStock {
 
 it('盘中只有开盘啦原因时显示开盘啦', () => {
   expect(mergeReasons(undefined, [stock('002451.SZ', '电气设备')]).get('002451.SZ'))
-    .toEqual({ text: '电气设备', source: 'kpl' })
+    .toEqual({ text: '电气设备', source: 'kpl', seal: { amount: 1, max: 2 } })
 })
 
 it('盘后两者都有时以 zzshare 为准, 开盘啦放 alt', () => {
   expect(mergeReasons(new Map([['002451.SZ', '智能电网订单']]), [stock('002451.SZ', '电气设备')]).get('002451.SZ'))
-    .toEqual({ text: '智能电网订单', source: 'zzshare', alt: '电气设备' })
+    .toEqual({ text: '智能电网订单', source: 'zzshare', alt: '电气设备', seal: { amount: 1, max: 2 } })
 })
 
 it('只有 zzshare 时保持原样, 空原因忽略', () => {
@@ -40,4 +40,9 @@ it('题材成分只在开盘啦快照与梯队同日时生效', () => {
   expect(themeSymbolsFor(snap, '801', '2026-11-16')).toBeUndefined()
   expect(themeSymbolsFor(snap, undefined, '2026-11-17')).toBeUndefined()
   expect(themeSymbolsFor(undefined, '801', '2026-11-17')).toBeUndefined()
+})
+
+it('开盘啦封单文案', () => {
+  expect(sealText({ amount: 131_607_384, max: 231_740_112 })).toBe('开盘啦封单 1.32亿 · 最大 2.32亿')
+  expect(sealText({ amount: 0, max: 50_000_000 })).toBe('开盘啦封单 0 · 最大 5000万')
 })

@@ -1,7 +1,18 @@
 import type { KplStock, KplTheme } from '@/lib/api'
+import { fmtBigNum } from '@/lib/format'
 
 /** 梯队卡片的涨停原因及来源: 盘后 zzshare 优先, 开盘啦盘中原因作补充 */
-export type LadderReason = { text: string; source: 'kpl' | 'zzshare'; alt?: string }
+export type LadderReason = {
+  text: string
+  source: 'kpl' | 'zzshare'
+  alt?: string
+  /** 开盘啦全量封单 (元), 只在展开区展示, 不影响 SealedBadge */
+  seal?: { amount: number; max: number }
+}
+
+export function sealText(seal: { amount: number; max: number }): string {
+  return `开盘啦封单 ${fmtBigNum(seal.amount)} · 最大 ${fmtBigNum(seal.max)}`
+}
 
 export function mergeReasons(
   zz: ReadonlyMap<string, string> | undefined,
@@ -12,10 +23,11 @@ export function mergeReasons(
   for (const s of kpl ?? []) {
     if (!s.reason) continue
     const prev = out.get(s.symbol)
+    const seal = { amount: s.seal_amount, max: s.max_seal }
     if (prev) {
-      if (prev.text !== s.reason) out.set(s.symbol, { ...prev, alt: s.reason })
+      out.set(s.symbol, prev.text !== s.reason ? { ...prev, alt: s.reason, seal } : { ...prev, seal })
     } else {
-      out.set(s.symbol, { text: s.reason, source: 'kpl' })
+      out.set(s.symbol, { text: s.reason, source: 'kpl', seal })
     }
   }
   return out

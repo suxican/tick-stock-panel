@@ -17,6 +17,7 @@ from threading import Lock
 import httpx
 
 from app.market_time import CN_TZ, cn_today
+from app.services.zzshare_limit_reasons import LimitReasonsSourceError, _stock_symbol
 
 HQ_URL = "https://apphwhq.longhuvip.com/w1/api/index.php"
 HIS_URL = "https://apphis.longhuvip.com/w1/api/index.php"
@@ -34,12 +35,11 @@ class KaipanlaError(RuntimeError):
 
 
 def to_symbol(code: str) -> str:
-    code = str(code).strip()
-    if code.startswith(("60", "68", "90")):
-        return f"{code}.SH"
-    if code.startswith(("4", "8", "92")):
-        return f"{code}.BJ"
-    return f"{code}.SZ"
+    """复用 zzshare 涨停归因的 A 股代码规则; 无法识别的代码视为上游结构异常。"""
+    try:
+        return _stock_symbol(str(code))
+    except LimitReasonsSourceError as exc:
+        raise KaipanlaError(f"无法识别的代码: {code!r}") from exc
 
 
 def _num(value) -> float:
