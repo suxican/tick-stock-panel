@@ -38,6 +38,8 @@ export function IntradayCheckStrip() {
     queryKey: QK.reviewIntradayCheck,
     queryFn: () => api.reviewIntradayCheck(),
     staleTime: 60_000,
+    // 后台补拉开盘分钟期间轮询, 补完重判后自动显示新结果
+    refetchInterval: (q) => (q.state.data?.backfilling ? 5_000 : false),
   })
   const run = useMutation({
     mutationFn: () => api.reviewIntradayCheckRun(),
@@ -46,21 +48,25 @@ export function IntradayCheckStrip() {
   })
   // 手动核验在非交易日/10:00 前不归档, 直接显示本次返回的原因
   const result = query.data?.result ?? null
+  const backfilling = !!query.data?.backfilling
+  const busy = run.isPending || backfilling
   if (query.isLoading) return null
   return (
     <div className="flex items-center gap-2 rounded-card border border-border bg-surface/80 px-3.5 py-2 text-[12px]">
       <Timer className="h-3.5 w-3.5 shrink-0 text-accent" />
       <span className="shrink-0 text-muted">盘中剧本核验</span>
       <div className="min-w-0 flex-1 truncate" title={result?.message}>
-        {result ? <Summary r={result} /> : <span className="text-muted">今日尚未核验(10:00 后可用)</span>}
+        {backfilling
+          ? <span className="text-secondary">开盘分钟数据不完整, 正在补拉 09:30–10:00 分钟K(约 1–3 分钟), 完成后自动核验…</span>
+          : result ? <Summary r={result} /> : <span className="text-muted">今日尚未核验(10:00 后可用)</span>}
       </div>
       <button
         type="button"
         onClick={() => run.mutate()}
-        disabled={run.isPending}
+        disabled={busy}
         className="inline-flex shrink-0 items-center gap-1 rounded-btn border border-border bg-elevated px-2 py-0.5 text-[11px] text-secondary transition-colors hover:text-foreground disabled:opacity-50"
       >
-        <RefreshCw className={cn('h-3 w-3', run.isPending && 'animate-spin')} />立即核验
+        <RefreshCw className={cn('h-3 w-3', busy && 'animate-spin')} />{backfilling ? '补数中' : '立即核验'}
       </button>
     </div>
   )

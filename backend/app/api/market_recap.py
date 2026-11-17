@@ -125,17 +125,23 @@ async def analyze_market(request: Request, req: AnalyzeRequest):
 def get_intraday_check(request: Request):
     """今日最近一次盘中核验结果; 今日尚未核验时 result=null。"""
     from app.market_time import cn_today
-    from app.services.market_recap_intraday import latest_result
+    from app.services.market_recap_intraday import is_backfilling, latest_result
 
-    return {"result": latest_result(cn_today().isoformat())}
+    day = cn_today().isoformat()
+    return {"result": latest_result(day), "backfilling": is_backfilling(day)}
 
 
 @router.post("/intraday-check")
 def run_intraday_check(request: Request):
-    """手动执行一次盘中核验(归档, 不推送; 定时任务才推送)。"""
-    from app.services.market_recap_intraday import run_and_record
+    """手动执行一次盘中核验(归档, 不推送; 定时任务才推送)。
 
-    return {"result": run_and_record(request.app.state.repo, push=False)}
+    开盘分钟数据不全时后台补拉后重判, 立即返回 backfilling=true, 前端轮询 GET。
+    """
+    from app.services.market_recap_intraday import run_manual
+
+    qs = getattr(request.app.state, "quote_service", None)
+    return run_manual(request.app.state.repo, getattr(request.app.state, "capabilities", None),
+                      on_updated=qs.notify_data_updated if qs else None)
 
 
 # ================================================================

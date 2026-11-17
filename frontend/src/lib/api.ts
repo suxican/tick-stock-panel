@@ -1159,6 +1159,8 @@ export interface RecapIntradayCheck {
   prev_amount_30m?: number | null
   leaning?: { name: string; primary: boolean; action: string }[]
   check?: RecapPlanCheck
+  /** 本次核验前补拉开盘分钟的结果(仅数据不全时有) */
+  backfill?: { status: 'ok' | 'complete' | 'unavailable' | 'failed'; symbols: number; rows: number }
 }
 
 export type BellwetherSignal = 'strong' | 'neutral' | 'weak' | 'unknown'
@@ -5955,12 +5957,12 @@ export const api = {
   reviewReportDelete: (reportId: string) =>
     request<{ ok: boolean }>(`/api/market-recap/reports/${encodeURIComponent(reportId)}`, { method: 'DELETE' }),
 
-  /** 今日最近一次盘中剧本核验; 未核验时 result=null */
+  /** 今日最近一次盘中剧本核验; 未核验时 result=null; backfilling=后台正在补开盘分钟 */
   reviewIntradayCheck: () =>
-    request<{ result: RecapIntradayCheck | null }>('/api/market-recap/intraday-check', { quiet: true }),
-  /** 手动执行盘中核验(归档, 不推送) */
+    request<{ result: RecapIntradayCheck | null; backfilling?: boolean }>('/api/market-recap/intraday-check', { quiet: true }),
+  /** 手动执行盘中核验(归档, 不推送); 开盘分钟不全时后台补拉后重判 */
   reviewIntradayCheckRun: () =>
-    request<{ result: RecapIntradayCheck }>('/api/market-recap/intraday-check', { method: 'POST' }),
+    request<{ result: RecapIntradayCheck | null; backfilling?: boolean }>('/api/market-recap/intraday-check', { method: 'POST' }),
   /** 盘中风向标快照; scope=holdings/watchlist 时为所属板块视图。数据缺失时 status=unavailable */
   reviewBellwethers: (scope: BellwetherScope = 'market', groupId?: string | null) => {
     const params = new URLSearchParams({ scope })

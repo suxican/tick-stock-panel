@@ -1379,7 +1379,11 @@ def _run_intraday_plan_check(repo) -> None:
     try:
         from app.services.market_recap_intraday import run_and_record
 
-        result = run_and_record(repo, push=True)
+        app_state = _get_app_state()
+        qs = getattr(app_state, "quote_service", None)
+        result = run_and_record(repo, push=True, backfill=True,
+                                capset=getattr(app_state, "capabilities", None),
+                                on_updated=qs.notify_data_updated if qs else None)
         logger.info("intraday plan check: %s %s", result.get("status"), result.get("date"))
     except Exception:  # noqa: BLE001
         logger.exception("intraday plan check failed")

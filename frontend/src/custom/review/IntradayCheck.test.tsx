@@ -50,3 +50,27 @@ it('shows not-yet-checked state and runs a manual check', async () => {
   expect(calls.run).toHaveBeenCalledTimes(1)
   expect(host.textContent).toContain('开盘分钟数据不完整')
 })
+
+it('shows backfill progress, disables the button, and polls until the recheck lands', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  try {
+    calls.get
+      .mockResolvedValueOnce({ result: null })
+      .mockResolvedValueOnce({ result: null, backfilling: true })
+      .mockResolvedValue({ result: ok, backfilling: false })
+    calls.run.mockResolvedValue({ result: { ...ok, status: 'data_incomplete', amount_30m: null }, backfilling: true })
+    await render()
+    const btn = Array.from(host.querySelectorAll('button')).find(b => b.textContent?.includes('立即核验'))!
+    await act(async () => { btn.click() })
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    expect(host.textContent).toContain('正在补拉 09:30–10:00 分钟K')
+    expect(host.querySelector('button')!.disabled).toBe(true)
+    expect(host.querySelector('button')!.textContent).toContain('补数中')
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    expect(host.textContent).toContain('开盘半小时成交额 5,341亿')
+    expect(host.querySelector('button')!.disabled).toBe(false)
+  } finally {
+    vi.useRealTimers()
+  }
+})
