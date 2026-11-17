@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 import polars as pl
 
 from app.indicators.pipeline import compute_enriched
-from app.market_time import cn_now_naive
+from app.market_time import cn_now, cn_now_naive
 from app.services import kline_sync, preferences
 from app.tickflow.capabilities import Cap, CapabilitySet
 from app.tickflow.client import get_client
@@ -201,6 +201,23 @@ def _iter_custom_daily_frames(provider, symbols, asset_type, start_time, end_tim
     )
 
 
+def _mark_unsettled(raw: pl.DataFrame, started: datetime) -> pl.DataFrame:
+    """拉取时尚未收盘定版的当日 bar 打上 quote_ts, 与实时落盘行同一快照口径。
+
+    data_integrity 把无 quote_ts 的行当作盘后权威历史: 盘中跑一次管道、之后没有
+    盘后管道时, 残缺的当日量价会被当成定版, 停机自检也不会修。
+    """
+    if started.time() >= kline_sync.CLOSE_CUTOFF or "date" not in raw.columns:
+        return raw
+    unsettled = pl.col("date").cast(pl.Date, strict=False) >= started.date()
+    if not raw.select(unsettled.any()).item():
+        return raw
+    stamp = int(started.timestamp() * 1000)
+    return raw.with_columns(
+        pl.when(unsettled).then(pl.lit(stamp)).otherwise(None).cast(pl.Int64).alias("quote_ts")
+    )
+
+
 def _sync_custom_daily(
     repo: KlineRepository,
     symbols: list[str],
@@ -284,10 +301,12 @@ def sync_and_persist_index_daily(
             return 0
         symbols = sorted(set(instruments["symbol"].to_list()))
 
+    started = cn_now()
     end_time = end_date or cn_now_naive()
     start_time = start_date or (end_time - timedelta(days=365))
 
     def _persist_index_frame(raw: pl.DataFrame) -> int:
+        raw = _mark_unsettled(raw, started)
         repo.append_index_daily(raw)
         enriched = compute_enriched(raw, factors=None, instruments=None)
         repo.append_index_enriched(enriched)
@@ -434,12 +453,14 @@ def sync_and_persist_etf_daily(
     if not symbols:
         return 0
 
+    started = cn_now()
     end_time = end_date or cn_now_naive()
     start_time = start_date or (end_time - timedelta(days=365))
 
     factors = _load_etf_factors(repo)
 
     def _persist_etf_frame(raw: pl.DataFrame) -> int:
+        raw = _mark_unsettled(raw, started)
         frame_symbols = raw["symbol"].unique().to_list()
         repo.append_etf_daily(raw)
         batch_factors = (

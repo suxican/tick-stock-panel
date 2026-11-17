@@ -246,6 +246,13 @@ def sync_daily_batch(symbols: list[str],
     failed_out: 可选出参。拉取失败的分块标的会追加进该 list, 供上层判定「部分失败」
                 而非静默当成功(某分块断网 → 这些标的本轮未更新, 保持旧数据)。
     """
+    # naive 窗口按北京墙钟解释 (同 sync_minute_batch): 指数/ETF 管道以 naive 北京日期
+    # 传入起止, 经 _datetime_to_ms 按服务器本地时区换算会整体错位 —— UTC-8 主机晚
+    # 16 小时, 起始日 (TickFlow 日K时间戳为北京 00:00) 被挤出窗口, 盘中残缺 bar 永远重拉不到。
+    if start_time is not None:
+        start_time = _as_beijing(start_time)
+    if end_time is not None:
+        end_time = _as_beijing(end_time)
     tf = get_client()
     out: list[pl.DataFrame] = []
     chunks = chunked(symbols, batch_size)
