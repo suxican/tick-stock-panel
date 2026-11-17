@@ -32,6 +32,8 @@ export const EXT_DATA_QUERY_PREFIXES = new Set([
 const firstBoardRankingsDay = (day: string) => ['first-board', 'first-alert-rankings', day] as const
 
 export const QK = {
+  /** 宽基 ETF 页全部查询的前缀, 份额台账追加后整体失效 */
+  etfObservationAll: ['etf-observation'] as const,
   etfObservation: (window: EtfFlowWindow, asOf?: string) => ['etf-observation', window, asOf ?? 'latest'] as const,
   etfObservationDetail: (symbol: string, window: EtfFlowWindow, asOf?: string) =>
     ['etf-observation', 'detail', symbol, window, asOf ?? 'latest'] as const,

@@ -29,6 +29,25 @@ def last_published(data_dir: Path) -> date | None:
     return date.fromisoformat(max(days)) if days else None
 
 
+def pending_sessions(data_dir: Path, today: date) -> list[date]:
+    """Sessions after the published release through today; empty without an audited release."""
+    last = last_published(data_dir)
+    if last is None or last < LAST:
+        return []
+    calendar = read_market_calendar(BUNDLED_CALENDAR_PATH)
+    end = min(today, calendar.coverage_end)
+    return list(calendar.sessions(start=last + timedelta(days=1), end=end)) if end > last else []
+
+
+def overdue(data_dir: Path, today: date) -> bool:
+    """Whether a session before today is still unpublished, i.e. scheduled runs were missed.
+
+    Today's own session is left to the schedule: retrying it on every restart
+    would only re-query sources that have not published yet.
+    """
+    return any(day < today for day in pending_sessions(data_dir, today))
+
+
 def append_new_sessions(data_dir: Path, today: date) -> list[str]:
     """Publish any newly complete sessions up to today; returns the days added."""
     last = last_published(data_dir)

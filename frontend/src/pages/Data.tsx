@@ -954,7 +954,10 @@ export function Data() {
             {getCardOrder().filter(k => cardVisible[k]).map((k: CardKey) => (
               <Fragment key={k}>{renderStatCard(k)}</Fragment>
             ))}
-            {(extConfigs.data?.items ?? []).map((ext) => (
+            {/* 宽基 ETF 份额台账放在数据画像末尾, 其余扩展表保持接口顺序 */}
+            {[...(extConfigs.data?.items ?? [])].sort((a, b) =>
+              Number(a.id === 'etf_broad_flow_daily') - Number(b.id === 'etf_broad_flow_daily'),
+            ).map((ext) => (
               <ExtDataStatCard
                 key={ext.id}
                 config={ext}

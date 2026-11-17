@@ -16,6 +16,7 @@ vi.mock('@/lib/api', async importOriginal => ({
 }))
 vi.mock('./ExtDataPullPanel', () => ({ ExtDataPullPanel: () => <div>通用拉取面板</div> }))
 vi.mock('./ExtConfigTransfer', () => ({ ExtConfigExportButton: () => null }))
+vi.mock('@/extensions/ExtensionSlot', () => ({ ExtensionSlot: () => null }))
 
 const config: ExtDataConfig = {
   id: 'zzshare_limit_reasons', label: 'ZZShare 涨停归因', mode: 'timeseries',

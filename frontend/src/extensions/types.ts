@@ -44,6 +44,13 @@ export interface FrontendSlotContextMap {
     /** 刷新自选增强数据 (扩展修改数据后调用) */
     refresh: () => void
   }
+  /** 数据页扩展数据卡片的字段区下方 — 每张卡片都会渲染, 组件按 tableId 自行决定是否出现 */
+  'data.ext-card.actions': {
+    /** 扩展数据表 ID (ext_data/<id>) */
+    tableId: string
+    /** 扩展写入数据后调用, 刷新扩展数据清单与数据页状态 */
+    refresh: () => void
+  }
 }
 
 export type FrontendSlotName = keyof FrontendSlotContextMap

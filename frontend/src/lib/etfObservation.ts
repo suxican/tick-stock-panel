@@ -1,6 +1,13 @@
 export type EtfFlowWindow = 1 | 20 | 60
 export type EtfObservationScope = 'fund_total_verified' | 'listed_only' | 'unverified'
 
+/** 份额台账手动追加结果: pending 为最新发布日之后、截至今天仍待份额/净值齐备的交易日 */
+export interface EtfLedgerAppendResult {
+  added: string[]
+  latest: string | null
+  pending: string[]
+}
+
 export interface EtfFlowAmounts {
   fund_net_estimate_cny: number | null
   listed_change_value_cny: number | null

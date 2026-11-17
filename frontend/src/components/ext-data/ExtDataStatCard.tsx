@@ -10,6 +10,7 @@ import { ExtDataPullPanel } from './ExtDataPullPanel'
 import { ExtDataApiPanel } from './ExtDataApiPanel'
 import { ExtConfigExportButton } from './ExtConfigTransfer'
 import { ZzshareLimitReasonsPanel } from './ZzshareLimitReasonsPanel'
+import { ExtensionSlot } from '@/extensions/ExtensionSlot'
 
 export function ExtDataStatCard({ config, onDelete, deleting, onEdit }: {
   config: ExtDataConfig
@@ -85,6 +86,11 @@ export function ExtDataStatCard({ config, onDelete, deleting, onEdit }: {
     },
     onSettled: () => setUploading(false),
   })
+
+  const refreshAfterWrite = () => {
+    void invalidateExtDataQueries(qc)
+    void qc.invalidateQueries({ queryKey: QK.dataStatus })
+  }
 
   const doUpload = (file: File) => upload.mutate({ id: config.id, file })
 
@@ -208,6 +214,8 @@ export function ExtDataStatCard({ config, onDelete, deleting, onEdit }: {
           </button>
         </div>
       )}
+
+      <ExtensionSlot name="data.ext-card.actions" context={{ tableId: config.id, refresh: refreshAfterWrite }} compact />
 
       <div className="mt-auto px-4 pb-4 pt-2.5 border-t border-border/60 space-y-1 text-[11px]">
         <div className="flex items-baseline justify-between gap-3">

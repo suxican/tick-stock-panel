@@ -4,7 +4,7 @@
 // Prod:同源(FastAPI 托管前端 dist)
 
 import { toast } from '@/components/Toast'
-import type { EtfFlowWindow, EtfObservationDetail, EtfObservationSnapshot, EtfTurnoverSnapshot } from './etfObservation'
+import type { EtfFlowWindow, EtfLedgerAppendResult, EtfObservationDetail, EtfObservationSnapshot, EtfTurnoverSnapshot } from './etfObservation'
 export type * from './etfObservation'
 import type { NavLayout } from './navLayout'
 
@@ -3970,6 +3970,10 @@ export const api = {
     return request<EtfObservationDetail>(`/api/etf-observation/detail?${params}`, { quiet: true })
   },
   etfTurnover: () => request<EtfTurnoverSnapshot>('/api/etf-observation/turnover', { quiet: true }),
+  // 逐只抓交易所份额与监管净值, 来源慢时单次可达数分钟; 前端超时后后端仍会跑完
+  etfLedgerAppend: () => request<EtfLedgerAppendResult>('/api/etf-observation/ledger/append', {
+    method: 'POST', quiet: true, timeoutMs: 300_000,
+  }),
   huichunConfig: () => request<HuichunConfig>('/api/huichun/config', { quiet: true }),
   huichunSaveConfig: (body: { rules: HuichunRules; expected_revision: number }) => request<HuichunConfig>('/api/huichun/config', {
     method: 'PUT', body: JSON.stringify(body), quiet: true,
