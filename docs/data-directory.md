@@ -91,6 +91,7 @@ user_data / strategies / pools → 用户定义与配置 → 各业务模块
 | `ext_pages/` | `<id>/page.json` 元数据和 `bundle.js` 页面产物。 | 上传或导入写入、试载回填状态，前端启动动态加载；删除丢失页面及启用状态，需原包或备份恢复。当前目录为空。 |
 | `zzshare_home/` | `v1/<date>/close.json` 正式收盘榜、`observations.json` 本地实际观测（盘中及当日收盘），含采集时间和排行。 | 查询按需采集；扩展在连续交易时段周期采集、收盘后采集。历史 `as_of` 回看只读已收集记录；删掉盘中观测后不能用收盘榜还原。 |
 | `zzshare_radar/` | `v1/<date>/report.json` 题材强度榜及 `members/<hash>.json` 当日成分。 | 显式同步结合 ZZShare 成分和本地相邻交易日日线计算，读取接口只读；完整计算后替换榜单。重建需要同日成分、日历和行情。 |
+| `kaipanla/` | `device_id` 本机设备标识；`v1/<date>/observations.jsonl` 盘中观测（每行一份快照）、`close.json` 15:05 后定版的收盘快照、`expression.json` 晋级率等（次日补取）。 | [kaipanla_intraday.py](../backend/app/services/kaipanla_intraday.py) 在开启「开盘啦（非官方）」后由 [采集调度](../backend/app/custom/kaipanla.py) 于交易日连续竞价时段每 5 分钟采集、15:05 定版，`close.json`/`expression.json` 写入后不改写。数据来自非官方接口，仅用于连板梯队页展示，不参与计算；删除只影响历史日期回看，当日可重新采集，删除 `device_id` 会生成新设备标识。 |
 
 当前 `ext_data` 中的 `ext_gn_ths/`、`ext_hy_ths/` 分别承载概念和行业扩展数据，`etf_broad_flow_daily/` 承载 ETF 宽基资金流日序列，`zzshare_limit_reasons/` 承载涨停归因。各自字段映射与时序配置以对应定义为准，不是一套通用行情 schema。鉴权 Key 由 `user_data/secrets.json` 管理；接口地址和拉取配置也可能含敏感信息，说明中不抄录配置值。
 
