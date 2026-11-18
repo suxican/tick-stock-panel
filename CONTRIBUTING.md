@@ -206,6 +206,10 @@ The project has repository caches, enriched history caches, realtime aggregation
 
 - For all new or modified UI pages, prioritize the user's current task: emphasize key information and primary actions, minimize unnecessary or redundant content, and reduce visual clutter.
 - Avoid repeating the same meaning in headings, descriptions, badges, or summary cards. Show secondary explanations, advanced options, and diagnostic details on demand through details, expandable sections, or help entries.
+- Page style should follow the existing reference pages — Board (看板), Market Environment (市场环境), and Watchlist (自选) — reusing their layout, cards, spacing, and shared components instead of inventing a new look.
+- Pages show only key information. Non-key information, such as supplementary notes, definitions, and calculation details, is revealed on hover (tooltip) or click (popover / expandable section) and is not permanently displayed.
+- Distinguish information with the common color conventions: A-share convention, red for rising / profit / inflow and green for falling / loss / outflow; use amber/orange for warnings and risk, and gray for neutral or inactive. The same color must mean the same thing across pages, and meaning must not rely on color alone (also keep signs, text, or icons).
+- Prefer a chart when it makes comparison, trend, distribution, or proportion clearer than a table or raw numbers (e.g. trend line, bar comparison, heatmap, sparkline); reuse the project's existing chart components and color conventions.
 - Use clear visual hierarchy, grouping, and spacing to keep the page easy to scan. Preserve information needed for correct decisions, such as units, data dates, critical statuses, risk notices, and actionable errors; simplification must not make these harder to find.
 - Reuse the request wrappers and types in `frontend/src/lib/api.ts`. Components must not scatter request URLs directly.
 - Use centrally defined TanStack Query keys. Parameters that affect results — asset type, date, timeframe, etc. — must be part of the query key.
@@ -646,6 +650,10 @@ The measure of following this guide is not how much documentation is written, bu
 
 - 所有新建或修改的 UI 页面都应围绕用户当前任务，突出重点信息和主要操作，尽量减少非必要的冗余信息，降低页面的凌乱感。
 - 避免标题、说明、徽章、汇总卡片重复表达同一含义；次要说明、高级选项和诊断详情通过详情、折叠区或帮助入口按需展示。
+- 页面风格参考【看板】【市场环境】【自选】等现有页面，复用其布局、卡片、间距与共享组件，不另起一套视觉风格。
+- 页面只展示重点信息；非重点信息（补充说明、口径释义、计算细节等）通过悬停（tooltip）或点击（浮层/展开区）查看，不常驻显示。
+- 使用常用颜色规则区分信息：沿用 A 股惯例，红色表示上涨/盈利/流入，绿色表示下跌/亏损/流出；警示与风险用橙/琥珀色，中性或未激活用灰色。同一颜色在各页面含义必须一致，且不能仅靠颜色表达含义（同时保留正负号、文字或图标）。
+- 用图表比数字或表格更能清晰表达对比、趋势、分布或占比时（如趋势线、柱状对比、热力图、迷你走势图），优先使用图表，并复用项目已有图表组件与配色。
 - 使用清晰的视觉层级、分组与留白，便于用户扫读；保留正确判断所需的单位、数据日期、关键状态、风险提示和可操作的错误信息，精简后仍须易于发现。
 - 复用 `frontend/src/lib/api.ts` 中的请求封装和类型，禁止组件直接散落请求地址。
 - TanStack Query 查询键使用集中定义；资产类型、日期、周期等影响结果的参数必须进入查询键。
