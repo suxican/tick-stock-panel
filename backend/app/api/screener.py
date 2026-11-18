@@ -1258,7 +1258,8 @@ def limit_ladder(
         sealed_ready = bool(sealed_map) and depth_svc.is_sealed_ready(as_of)
         sealed_age = depth_svc.get_sealed_age(as_of) if sealed_ready else None
 
-        if sealed_map:
+        # 未就绪(盘中首轮/未定版)的 sealed 标记不可采信: 与上方头部计数同一口径, 不降级
+        if sealed_map and sealed_ready:
             # 构建 sealed 列(symbol → sealed bool, vol)
             sym_sealed = {s: v.get("sealed") for s, v in sealed_map.items()}
             sym_vol = {s: v.get("vol") for s, v in sealed_map.items()}

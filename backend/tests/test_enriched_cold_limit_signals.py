@@ -78,3 +78,22 @@ def test_lazy_enriched_keeps_ladder_counts_and_states(repo, after_extension_refr
     assert latest_day == DAY
     assert latest.filter(pl.col("symbol") == "600000.SH")["limit_up_price"][0] == pytest.approx(12.095)
 
+
+
+class UnreadyDepth:
+    """sealed 有数据但未就绪(如盘中首轮/历史未定版): 假跌停标记不可采信。"""
+
+    def get_sealed_map(self, _day, is_down=False):
+        return {"000001.SZ": {"sealed": False, "vol": 0}} if is_down else {}
+
+    def is_sealed_ready(self, _day):
+        return False
+
+
+def test_unready_sealed_does_not_demote_so_header_matches_tier(repo):
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(repo=repo, depth_service=UnreadyDepth())))
+
+    down = limit_ladder(request, as_of=DAY, direction="down", ext_columns=None)
+
+    main = [s for t in down["tiers"] for s in t["stocks"] if s["status"] == "limit_down"]
+    assert down["counts"]["down"] == len(main) == 1
