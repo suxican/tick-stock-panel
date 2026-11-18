@@ -764,6 +764,51 @@ class MeozProvider:
         return {"provider": self.name, "dataset": dataset, "rows": frame.height,
                 "columns": frame.columns, "preview": head}
 
+    # ---- 当前快照留档 (非路由数据集) ----
+    def get_archive_rows(self, dataset: str, day: date) -> list[dict]:
+        """只提供当前快照或当日数据的接口 → 扁平行 (保留猫爪原字段名与单位)。
+
+        仅供盘后留档使用: 成分、监管名单等接口不支持历史日期, 只能当天取当天存。
+        有交易日字段的接口校验归属 day, 上游尚未更新到 day 时抛 MeozError, 不存错日数据。
+        """
+        if dataset not in ARCHIVE_DATASETS:
+            raise ValueError(f"未知留档数据集: {dataset}")
+        client = self._get_client()
+        ymd = _ymd(day)
+        if dataset == "theme_catalog":
+            concepts = [{"type": "gn", **row} for row in client.query("theme_concept", {})]
+            return concepts + client.query("theme_industry", {})
+        if dataset in ("theme_members", "jx_members"):
+            api, params = (("theme_members", {}) if dataset == "theme_members"
+                           else ("thememembers_jx", {"tradedate": ymd}))
+            return [{"theme_symbol": row.get("theme_symbol"), "symbol": str(symbol)}
+                    for row in client.query(api, params) for symbol in row.get("symbols") or []]
+        if dataset == "thememinute_jx":
+            rows: list[dict] = []
+            for label in _FIVE_MINUTE_LABELS:
+                rows.extend(client.query("thememinute_jx", {"tradedate": ymd, "trademin": label}))
+            return _same_day(rows, "tradedate", ymd, dataset)
+        if dataset == "themefundflow_jx":
+            return _same_day(client.query("themefundflow_jx", {}), "tradedate", ymd, dataset)
+        if dataset == "anomaly_forecast":
+            return _same_day(client.query("anomaly_forecast", {"tradedate": ymd}), "tradedate", ymd, dataset)
+        return client.query(dataset, {})  # point_monitor / theme_hot_kp: 只有最新名单
+
+
+# 只能当天留档的接口 (2026-11-18 专业版实测: 不支持历史日期或只有当日数据)
+ARCHIVE_DATASETS = ("theme_catalog", "theme_members", "jx_members", "thememinute_jx",
+                    "themefundflow_jx", "theme_hot_kp", "point_monitor", "anomaly_forecast")
+# 板块 5 分统计的收盘桶标签: 09:30-11:30、13:05-15:00
+_FIVE_MINUTE_LABELS = tuple(
+    f"{m // 60:02d}{m % 60:02d}"
+    for m in [*range(9 * 60 + 30, 11 * 60 + 31, 5), *range(13 * 60 + 5, 15 * 60 + 1, 5)])
+
+
+def _same_day(rows: list[dict], key: str, ymd: str, dataset: str) -> list[dict]:
+    if any(str(row.get(key)) != ymd for row in rows):
+        raise MeozError(f"{dataset} 尚未更新到 {ymd}")
+    return rows
+
 
 class _Progress:
     """两阶段请求的进度回报: 总量随阶段规划增加, 结束时 cur == total。"""
