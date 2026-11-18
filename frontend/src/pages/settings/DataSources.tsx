@@ -58,6 +58,10 @@ const DATASET_LABEL: Record<string, string> = {
   financial: '财务',
   full_minute: '全量分钟',
   overseas: '海外市场',
+  ths_index: '同花顺指数',
+  price_limits: '涨跌停价',
+  st_status: '风险警示',
+  limit_events: '涨停池',
 }
 
 /** 能力图标 (纯展示; 能力清单本身由后端注册表驱动) */
