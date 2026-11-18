@@ -11,6 +11,9 @@ export const DEFAULT_ROUTING: Record<ProviderField, string> = {
   financial_data_provider: 'tickflow',
   overseas_data_provider: 'yahoo_overseas',
   ths_index_data_provider: 'fuyao',
+  price_limits_data_provider: 'meoz',
+  st_status_data_provider: 'meoz',
+  limit_events_data_provider: 'meoz',
 }
 
 /**

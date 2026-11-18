@@ -13,6 +13,9 @@ const CAPS: Pick<CapabilityRoute, 'id' | 'field'>[] = [
   { id: 'full_minute', field: 'full_minute_data_provider' },
   { id: 'overseas', field: 'overseas_data_provider' },
   { id: 'ths_index', field: 'ths_index_data_provider' },
+  { id: 'price_limits', field: 'price_limits_data_provider' },
+  { id: 'st_status', field: 'st_status_data_provider' },
+  { id: 'limit_events', field: 'limit_events_data_provider' },
 ]
 
 const ALL_FIELDS: ProviderField[] = [
@@ -25,6 +28,9 @@ const ALL_FIELDS: ProviderField[] = [
   'full_minute_data_provider',
   'overseas_data_provider',
   'ths_index_data_provider',
+  'price_limits_data_provider',
+  'st_status_data_provider',
+  'limit_events_data_provider',
 ]
 
 const DEMO = 'demo_source'
@@ -98,7 +104,10 @@ describe('buildProviderRouting', () => {
     expect(Object.keys(DEFAULT_ROUTING).sort()).toEqual([...ALL_FIELDS].sort())
     expect(DEFAULT_ROUTING.overseas_data_provider).toBe('yahoo_overseas')
     expect(DEFAULT_ROUTING.ths_index_data_provider).toBe('fuyao')
-    for (const field of ALL_FIELDS.filter(field => field !== 'overseas_data_provider' && field !== 'ths_index_data_provider')) {
+    const reference: ProviderField[] = ['price_limits_data_provider', 'st_status_data_provider', 'limit_events_data_provider']
+    for (const field of reference) expect(DEFAULT_ROUTING[field]).toBe('meoz')
+    const independent = new Set<ProviderField>(['overseas_data_provider', 'ths_index_data_provider', ...reference])
+    for (const field of ALL_FIELDS.filter(field => !independent.has(field))) {
       expect(DEFAULT_ROUTING[field]).toBe('tickflow')
     }
   })

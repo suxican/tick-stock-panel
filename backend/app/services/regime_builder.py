@@ -378,10 +378,13 @@ def _compute_batch(repo, enriched_dir, instruments, historical_shares,
     return df.filter((pl.col("date") >= batch_start) & (pl.col("date") <= batch_end))
 
 
-def _filter_excluded_symbols(df: pl.DataFrame, excluded_symbols: list[str]) -> pl.DataFrame:
-    if excluded_symbols and "symbol" in df.columns:
-        return df.filter(~pl.col("symbol").str.to_uppercase().is_in(excluded_symbols))
-    return df
+def _filter_excluded_symbols(df: pl.DataFrame, excluded_symbols: list[str] | None) -> pl.DataFrame:
+    """None = 不剔除 ST; 否则有按日名单的交易日按当日名单, 其余按当前名单 excluded_symbols。"""
+    if excluded_symbols is None:
+        return df
+    from app.services.market_reference import exclude_risk_warning
+
+    return exclude_risk_warning(df, excluded_symbols)
 
 
 def _scan_enriched_fallback(
@@ -416,7 +419,6 @@ def _scan_enriched_fallback(
         enriched_dir = repo.store.data_dir / "kline_daily_enriched"
         if not enriched_dir.exists():
             return None
-        excluded_symbols = excluded_symbols or []
         instruments = repo.get_instruments()
         historical_shares = repo.get_historical_shares()
 
@@ -492,7 +494,7 @@ def run_regime_batch(repo, start: date, end: date) -> pl.DataFrame:
         exclude_st = _prefs_st.get_sentiment_exclude_st()
     except Exception:
         exclude_st = True
-    excluded_symbols: list[str] = []
+    excluded_symbols: list[str] | None = None
     if exclude_st:
         from app.services.market_mainline import load_risk_warning_symbols
 

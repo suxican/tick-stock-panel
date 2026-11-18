@@ -28,6 +28,8 @@
   - 分钟价格: 接口无复权参数, 当日分钟由实时累计行情差分生成 → 当日行声明 raw;
     历史沉淀分钟线官方未写明口径, 不声明 minute_price_basis。
   - 单次最多 6000 行, 达到上限按截断处理 (client 抛 MeozTruncatedError)。
+  - price_limits / st_status / limit_events  交易所参考数据 (`pricelimit` 2020 起、`st` 2021 起、
+    `limit_pool` 2017 起), 按交易日整表返回, 由 services.market_reference 同步落盘。
 未声明 depth5 (盘口委托量单位未写明) 与 financial, provider_has_dataset 为 False。
 """
 
@@ -35,6 +37,7 @@ from __future__ import annotations
 
 import contextlib
 import itertools
+import json
 import logging
 import threading
 import time as time_mod
@@ -46,13 +49,15 @@ import polars as pl
 
 from app.data_providers.base import ProviderRequestError
 from app.data_providers.normalizer import normalize_daily
+from app.data_providers.schemas import LIMIT_EVENT_SCHEMA, PRICE_LIMIT_SCHEMA, ST_STATUS_SCHEMA
 from app.market_time import CN_TZ, cn_now
 from app.plugins.meoz import client as meoz_client
 from app.plugins.meoz.client import MeozAuthError, MeozClient, MeozError, MeozTruncatedError
 
 logger = logging.getLogger(__name__)
 
-_DATASETS = ("realtime", "daily", "adj_factor", "minute", "full_minute")
+_DATASETS = ("realtime", "daily", "adj_factor", "minute", "full_minute",
+             "price_limits", "st_status", "limit_events")
 
 API_KEY_ENV = "MEOZ_API_KEY"
 SECRETS_FIELD = "meoz_api_key"  # UI 配置的 Key 存 secrets.json, 优先级高于 .env
@@ -175,6 +180,30 @@ def _parse_ymd(value) -> date | None:
 
 def _six(symbol: str) -> str:
     return symbol.split(".")[0]
+
+
+_NO_LIMIT_SENTINEL = 9999.0  # pricelimit 对无涨跌幅限制日返回 99999.999
+
+
+def _to_int(value) -> int | None:
+    number = _to_float(value)
+    return int(number) if number is not None else None
+
+
+def _full_symbol(value, universe: dict[str, str]) -> str | None:
+    """6 位代码 → 带后缀。先查当前股票池, 已退市代码按 A 股代码段推断; 无法识别返回 None。"""
+    code = _six(str(value or "").strip())
+    if len(code) != 6 or not code.isdigit():
+        return None
+    if code in universe:
+        return universe[code]
+    if code.startswith(("60", "68")):
+        return f"{code}.SH"
+    if code.startswith(("00", "30")):
+        return f"{code}.SZ"
+    if code.startswith(("4", "8", "92")):
+        return f"{code}.BJ"
+    return None
 
 
 def _beijing_naive(value: datetime | None) -> datetime | None:
@@ -751,6 +780,13 @@ class MeozProvider:
                 frame = self.get_minute(syms, now - timedelta(days=3), now)
             elif dataset == "full_minute":
                 frame = self.get_intraday_batch(syms)
+            elif dataset in ("price_limits", "st_status", "limit_events"):
+                # 取上一交易日 (当日涨停池收盘后才有), 只看是否可取与字段口径
+                prior = [d for d in self._trading_days(now.date() - timedelta(days=15), now.date())
+                         if d < now.date()]
+                if not prior:
+                    raise MeozError("近期交易日历为空")
+                frame = getattr(self, f"get_{dataset}")(prior[-1])
             else:
                 return {"provider": self.name, "dataset": dataset, "rows": 0,
                         "error": f"猫爪插件未接入 {dataset} 数据集(按能力路由回退)"}
@@ -763,6 +799,62 @@ class MeozProvider:
                     row[k] = v.isoformat()
         return {"provider": self.name, "dataset": dataset, "rows": frame.height,
                 "columns": frame.columns, "preview": head}
+
+    # ---- 交易所参考数据: price_limits / st_status / limit_events ----
+    def _reference_rows(self, api: str, params: dict, day: date) -> tuple[list[dict], dict[str, str]]:
+        ymd = _ymd(day)
+        rows = self._get_client().query(api, params)
+        if not rows:
+            raise MeozError(f"{api} 在 {ymd} 无数据")
+        _same_day(rows, "tradedate", ymd, api)
+        return rows, self._universe_map()
+
+    def get_price_limits(self, day: date) -> pl.DataFrame:
+        """`pricelimit` (2020 起): 交易所生效涨跌停价; 无涨跌幅限制用 99999.999 哨兵。"""
+        rows, universe = self._reference_rows("pricelimit", {"tradedate": _ymd(day)}, day)
+        out = []
+        for row in rows:
+            symbol = _full_symbol(row.get("symbol"), universe)
+            up, down = _to_float(row.get("up_limit")), _to_float(row.get("down_limit"))
+            if symbol is None:
+                continue
+            no_limit = up is not None and up >= _NO_LIMIT_SENTINEL
+            # pre_close 历史行为前复权价, 不作基准价落盘
+            out.append({"date": day, "symbol": symbol,
+                        "limit_up": None if no_limit else up, "limit_down": None if no_limit else down,
+                        "no_limit": no_limit, "source": self.name})
+        return pl.DataFrame(out, schema=PRICE_LIMIT_SCHEMA)
+
+    def get_st_status(self, day: date) -> pl.DataFrame:
+        """`st` (2021 起): 当日风险警示名单。tradedate 参数对该接口无效, 须用起止日期。"""
+        rows, universe = self._reference_rows("st", {"startdate": _ymd(day), "enddate": _ymd(day)}, day)
+        out = [{"date": day, "symbol": symbol, "name": row.get("name"), "st_type": row.get("type"),
+                "source": self.name}
+               for row in rows if (symbol := _full_symbol(row.get("symbol"), universe)) is not None]
+        return pl.DataFrame(out, schema=ST_STATUS_SCHEMA).unique("symbol", keep="first")
+
+    def get_limit_events(self, day: date) -> pl.DataFrame:
+        """`limit_pool` (2017 起): 涨跌停与炸板明细。pct_chg 百分数 → 小数制。"""
+        rows, universe = self._reference_rows(
+            "limit_pool", {"tradedate": _ymd(day), "type": ["u", "d", "ub", "db"]}, day)
+        out = []
+        for row in rows:
+            symbol = _full_symbol(row.get("symbol"), universe)
+            if symbol is None:
+                continue
+            pct = _to_float(row.get("pct_chg"))
+            detail = row.get("limit_detail")
+            out.append({
+                "date": day, "symbol": symbol, "name": row.get("name"), "type": row.get("type"),
+                "is_break": row.get("is_break"), "limit_times": _to_int(row.get("limit_times")),
+                "pre_limit_times": _to_int(row.get("pre_limit_times")),
+                "first_time": row.get("first_time"), "last_time": row.get("last_time"),
+                "open_times": _to_int(row.get("open_times")), "fd_amount": _to_float(row.get("fd_amount")),
+                "limit_detail": json.dumps(detail, ensure_ascii=False) if detail is not None else None,
+                "close": _to_float(row.get("close")), "change_pct": pct / 100.0 if pct is not None else None,
+                "amount": _to_float(row.get("amount")), "source": self.name,
+            })
+        return pl.DataFrame(out, schema=LIMIT_EVENT_SCHEMA)
 
     # ---- 当前快照留档 (非路由数据集) ----
     def get_archive_rows(self, dataset: str, day: date) -> list[dict]:

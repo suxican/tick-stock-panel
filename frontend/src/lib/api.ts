@@ -3446,6 +3446,9 @@ export type ProviderField =
   | 'financial_data_provider'
   | 'overseas_data_provider'
   | 'ths_index_data_provider'
+  | 'price_limits_data_provider'
+  | 'st_status_data_provider'
+  | 'limit_events_data_provider'
 
 /** 能力路由矩阵中的一个候选源 (candidates 只含当前确实可提供该能力的源) */
 export interface CapabilityCandidate {
@@ -3685,6 +3688,10 @@ export interface Preferences {
   /** 海外市场快照独立路由；默认 yahoo_overseas。 */
   overseas_data_provider?: string
   ths_index_data_provider?: string
+  /** 交易所参考数据 (盘后同步落盘); 默认 meoz, 不可用时读取方回退本地推算。 */
+  price_limits_data_provider?: string
+  st_status_data_provider?: string
+  limit_events_data_provider?: string
   data_source_job_timeout_s: number
   data_source_long_job_timeout_s: number
   minute_batch_compress: boolean

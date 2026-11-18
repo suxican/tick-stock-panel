@@ -546,7 +546,7 @@ def test_intraday_batch_skips_failed_group_and_stops_on_auth(monkeypatch):
 def test_datasets_declaration_and_unsupported_test_dataset(monkeypatch):
     provider, _ = _provider(monkeypatch, lambda *a: [])
     assert set(provider.config.datasets) == {"realtime", "daily", "adj_factor", "minute",
-                                             "full_minute"}
+                                             "full_minute", "price_limits", "st_status", "limit_events"}
     assert "depth5" not in provider.config.datasets
     assert "financial" not in provider.config.datasets
     out = provider.test_dataset("depth5")
@@ -604,4 +604,5 @@ def test_loader_manifest_declares_plugin():
     manifest = loader.plugin_manifest("meoz")
     assert manifest is not None
     datasets = manifest["datasets"] if isinstance(manifest, dict) else manifest.datasets
-    assert set(datasets) == {"realtime", "daily", "adj_factor", "minute", "full_minute"}
+    assert set(datasets) == {"realtime", "daily", "adj_factor", "minute", "full_minute",
+                             "price_limits", "st_status", "limit_events"}

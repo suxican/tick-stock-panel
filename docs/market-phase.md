@@ -33,6 +33,8 @@
 - `ladder_completeness` 梯队完整度：2..height 档位中非空档位占比；height < 3 时为 `null`。
 - 高度（`max_consecutive`）与封板率（`seal_rate`）沿用 regime 已有列。
 
+涨停判定所用的涨跌停价与 ST 涨跌幅，优先采用按日落盘的交易所数据（`data/market_reference/`：涨跌停价 2020 年起、ST 名单 2021 年起），没有落盘的交易日回退本地规则推算。剔除风险警示股时，有当日 ST 名单的交易日按当日名单剔除，其余交易日沿用当前维表名单。按日数据补齐或更新后需全量重算 enriched 与 regime 才会生效。
+
 ## 阶段规则
 
 词汇与优先级：`climax 高潮 > rally 主升 > ebb 退潮 > ignite 启动 > ice 冰点 > repair 修复（兜底）`。冰点排在退潮前判定——长期死市不应被标成"自高位退潮"。

@@ -233,9 +233,10 @@ def rank_mainlines(repo, limit_rows: pl.DataFrame, kind: str = "concept",
         except Exception:
             exclude_st = True
     if exclude_st:
-        st_syms = load_risk_warning_symbols(repo.store.data_dir)
-        if st_syms:
-            limit_rows = limit_rows.filter(~pl.col("_sym_up").is_in(sorted(st_syms)))
+        from app.services.market_reference import exclude_risk_warning
+
+        # 有按日 ST 名单的交易日按当日名单, 其余按当前维表名单
+        limit_rows = exclude_risk_warning(limit_rows, load_risk_warning_symbols(repo.store.data_dir))
 
     joined = limit_rows.join(map_df, on="_sym_up", how="inner")
     if joined.is_empty():

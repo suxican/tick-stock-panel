@@ -615,6 +615,9 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
     financial: prefs.data?.financial_data_provider || 'tickflow',
     overseas: prefs.data?.overseas_data_provider || 'yahoo_overseas',
     ths_index: prefs.data?.ths_index_data_provider || 'fuyao',
+    price_limits: prefs.data?.price_limits_data_provider || 'meoz',
+    st_status: prefs.data?.st_status_data_provider || 'meoz',
+    limit_events: prefs.data?.limit_events_data_provider || 'meoz',
   }
   const servingDatasets = (name: string) =>
     Object.entries(effProvider).filter(([, v]) => v === name).map(([k]) => k)

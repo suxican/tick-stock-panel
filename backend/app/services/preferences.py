@@ -443,6 +443,30 @@ def get_ths_index_data_provider() -> str:
         pass
     return default
 
+
+def _declared_provider(field: str, dataset: str, default: str) -> str:
+    """偏好源须已注册且声明该数据集, 否则回退默认 (默认源未就绪时能力矩阵标为不可用)。"""
+    provider = str(load().get(field, default) or default).strip().lower()
+    try:
+        from app.data_providers import custom as custom_sources
+        if provider in custom_sources.names() and custom_sources.provider_has_dataset(provider, dataset):
+            return provider
+    except Exception:  # noqa: BLE001 — an optional plugin failure must not break preferences
+        pass
+    return default
+
+
+def get_price_limits_data_provider() -> str:
+    return _declared_provider("price_limits_data_provider", "price_limits", "meoz")
+
+
+def get_st_status_data_provider() -> str:
+    return _declared_provider("st_status_data_provider", "st_status", "meoz")
+
+
+def get_limit_events_data_provider() -> str:
+    return _declared_provider("limit_events_data_provider", "limit_events", "meoz")
+
 def get_pipeline_pull_a_share() -> bool:
     """是否拉取 A 股日K。默认 True。"""
     return load().get("pipeline_pull_a_share", True)

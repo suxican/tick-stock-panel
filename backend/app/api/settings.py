@@ -560,6 +560,9 @@ class DataProvidersIn(BaseModel):
     financial_data_provider: str | None = None
     overseas_data_provider: str | None = None
     ths_index_data_provider: str | None = None
+    price_limits_data_provider: str | None = None
+    st_status_data_provider: str | None = None
+    limit_events_data_provider: str | None = None
 
 
 class PluginKeyIn(BaseModel):
@@ -658,6 +661,9 @@ def get_preferences() -> dict:
         "financial_data_provider": preferences.get_financial_provider(),
         "overseas_data_provider": preferences.get_overseas_data_provider(),
         "ths_index_data_provider": preferences.get_ths_index_data_provider(),
+        "price_limits_data_provider": preferences.get_price_limits_data_provider(),
+        "st_status_data_provider": preferences.get_st_status_data_provider(),
+        "limit_events_data_provider": preferences.get_limit_events_data_provider(),
         "data_source_job_timeout_s": preferences.get_data_source_job_timeout_s(),
         "data_source_long_job_timeout_s": preferences.get_data_source_long_job_timeout_s(),
         "minute_batch_compress": preferences.get_minute_batch_compress(),
@@ -756,6 +762,9 @@ def get_capability_matrix() -> dict:
             "financial_data_provider": preferences.get_financial_provider(),
             "overseas_data_provider": preferences.get_overseas_data_provider(),
             "ths_index_data_provider": preferences.get_ths_index_data_provider(),
+            "price_limits_data_provider": preferences.get_price_limits_data_provider(),
+            "st_status_data_provider": preferences.get_st_status_data_provider(),
+            "limit_events_data_provider": preferences.get_limit_events_data_provider(),
         },
         tickflow_tier=policy.base_tier_name(),
     )
@@ -1004,6 +1013,9 @@ def update_data_providers(req: DataProvidersIn, request: Request) -> dict:
         "financial_data_provider": preferences.get_financial_provider(),
         "overseas_data_provider": preferences.get_overseas_data_provider(),
         "ths_index_data_provider": preferences.get_ths_index_data_provider(),
+        "price_limits_data_provider": preferences.get_price_limits_data_provider(),
+        "st_status_data_provider": preferences.get_st_status_data_provider(),
+        "limit_events_data_provider": preferences.get_limit_events_data_provider(),
     }
 
 

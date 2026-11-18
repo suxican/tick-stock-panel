@@ -104,6 +104,31 @@ CAPABILITY_REGISTRY: list[dict] = [
         "default": "fuyao",
         "tf_tier": None,
     },
+    # 盘后同步落盘的交易所参考数据: 生效源不可用时不同步, 读取方回退本地推算
+    {
+        "id": "price_limits",
+        "label": "涨跌停价",
+        "desc": "交易所口径的按日涨跌停价",
+        "field": "price_limits_data_provider",
+        "default": "meoz",
+        "tf_tier": None,
+    },
+    {
+        "id": "st_status",
+        "label": "风险警示",
+        "desc": "按日的 ST 名单",
+        "field": "st_status_data_provider",
+        "default": "meoz",
+        "tf_tier": None,
+    },
+    {
+        "id": "limit_events",
+        "label": "涨停池",
+        "desc": "涨跌停与炸板明细（首封、开板、封单）",
+        "field": "limit_events_data_provider",
+        "default": "meoz",
+        "tf_tier": None,
+    },
 ]
 
 _TICKFLOW_CANDIDATE = {
@@ -244,6 +269,9 @@ def _current_routing() -> dict[str, str]:
         "financial_data_provider": preferences.get_financial_provider(),
         "overseas_data_provider": preferences.get_overseas_data_provider(),
         "ths_index_data_provider": preferences.get_ths_index_data_provider(),
+        "price_limits_data_provider": preferences.get_price_limits_data_provider(),
+        "st_status_data_provider": preferences.get_st_status_data_provider(),
+        "limit_events_data_provider": preferences.get_limit_events_data_provider(),
     }
 
 

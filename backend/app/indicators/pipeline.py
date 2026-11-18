@@ -718,6 +718,54 @@ def _attach_no_limit_window(inst_subset: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+_REF_COLUMNS = ("_ref_limit_up", "_ref_limit_down", "_ref_no_limit", "_ref_is_st")
+
+
+def _attach_exchange_reference(df: pl.DataFrame, day: date | None = None) -> pl.DataFrame:
+    """关联按日落盘的交易所涨跌停价与 ST 名单 (services.market_reference, 进程显式启用时)。
+
+    产出 _ref_limit_up / _ref_limit_down / _ref_no_limit (该股该日有交易所价时非空) 与
+    _ref_is_st (该日有 ST 名单时为 True/False, 否则 null)。未启用、无落盘或读取失败时原样
+    返回, 调用方按原逻辑回退维表权威价、理论价与当前名称推断的 ST。
+    """
+    from app.services import market_reference
+
+    if df.is_empty() or "symbol" not in df.columns:
+        return df
+    added_date = "date" not in df.columns
+    if added_date:
+        if day is None:
+            return df
+        df = df.with_columns(pl.lit(day).cast(pl.Date).alias("date"))
+    if df.schema["date"] != pl.Date:
+        return df.drop("date") if added_date else df
+    start, end = df["date"].min(), df["date"].max()
+    symbols = df["symbol"].unique().to_list()
+    prices = market_reference.price_limit_reference(symbols, start, end)
+    if prices is not None and not prices.is_empty():
+        df = df.join(prices, on=["symbol", "date"], how="left")
+    st = market_reference.st_reference(symbols, start, end)
+    if st is not None:
+        st_days, pairs = st
+        df = (
+            df.join(pairs.with_columns(pl.lit(True).alias("_ref_st_hit")), on=["symbol", "date"], how="left")
+            .with_columns(
+                pl.when(pl.col("date").is_in(st_days))
+                .then(pl.col("_ref_st_hit").fill_null(False))
+                .otherwise(None)
+                .alias("_ref_is_st")
+            )
+            .drop("_ref_st_hit")
+        )
+    return df.drop("date") if added_date else df
+
+
+def _risk_warning_expr(df: pl.DataFrame) -> pl.Expr:
+    """按日 ST 名单优先, 其次当前名称推断, 都缺时视为非风险警示。"""
+    parts = [pl.col(c) for c in ("_ref_is_st", "_is_st") if c in df.columns]
+    return pl.coalesce([*parts, pl.lit(False)])
+
+
 def compute_limit_signals(
     df: pl.DataFrame,
     instruments: pl.DataFrame,
@@ -793,6 +841,8 @@ def compute_limit_signals(
         inst_subset = _attach_no_limit_window(inst_subset)
 
     df = df.join(inst_subset, on="symbol", how="left", suffix="_inst")
+    if need_price_limits:
+        df = _attach_exchange_reference(df)
 
     if "turnover_rate" in want:
         df = apply_historical_float_shares(df, historical_shares, today=cn_today())
@@ -832,7 +882,7 @@ def compute_limit_signals(
         .alias("_prev_raw_close")
     )
 
-    is_risk_warning = pl.col("_is_st") if "_is_st" in df.columns else pl.lit(False)
+    is_risk_warning = _risk_warning_expr(df)
     df = df.with_columns(
         polars_price_limit_pct(pl.col("symbol"), pl.col("date"), is_risk_warning)
         .alias("_limit_pct")
@@ -880,6 +930,12 @@ def compute_limit_signals(
         ).then(pl.col("limit_down")).otherwise(pl.col("_theoretical_limit_down"))
     else:
         effective_limit_down = pl.col("_theoretical_limit_down")
+    # 按日交易所价优先于维表权威价与理论价 (除权参考价、S 股、北交所取整均以交易所为准)
+    has_ref_price = pl.lit(False)
+    if "_ref_limit_up" in df.columns:
+        has_ref_price = pl.col("_ref_limit_up").is_not_null() & pl.col("_ref_limit_down").is_not_null()
+        effective_limit_up = pl.when(has_ref_price).then(pl.col("_ref_limit_up")).otherwise(effective_limit_up)
+        effective_limit_down = pl.when(has_ref_price).then(pl.col("_ref_limit_down")).otherwise(effective_limit_down)
     # 维表 limit_up 为哨兵值 = 当日无涨跌停限制 (注册制新股上市前 5 日), 与实时路径
     # _compute_limit_signals_today 同口径: 涨停/跌停/炸板/翘板一律不成立, 不回退理论价
     no_price_limit = pl.lit(False)
@@ -903,6 +959,9 @@ def compute_limit_signals(
             & (_day_rank <= pl.col("_no_limit_days"))
         )
         no_price_limit = no_price_limit | window_no_limit.fill_null(False)
+    if "_ref_no_limit" in df.columns:  # 交易所当日明确是否有涨跌幅限制时以其为准
+        no_price_limit = pl.when(pl.col("_ref_no_limit").is_not_null()).then(
+            pl.col("_ref_no_limit")).otherwise(no_price_limit)
     df = df.with_columns(
         no_price_limit.fill_null(False).alias("_no_price_limit")
     )
@@ -911,7 +970,7 @@ def compute_limit_signals(
         # 无涨跌幅限制日 / 昨收缺失 → null (引用它的信号条件为 null, 下游按未命中处理)。
         _prev_ok = (
             pl.col("_prev_raw_close").is_not_null() & (pl.col("_prev_raw_close") > 0)
-        )
+        ) | has_ref_price
         df = df.with_columns(
             pl.when(pl.col("_no_price_limit") | ~_prev_ok)
               .then(None)
@@ -921,7 +980,7 @@ def compute_limit_signals(
               .then(None)
               .otherwise(effective_limit_down + 0.005)
               .alias("limit_down_price"),
-        )
+        ).drop([c for c in _REF_COLUMNS if c in df.columns])
 
     # ── 连板数 (内部用判定价直接判定涨停/跌停, 不依赖信号列) ──
     if "consecutive_limit_ups" in want:
@@ -2376,6 +2435,7 @@ def _compute_limit_signals_today(df: pl.DataFrame, instruments: pl.DataFrame) ->
     inst_subset = _attach_no_limit_window(inst_subset)
 
     df = df.join(inst_subset, on="symbol", how="left", suffix="_inst")
+    df = _attach_exchange_reference(df, cn_today())
 
     # 换手率: API 有则直接用, 无则从 float_shares 计算
     if "turnover_rate" not in df.columns:
@@ -2398,7 +2458,7 @@ def _compute_limit_signals_today(df: pl.DataFrame, instruments: pl.DataFrame) ->
         prev_raw = pl.col("close_right")
     else:
         prev_raw = pl.col("raw_close")
-    is_risk_warning = pl.col("_is_st") if "_is_st" in df.columns else pl.lit(False)
+    is_risk_warning = _risk_warning_expr(df)
     trade_date = pl.col("date") if "date" in df.columns else pl.lit(cn_today())
     limit_pct = polars_price_limit_pct(
         pl.col("symbol"),
@@ -2450,6 +2510,12 @@ def _compute_limit_signals_today(df: pl.DataFrame, instruments: pl.DataFrame) ->
         ).then(pl.col("limit_down")).otherwise(limit_down_price)
     else:
         effective_limit_down = limit_down_price
+    if "_ref_limit_up" in df.columns:  # 按日交易所价优先
+        has_ref_price = pl.col("_ref_limit_up").is_not_null() & pl.col("_ref_limit_down").is_not_null()
+        effective_limit_up = pl.when(has_ref_price).then(pl.col("_ref_limit_up")).otherwise(effective_limit_up)
+        effective_limit_down = pl.when(has_ref_price).then(pl.col("_ref_limit_down")).otherwise(effective_limit_down)
+        has_authoritative_up = has_authoritative_up | has_ref_price
+        has_authoritative_down = has_authoritative_down | has_ref_price
 
     # listing_date 窗口兜底: 维表 as_of 过期/未命中时 (哨兵路径失效), 用上市日
     # + 保守日历边际近似判定无涨跌幅窗口。单日行情无历史序列, 不做序号门控;
@@ -2460,6 +2526,9 @@ def _compute_limit_signals_today(df: pl.DataFrame, instruments: pl.DataFrame) ->
             & (trade_date.cast(pl.Date, strict=False) <= pl.col("_no_limit_until"))
         )
         no_price_limit = no_price_limit | window_no_limit.fill_null(False)
+    if "_ref_no_limit" in df.columns:
+        no_price_limit = pl.when(pl.col("_ref_no_limit").is_not_null()).then(
+            pl.col("_ref_no_limit")).otherwise(no_price_limit)
 
     valid_prev_raw = prev_raw.is_not_null() & (prev_raw > 0)
     up_ok = valid_prev_raw | has_authoritative_up
@@ -2475,7 +2544,7 @@ def _compute_limit_signals_today(df: pl.DataFrame, instruments: pl.DataFrame) ->
         pl.when(no_price_limit | ~down_ok).then(None)
           .otherwise(effective_limit_down + 0.005)
           .alias("limit_down_price"),
-    ])
+    ]).drop([c for c in _REF_COLUMNS if c in df.columns])
 
     # 连板数: 同向 +1, 不同向归零 (内部用判定价直接判定, 不依赖信号列)
     # _prev_consec_up / _prev_consec_down 来自 live_agg (昨日 enriched)

@@ -234,6 +234,10 @@ def _worker_entry(task: dict[str, Any], event_queue, cancel_event) -> None:
         from app.factors.store import load_runtime_registry
 
         load_runtime_registry(data_dir)
+        # 与主进程同口径读取按日交易所涨跌停价/ST 名单 (spawn 子进程不继承进程级启用)
+        from app.services.market_reference import enable_reader
+
+        enable_reader(data_dir)
         strategy_engine = StrategyEngine(
             strategy_dirs=_strategy_dirs(data_dir),
             override_loader=lambda sid: strategy_config.load_override(data_dir, sid),
