@@ -1,0 +1,9 @@
+name: cn_overseas
+display_name: "腾讯/新浪 海外行情"
+runtime: none
+entry: app.plugins.cn_overseas.provider:CnOverseasProvider
+check: app.plugins.cn_overseas.provider:availability
+datasets: [overseas]
+description: "美股三大指数（腾讯）及日经225、韩国 KOSPI（新浪）的报价和日K，适合无法访问 Yahoo 的中国大陆服务器。不覆盖三星电子、SK 海力士等韩国个股。"
+install_hint: "使用项目已有 httpx；无需 API Key。公开接口不可用时显示缺失，不跨源替换。"
+homepage: "https://gu.qq.com/"

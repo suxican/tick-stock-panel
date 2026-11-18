@@ -82,12 +82,14 @@ hiddenimports += collect_submodules("polars")
 # hiddenimports 把 provider/client 塞进 PYZ。
 # 注: 其他内置插件如需进桌面包, 仿照 fuyao 双声明添加。
 datas += [
+    (str(ROOT / "backend" / "app" / "plugins" / "cn_overseas" / "plugin.yaml"), "app/plugins/cn_overseas"),
     (str(ROOT / "backend" / "app" / "plugins" / "fuyao" / "plugin.yaml"), "app/plugins/fuyao"),
     (str(ROOT / "backend" / "app" / "plugins" / "tdxquant" / "plugin.yaml"), "app/plugins/tdxquant"),
     (str(ROOT / "backend" / "app" / "plugins" / "yahoo_overseas" / "plugin.yaml"), "app/plugins/yahoo_overseas"),
     (str(ROOT / "backend" / "app" / "plugins" / "zzshare" / "plugin.yaml"), "app/plugins/zzshare"),
 ]
 hiddenimports += [
+    "app.plugins.cn_overseas.provider",
     "app.plugins.fuyao.provider",
     "app.plugins.fuyao.client",
     "app.plugins.tdxquant.provider",

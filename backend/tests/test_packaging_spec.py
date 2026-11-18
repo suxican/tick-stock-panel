@@ -61,6 +61,13 @@ def test_spec_declares_market_game_overseas_plugin():
     assert '"app/plugins/yahoo_overseas"' in SPEC_CODE
 
 
+def test_spec_declares_cn_overseas_plugin():
+    """The mainland-reachable overseas route must ship in desktop builds too."""
+    assert '"app.plugins.cn_overseas.provider"' in SPEC_CODE
+    assert '"plugins" / "cn_overseas" / "plugin.yaml"' in SPEC_CODE
+    assert '"app/plugins/cn_overseas"' in SPEC_CODE
+
+
 def test_spec_declares_zzshare_plugin():
     assert '"app.plugins.zzshare.provider"' in SPEC_CODE
     assert '"plugins" / "zzshare" / "plugin.yaml"' in SPEC_CODE

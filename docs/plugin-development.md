@@ -432,6 +432,28 @@ def get_overseas_quotes(self) -> dict:
 及[相邻日线前收口径](https://github.com/ranaroussi/yfinance/blob/main/yfinance/scrapers/quote.py)。
 旧版连接核验曾遇到 HTTP 429；本次迁移使用合成固定样本验证，未重新确认实盘源可用性。
 
+#### 内置 `cn_overseas`（中国大陆网络可用）
+
+部署在中国大陆、无法访问 Yahoo 的服务器，可在设置页「外围行情」改选 `cn_overseas`。
+它同样只用项目已有的 `httpx`，不需要 API Key，注册与构造不联网：
+
+| 标的 | 报价 | 日 K |
+| --- | --- | --- |
+| `^IXIC`、`^DJI`、`^GSPC` | 腾讯 `qt.gtimg.cn`（`usIXIC`/`usDJI`/`usINX`，一次批量请求） | 腾讯 `web.ifzq.gtimg.cn` `fqkline`（`us.IXIC` 等，单次最多 2000 根） |
+| `^N225`、`^KS11` | 新浪 `hq.sinajs.cn`（`znb_NKY`/`znb_KOSPI`，一次批量请求） | 新浪 `gi.finance.sina.com.cn/hq/daily`（固定返回最近约 1000 个交易日） |
+| `005930.KS`、`000660.KS` | 不提供，固定返回 `unavailable` | — |
+
+- 每次采集每个供应商各发一次请求，两个供应商并发；各 8 秒超时，不重试、不跟随跳转、不跨源替换。
+  新浪接口要求带本站 `Referer`，适配器只设置这一项，不做其他浏览器伪装。
+- 腾讯美股时间按 `America/New_York` 解析，新浪时间按北京时间解析，再按交易所当地日期归属交易日。
+- 前收直接使用数据源字段，但要求数据源自带的涨跌幅（及新浪的涨跌额）与 `price / previous_close - 1`
+  在两位小数舍入误差内一致；代码字段（腾讯 `.IXIC` 等，用来排除纳指 100）、币种或名称不符时一律标为 `unverified`。
+- 数据源给出的是最后更新时间，可能晚于收盘；更新时间不早于收盘前 60 秒、且采集时已过收盘，才标为 `closed`。
+  时段固定为美股 09:30–16:00、日韩 09:00–15:30（当地时间），不识别半日市，无法确认时为 `unknown`。
+- 日 K 会丢弃当地当天尚未收盘的 K 线；成交量为 0 或缺失时输出 `null`。
+- 韩国个股缺少国内可用源，因此大盘博弈中存储组固定显示缺失，只有纳指和 KOSPI 参与外围判断。
+- 本插件的实盘解析只在境外网络（经代理）核验过，大陆服务器的可用性仍需部署后在设置页「测试」确认。
+
 ### config.datasets 的作用
 
 `provider_has_dataset(name, dataset)` 通过 `dataset in provider.config.datasets` 判断。
