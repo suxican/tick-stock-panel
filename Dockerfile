@@ -77,9 +77,9 @@ RUN if [ "$USE_CN_MIRROR" = "1" ]; then \
 COPY README.md /README.md
 COPY backend/pyproject.toml backend/uv.lock* ./
 # uv 原生支持同时挂多个 index(主源 + 备用源),会自动在两源中查找,
-# 比逐个重试更稳健 —— 任一源缺包时另一源补位。
+# 比逐个重试更稳健 —— 任一源缺包时另一源补位。另: uv.lock 内 wheel 地址指向 files.pythonhosted.org(国内仅约 20KB/s), 国内镜像下按备用源替换为同路径镜像地址(哈希不变, 仍受校验)。
 RUN if [ "$USE_CN_MIRROR" = "1" ]; then \
-      export UV_DEFAULT_INDEX="$PYPI_INDEX" UV_EXTRA_INDEX_URL="$PYPI_FALLBACK"; \
+      export UV_DEFAULT_INDEX="$PYPI_INDEX" UV_EXTRA_INDEX_URL="$PYPI_FALLBACK"; sed -i "s|https://files.pythonhosted.org/|${PYPI_FALLBACK%/simple}/|g" uv.lock 2>/dev/null || true; \
     fi; \
     set -- --no-dev; \
     for extra in $BACKEND_EXTRAS; do \
