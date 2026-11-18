@@ -95,10 +95,59 @@ docker compose version     # 应输出 v2.x；若只有 docker-compose 命令，
 
 ```bash
 mkdir -p /www/wwwroot && cd /www/wwwroot
-git clone https://github.com/suxican/tick-stock-panel.git
+git clone -b can_new_cc2.0 https://github.com/suxican/tick-stock-panel.git
 cd tick-stock-panel
-# 如需固定版本：git checkout v0.3.35
+# 本部署默认使用 can_new_cc2.0 分支；如需固定到某个版本：git checkout v0.3.35
 ```
+
+**代码是从本机复制上去的（目录不是 git 仓库）：** 把它接入 git，之后即可 `git pull` 更新。先确认服务器能访问 GitHub（`curl -I -m 10 https://github.com`），仓库为私有时还需在服务器配置访问凭据。
+
+```bash
+git config --global --add safe.directory /www/wwwroot/tick-stock-panel   # 目录属主不是 root 时必需，否则报 dubious ownership
+cd /www/wwwroot/tick-stock-panel
+git init
+git remote add origin https://github.com/suxican/tick-stock-panel.git
+nohup git fetch --progress --depth 1 origin can_new_cc2.0 > /root/git-fetch.log 2>&1 &
+```
+
+- 用 `--depth 1` 只拉最新快照。国内服务器访问 GitHub 常时通时断、速度仅几十 KiB/s，完整历史（近两万个对象）几乎拉不完，中途断开还得重来。
+- 放后台并把日志写到项目目录之外，避免宝塔网页终端断线中断下载。用 `pgrep -a git` 看进程是否还在，`du -sk .git` 看体积是否增长；进程消失后 `tail /root/git-fetch.log` 出现 `* branch can_new_cc2.0 -> FETCH_HEAD` 即成功。若日志出现 `Failed to connect` / `RPC failed`，重新执行一遍 `git fetch` 即可。
+
+拉取完成后接入分支：
+
+```bash
+git checkout -b can_new_cc2.0
+git reset origin/can_new_cc2.0        # 不带 --hard：只对齐 git 记录，不改动工作区文件
+git branch --set-upstream-to=origin/can_new_cc2.0 can_new_cc2.0
+git remote set-branches origin can_new_cc2.0   # 只跟踪该分支，否则 git pull 会连带拉取其他分支的完整历史，慢线路上几乎拉不完
+git config core.autocrlf false
+git status --short | head             # 查看与仓库的差异
+```
+
+**怎么看 `git status` 的差异：** 从 Windows 复制来的文件是 CRLF，仓库是 LF，`git status` 会显示上千个文件被修改，大多只是换行符，并非真实改动。用忽略行尾空白的方式判断真实差异：
+
+```bash
+git diff --ignore-space-at-eol --stat | tail -20
+git diff --ignore-space-at-eol --diff-filter=M --stat | tail -5    # 只看被修改（非删除）的文件
+```
+
+- 没有新增行（只有 `deletions`）：差异只是仓库里有而服务器没复制的文件（截图、文档等），无需恢复。
+- 出现真实内容差异：先把本机对应改动 `commit` 并 `push`，再让服务器拉取，否则覆盖会丢失。
+
+确认无误后，备份代码，再**只**对齐被修改的文件（不恢复已删除的文件，也不使用 `git checkout -- .`）：
+
+```bash
+cd /www/wwwroot
+tar -czf ~/tsp-code-backup-$(date +%F).tar.gz --exclude=tick-stock-panel/data --exclude='*.rar' tick-stock-panel
+cd tick-stock-panel
+git ls-files -m | xargs -r git checkout --
+```
+
+这只统一换行符和权限位，内容不变，容器无需重建。此后 `git pull` 即可，浅克隆下它只下载新增的提交。
+
+`data/` 与 `.env` 不被 git 跟踪，以上操作不会影响它们。上传用的 `.rar` 压缩包与宝塔建站生成的 `index.html`、`404.html`、`.htaccess`、`.user.ini` 是未跟踪文件，可忽略；确认服务正常后可删除 `.rar` 释放磁盘。
+
+服务器访问不了 GitHub（或反复失败）时，可在本机用 `git archive --format=tar.gz -o tsp-update.tar.gz HEAD` 打包（只含已提交的文件，不含 `data/`、`.env`），`scp` 到服务器后在项目目录 `tar -xzf` 覆盖；该方式不会删除已在本机移除的文件。
 
 若 `git` 未安装：`dnf install -y git`。若 GitHub 访问不稳定，可在本机打包上传后解压到同一目录（不要上传 `node_modules`、`data`、`.git` 之外无关大目录）。
 
@@ -157,7 +206,7 @@ docker compose up --build -d
 ```bash
 docker compose logs -f --tail=100       # Ctrl-C 退出日志跟随，不会停止服务
 docker compose ps                        # STATUS 应为 Up
-curl -I http://127.0.0.1:3018/           # 应返回 200
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3018/   # 应返回 200（不要用 curl -I，HEAD 会返回 405）
 ```
 
 构建期间若出现 `Killed` / `exit code 137`，是内存不足：确认第 1 步 swap 已生效，必要时暂时在宝塔里停掉不用的服务（如 MySQL、Redis）后重试。
@@ -167,6 +216,37 @@ curl -I http://127.0.0.1:3018/           # 应返回 200
 ```bash
 docker compose build --build-arg USE_CN_MIRROR=0 && docker compose up -d
 ```
+
+**构建卡在 `uv sync`（Python 依赖下载）一小时以上：** 有两个原因叠加：
+
+1. 默认的清华 PyPI 源在部分服务器上只有约 0.5 MB/s，先测速选最快的源。
+2. **更关键：** `uv sync --frozen` 按 `backend/uv.lock` 里记录的地址下载 wheel，这些地址（1700 多处）指向 PyPI 官方文件服务器 `files.pythonhosted.org`，国内服务器实测仅约 20 KB/s，`--build-arg PYPI_INDEX` 等镜像参数对它们**无效**，大包（`pyarrow`、`polars`、`llvmlite`、`duckdb` 等）要下几个小时。`can_new_cc2.0` 分支自提交 `34288594` 起，Dockerfile 在 `USE_CN_MIRROR=1`（默认）时会按 `PYPI_FALLBACK` 把这些地址替换成镜像的同路径地址（`sha256` 不变，仍受校验），实测整步从数小时降到几分钟。因此**请确保服务器代码在该提交或之后**（`git log --oneline -1` 检查）。
+
+怀疑镜像上同路径文件是否可用时，可对比同一个 wheel 的下载速度（`P` 取自 `uv.lock` 中任意 wheel 地址去掉域名的部分）：
+
+```bash
+P=packages/f3/27/99c42abe8e21b44f4917f62631f3aa31404882a2c41d8a4cd5c110e13d52/pyarrow-24.0.0-cp311-cp311-manylinux_2_28_x86_64.whl
+curl -s -o /dev/null -m 20 -w "官方 %{http_code} %{speed_download} B/s\n" https://files.pythonhosted.org/$P
+curl -s -o /dev/null -m 20 -w "腾讯云 %{http_code} %{speed_download} B/s\n" https://mirrors.cloud.tencent.com/pypi/$P
+curl -s -o /dev/null -m 20 -w "阿里云 %{http_code} %{speed_download} B/s\n" https://mirrors.aliyun.com/pypi/$P
+```
+
+参考：某腾讯云服务器实测官方 19 KB/s、腾讯云 68.8 MB/s、阿里云 14.8 MB/s。依赖解析走的 PyPI 索引仍建议选最快的源，并用 `nohup` 放后台构建，避免宝塔网页终端断线中断：
+
+```bash
+for u in https://mirrors.cloud.tencent.com/pypi/simple https://pypi.tuna.tsinghua.edu.cn/simple https://mirrors.aliyun.com/pypi/simple; do echo $u; curl -o /dev/null -s -w "%{speed_download} B/s\n" -m 20 $u/numba/; done
+```
+
+```bash
+cd /www/wwwroot/tick-stock-panel
+nohup docker compose build --build-arg PYPI_INDEX=https://mirrors.cloud.tencent.com/pypi/simple --build-arg PYPI_FALLBACK=https://mirrors.aliyun.com/pypi/simple > build.log 2>&1 &
+tail -f build.log      # Ctrl-C 只退出查看，不会中断构建；出现 naming to ... done 即完成
+docker compose up -d
+```
+
+以腾讯云源为例；实测速度更快的源请自行替换。构建期间不要中断（构建里没有 uv 缓存，中断会丢失已下载内容）。
+
+升级时若 `git pull` 无新提交（`Already up to date.`），无需重新构建。若曾在服务器上手工改过 `Dockerfile`，拉取新版本前先 `git checkout Dockerfile`，否则 `git pull` 会因本地有修改而冲突。
 
 容器已设置 `restart: unless-stopped`，服务器重启后随 Docker 自动恢复；需确认 `systemctl is-enabled docker` 为 `enabled`。
 
@@ -224,9 +304,48 @@ location / {
 - 后端只在直连来源是本机/内网（Nginx 与 Docker 网关都满足）时才采信 `X-Forwarded-For`，所以必须带上该头，访问密码的“首次设置仅限本机/内网”判断才能拿到真实客户端 IP。
 - 若宝塔 Nginx 前面还有 CDN/WAF（腾讯云 EdgeOne 等），需确保 CDN 对 SSE 路径不缓存、不压缩缓冲。
 
-### 5.4 无域名的备选方案
+### 5.4 无域名：仅用 IP 的临时访问
 
-不建站，直接在宝塔 → 「Docker」或命令行里把端口改为对外监听（**会失去 HTTPS，且暴露明文密码，不推荐**）：`.env` 中设 `HOST=0.0.0.0`，安全组放行 3018，再 `docker compose up -d`，用 `http://服务器IP:3018` 访问。务必已设置 `AUTH_PASSWORD`。
+没有域名时无法申请 HTTPS，以下方案只适合临时测试，有域名后请改回 5.1–5.3。三种做法按安全性从高到低排列。
+
+**通用前提：** 公网访问（方案 2、3）前，`.env` 必须已设置 `AUTH_PASSWORD`（至少 6 位），否则会提示“首次设置密码仅允许本机或内网访问”，且谁先打开页面谁就能抢设密码。修改后执行 `docker compose up -d --force-recreate` 生效。无 HTTPS 时密码和数据为明文传输。
+
+**方案 1：SSH 隧道（最安全，不开放任何端口）**
+
+在**自己电脑**的终端执行并保持窗口不关：
+
+```bash
+ssh -L 3018:127.0.0.1:3018 root@服务器公网IP
+```
+
+浏览器打开 `http://127.0.0.1:3018`。后端会把你视为本机，首次设置密码不受限制。仅适合单人使用。
+
+**方案 2：宝塔 Nginx 用 IP + 端口代理（推荐，可多人访问）**
+
+保持 `.env` 中 `HOST=127.0.0.1`，由 Nginx 对外开放一个端口（下例用 8088，避免与宝塔面板端口冲突）：
+
+1. 宝塔 → 「网站」→「添加站点」：域名填 `服务器公网IP:8088`，选「纯静态」，不创建数据库。
+2. 云安全组与宝塔「安全」页都放行 `8088`，**不放行 3018**。
+3. 站点设置 → 「反向代理」→ 添加，目标 URL `http://127.0.0.1:3018`，再按 5.3 把 `location /` 替换为含 `proxy_buffering off` 与 `X-Forwarded-For` 的配置并保存。
+4. 服务器上验证代理链路，返回 `200` 即正常：
+
+   ```bash
+   curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8088/
+   ```
+
+5. 浏览器访问 `http://服务器公网IP:8088`。
+
+**方案 3：直接暴露 3018（最简单，不推荐）**
+
+```bash
+cd /www/wwwroot/tick-stock-panel
+sed -i 's/^HOST=.*/HOST=0.0.0.0/' .env
+docker compose up -d --force-recreate
+```
+
+安全组放行 3018，访问 `http://服务器公网IP:3018`。用完后把 `HOST` 改回 `127.0.0.1`、撤销放行并重建容器。
+
+> 验证容器时不要用 `curl -I`：它发 HEAD 请求，根路径只允许 GET，会返回 `405 Method Not Allowed`，并非故障。请用 `curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3018/`。
 
 ---
 
@@ -256,6 +375,8 @@ location / {
 
 所有用户数据（行情 K 线、自选、策略、回测、密钥）都在宿主机 `/www/wwwroot/tick-stock-panel/data`，容器重建不会丢失。**`data/user_data/secrets.json` 含 Key，备份文件不要公开分享。**
 
+`data/` 体积很大（实测约 5.5 GB，主要是 `kline_*` 行情、`research`、`integrity_backups`、`cache`，以及 `user_data` 下的 `first_board` 等运行数据），整体打包每天要占几 GB，60 GB 磁盘撑不住。每日备份只保留**丢了找不回来**的配置与密钥（`secrets.json`、`auth.json`、`preferences.json`、策略与监控配置等，通常只有几 MB），行情、缓存可重新拉取，不备份。
+
 宝塔 → 「计划任务」→ 添加「Shell 脚本」，每天凌晨备份并保留 7 份：
 
 ```bash
@@ -263,28 +384,67 @@ location / {
 SRC=/www/wwwroot/tick-stock-panel
 DST=/www/backup/tsp
 mkdir -p "$DST"
-tar -czf "$DST/tsp-data-$(date +%F).tar.gz" -C "$SRC" data .env
-find "$DST" -name 'tsp-data-*.tar.gz' -mtime +7 -delete
+tar -czf "$DST/tsp-config-$(date +%F).tar.gz" -C "$SRC" \
+  --exclude=data/user_data/first_board \
+  --exclude=data/user_data/market_game \
+  --exclude=data/user_data/position_t \
+  --exclude=data/user_data/alerts.jsonl \
+  data/user_data .env
+find "$DST" -name 'tsp-config-*.tar.gz' -mtime +7 -delete
 ```
 
-磁盘只有 60 GB，行情数据会持续增长，建议定期查看：
+排除的几个目录是运行时积累的数据，如其中有不想重新生成的记录（例如 `position_t`），去掉对应的 `--exclude` 或单独备份。首次执行后用 `ls -lh /www/backup/tsp` 确认压缩包大小合理。
+
+磁盘只有 60 GB，行情数据会持续增长，建议定期查看各目录占用与 Docker 占用：
 
 ```bash
-du -sh /www/wwwroot/tick-stock-panel/data
+du -sh /www/wwwroot/tick-stock-panel/data/* | sort -h | tail -10
 docker system df
 ```
+
+`data/cache`、`data/integrity_backups` 通常可以清理以释放空间，清理前先确认其用途，不要整体删除 `data/`。
 
 ---
 
 ## 8. 升级
 
+**请分步执行，不要把多行命令一次性粘贴进终端**：多行粘贴会被逐条排队执行，`git pull` 卡住时按 `Ctrl-C` 只会取消当前这一条，后面排队的构建、重启仍会执行，还可能因按键混入而把命令打乱。
+
+**第 1 步：备份配置（可选）并确认分支**
+
 ```bash
 cd /www/wwwroot/tick-stock-panel
-tar -czf ~/tsp-before-upgrade-$(date +%F).tar.gz data .env      # 先备份
-git pull
-docker compose up --build -d
-docker image prune -f                                           # 清理旧镜像释放磁盘
+tar -czf ~/tsp-before-upgrade-$(date +%F).tar.gz --exclude=data/user_data/first_board --exclude=data/user_data/market_game --exclude=data/user_data/position_t --exclude=data/user_data/alerts.jsonl data/user_data .env   # 只备份配置与密钥；排除的是体积大的运行数据目录（可按需调整）
+git branch                                                      # 应显示 * can_new_cc2.0
 ```
+
+**第 2 步：拉取代码**（服务器访问 GitHub 时通时断，加超时；失败或超时就隔一会儿重试，不要往下走）
+
+```bash
+timeout 600 git pull
+```
+
+输出 `Already up to date.` 表示没有新提交，无需重建；出现文件变更才继续。
+
+**第 3 步：重建并启动**（用 `&&` 串联，任何一步失败即停止）
+
+```bash
+docker compose build --build-arg PYPI_INDEX=https://mirrors.cloud.tencent.com/pypi/simple --build-arg PYPI_FALLBACK=https://mirrors.aliyun.com/pypi/simple && docker compose up -d
+```
+
+**第 4 步：确认服务正常，再清理旧镜像**
+
+```bash
+docker compose ps
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3018/     # 应返回 200
+docker image prune -f                                               # 清理无标签旧镜像释放磁盘
+```
+
+- 服务器只能拉到本机**已 commit 并 push** 的内容；本机未提交的修改不会同步。
+- 只改代码时依赖层有缓存，构建较快；改了 `backend/pyproject.toml`、`backend/uv.lock` 或 `frontend/package.json` 时依赖会重新下载，建议用 `nohup` 放后台（见第 4 节）。
+- 前端无需在服务器单独构建，Dockerfile 会重新打包前端并写入镜像；强制刷新浏览器（`Ctrl+F5`）才能看到新页面。
+- `data/` 不在 git 中，更新代码不会影响它；`.env` 中新增配置项需在服务器手动修改，并执行 `docker compose up -d --force-recreate`。
+- 需要把本机的数据带到服务器时，只拷贝确需同步的子目录，不要整体覆盖 `data/`（尤其 `data/user_data/secrets.json` 与 `auth.json`），拷贝前先 `docker compose stop`。
 
 注意：
 
@@ -321,6 +481,10 @@ docker exec -it TickFlow_Stock_Panel bash # 进入容器
 | `${HOME}/.codex` 相关挂载报错 | compose 会挂载主机的 `~/.codex`（Codex 登录态，不用 AI Codex 功能可忽略）。目录不存在时 Docker 会自动创建；若 `HOME` 为空，在 `.env` 加 `CODEX_HOME_HOST=/root/.codex` |
 | 容器内访问宿主机上的自定义数据源 | compose 已配置 `host.docker.internal`，数据源地址写 `http://host.docker.internal:端口` |
 | 磁盘占满 | `docker system prune -a`（会删未使用镜像，谨慎）；清理 `data` 中不需要的历史行情；确认 daemon.json 已限制日志大小 |
+| 容器访问外网超时（同步涨停归因、K 线拉取报 `timed out`），宿主机 `curl` 同一地址正常 | 容器出站被拦：先查 `iptables -t nat -S POSTROUTING` 是否有 Docker 网段的 `MASQUERADE` 规则；没有则 `systemctl restart docker && docker compose up -d` 让 Docker 重建规则（`firewalld` 启用时，修改或重载防火墙后也需要重启 Docker）。验证：`docker exec TickFlow_Stock_Panel /app/.venv/bin/python -c "import socket;socket.create_connection(('api.zizizaizai.com',443),timeout=8);print('tcp ok')"` |
+| 修改防火墙后 Docker 启动失败，日志含 `ZONE_CONFLICT: 'docker0' already bound to 'trusted'` | **不要**把 `docker0` 手动加进 `trusted` 区，它由 Docker 自己管理（`docker` 区）。恢复：`systemctl stop docker docker.socket`，`firewall-cmd --permanent --zone=trusted --remove-interface=docker0`，`firewall-cmd --reload`，`systemctl reset-failed docker docker.socket`，`systemctl start docker` |
+| Docker 启动失败，日志含 `networks have same bridge name` / 容器报 `network ... not found` | 网络状态库损坏。`systemctl stop docker docker.socket`，把 `/var/lib/docker/network/files/local-kv.db` 移走备份（只含网络配置，不含镜像、容器、卷），再 `systemctl start docker`，最后 `docker compose up -d` 重建网络 |
+| `docker rm -f` 报 `tried to kill container, but did not receive an exit event` | 容器残留记录。`docker update --restart=no 容器名`，`systemctl restart containerd && systemctl restart docker`，再 `docker rm -f 容器名`，最后 `docker compose up -d`；镜像与 `data/` 不受影响 |
 | 多容器/多进程扩容 | 不支持：API 必须保持单进程，且不能多个容器写同一 `data` 目录（见 [deployment.md](./deployment.md) 的“多窗口与多人共享访问”） |
 
 ---
