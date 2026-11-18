@@ -20,6 +20,7 @@ from app.data_providers import custom as custom_sources
 from app.data_providers.capabilities import resolve_capability_sources
 from app.data_providers.schemas import LIMIT_EVENT_SCHEMA, PRICE_LIMIT_SCHEMA, ST_STATUS_SCHEMA
 from app.market_time import cn_now
+from app.price_limits import polars_price_limit_pct
 from app.services.fs_utils import atomic_write_parquet
 
 logger = logging.getLogger(__name__)
@@ -276,24 +277,51 @@ def st_reference(symbols: list[str], start: date, end: date) -> tuple[list[date]
     return sorted(files), pairs
 
 
+def _inferred_risk_warning(symbols: list[str], start: date, end: date) -> pl.DataFrame | None:
+    """无 ST 名单的交易日, 由交易所涨跌停价反推风险警示: 主板类股票 (2026-07-06 前 ST 为 5%)
+    当日涨跌幅只有约 5% 即为风险警示。产出该股该日有交易所价的全部行: symbol, date, _px_st。"""
+    prices = price_limit_reference(symbols, start, end)
+    if prices is None or prices.is_empty():
+        return None
+    up, down = pl.col("_ref_limit_up"), pl.col("_ref_limit_down")
+    # 若该股该日戴帽会适用 5%, 即为主板类规则; 用同一权威规则判断板块与日期
+    legacy_st_rule = polars_price_limit_pct(pl.col("symbol"), pl.col("date"), pl.lit(True)) < 0.06
+    return prices.select(
+        pl.col("symbol").str.to_uppercase().alias("_st_sym"), "date",
+        (legacy_st_rule & ((up - down) / (up + down) < 0.075)).fill_null(False).alias("_px_st"),
+    )
+
+
 def exclude_risk_warning(df: pl.DataFrame, current_symbols) -> pl.DataFrame:
-    """剔除风险警示股: 有按日 ST 名单的交易日按当日名单, 其余交易日按当前名单 (原口径)。"""
+    """剔除风险警示股, 按可得的最权威口径逐日判断:
+    有当日 ST 名单 → 按名单; 否则有交易所涨跌停价 → 按价格反推; 都没有 → 按当前名单 (原口径)。
+    """
     current = sorted({str(s).upper() for s in current_symbols})
     if df.is_empty() or "symbol" not in df.columns:
         return df
     sym = pl.col("symbol").str.to_uppercase()
-    st = None
-    if "date" in df.columns and df.schema["date"] == pl.Date:
-        st = st_reference(df["symbol"].unique().to_list(), df["date"].min(), df["date"].max())
-    if st is None:
+    if "date" not in df.columns or df.schema["date"] != pl.Date:
         return df.filter(~sym.is_in(current)) if current else df
-    days, pairs = st
-    hits = pairs.select(pl.col("symbol").str.to_uppercase().alias("_st_sym"), "date",
-                        pl.lit(True).alias("_st_hit"))
-    return (
-        df.with_columns(sym.alias("_st_sym"))
-        .join(hits, on=["_st_sym", "date"], how="left")
-        .filter(pl.when(pl.col("date").is_in(days)).then(pl.col("_st_hit").is_null())
-                .otherwise(~pl.col("_st_sym").is_in(current)))
-        .drop("_st_sym", "_st_hit")
+    symbols, start, end = df["symbol"].unique().to_list(), df["date"].min(), df["date"].max()
+    st = st_reference(symbols, start, end)
+    inferred = _inferred_risk_warning(symbols, start, end)
+    if st is None and inferred is None:
+        return df.filter(~sym.is_in(current)) if current else df
+    out = df.with_columns(sym.alias("_st_sym"))
+    days: list[date] = []
+    if st is not None:
+        days, pairs = st
+        out = out.join(pairs.select(pl.col("symbol").str.to_uppercase().alias("_st_sym"), "date",
+                                    pl.lit(True).alias("_st_hit")), on=["_st_sym", "date"], how="left")
+    else:
+        out = out.with_columns(pl.lit(None, dtype=pl.Boolean).alias("_st_hit"))
+    if inferred is not None:
+        out = out.join(inferred, on=["_st_sym", "date"], how="left")
+    else:
+        out = out.with_columns(pl.lit(None, dtype=pl.Boolean).alias("_px_st"))
+    keep = (
+        pl.when(pl.col("date").is_in(days)).then(pl.col("_st_hit").is_null())
+        .when(pl.col("_px_st").is_not_null()).then(~pl.col("_px_st"))
+        .otherwise(~pl.col("_st_sym").is_in(current))
     )
+    return out.filter(keep).drop("_st_sym", "_st_hit", "_px_st")

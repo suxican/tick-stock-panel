@@ -114,3 +114,15 @@ def test_risk_warning_exclusion_uses_daily_list_where_available(reader):
     assert kept.rows() == [("600002.SH", D1), ("600001.SH", D2)]
     svc.enable_reader(None)
     assert svc.exclude_risk_warning(rows, current)["symbol"].unique().to_list() == ["600001.SH"]
+
+
+def test_days_without_st_list_infer_risk_warning_from_exchange_price(reader):
+    rows = pl.DataFrame({"symbol": ["600003.SH", "600004.SH", "300001.SZ", "600005.SH"], "date": [D2] * 4})
+    _write(reader, "price_limits", D2, [
+        {"symbol": "600003.SH", "limit_up": 10.50, "limit_down": 9.50, "no_limit": False},  # 5%: 当日戴帽
+        {"symbol": "600004.SH", "limit_up": 11.00, "limit_down": 9.00, "no_limit": False},  # 10%: 当日正常
+        {"symbol": "300001.SZ", "limit_up": 12.00, "limit_down": 8.00, "no_limit": False},  # 创业板 20%
+    ], PRICE_LIMIT_SCHEMA)
+    # 当前名单含 600004 (现已戴帽) 与 600005 (无交易所价, 回退当前名单)
+    kept = svc.exclude_risk_warning(rows, {"600004.SH", "600005.SH"})
+    assert sorted(kept["symbol"].to_list()) == ["300001.SZ", "600004.SH"]
