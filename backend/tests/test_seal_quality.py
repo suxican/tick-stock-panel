@@ -53,8 +53,8 @@ def data_dir(tmp_path, monkeypatch):
     sq.clear_cache()
 
 
-def _u(symbol, first="09:45:00", opens=0, fd=1e8, typ="u", name=None, amount=1e9):
-    return {"symbol": symbol, "type": typ, "first_time": first, "last_time": first, "open_times": opens,
+def _u(symbol, first="09:45:00", opens=0, fd=1e8, typ="u", name=None, amount=1e9, last=None):
+    return {"symbol": symbol, "type": typ, "first_time": first, "last_time": last or first, "open_times": opens,
             "fd_amount": fd, "name": name or f"股票{symbol}", "amount": amount}
 
 
@@ -90,6 +90,41 @@ def test_time_buckets(data_dir):
     assert row["oneword_share"] == pytest.approx(0.25)
     assert row["early_share"] == pytest.approx(0.5)
     assert row["late_share"] == pytest.approx(0.25)
+
+
+def test_null_open_times_uses_first_vs_last_seal_time(data_dir):
+    # 终审实测: 2020-2023 有 6927 行 open_times 为 null, 全部首封 != 末封; 非 null 行中
+    # 「首封 != 末封」与 open_times>0 一致率 99.8%。null 不能当成「没开过板」。
+    _enriched(data_dir, D1, {"A.SZ": 1, "B.SZ": 1, "C.SZ": 1, "D.SZ": 1})
+    _pool(data_dir, D1, [_u("A.SZ", opens=None, first="09:40:00", last="10:20:00"),   # 开过板 (次数缺失)
+                         _u("B.SZ", opens=None, first="09:40:00", last="09:40:00"),   # 未开板
+                         _u("C.SZ", opens=2),
+                         _u("D.SZ", opens=0)])
+    row = _row(sq.compute_seal_quality(data_dir, exclude_st=False), D1)
+    assert row["reopen_rate"] == pytest.approx(0.5)
+
+
+def test_day_with_pool_but_no_enriched_partition_has_no_row(data_dir):
+    # 涨停池已同步但日线未生成 (管道延后/失败): 不能输出 sealed=0、炸板率 100% 的误导行
+    _enriched(data_dir, D1, {"A.SZ": 1})
+    _pool(data_dir, D1, [_u("A.SZ")])
+    _pool(data_dir, D1 + timedelta(days=1), [_u("A.SZ")])
+    assert sq.compute_seal_quality(data_dir, exclude_st=False)["date"].to_list() == [D1]
+
+
+def test_cache_ignores_enriched_rewrite_of_day_without_pool(data_dir):
+    # 盘中 quote_service 每 ~15 秒原子重写当日 enriched; 当日涨停池 15:45 才落盘, 不应让缓存失效
+    _enriched(data_dir, D1, {"A.SZ": 1})
+    _pool(data_dir, D1, [_u("A.SZ")])
+    first = sq.load_seal_quality(data_dir)
+    today = D1 + timedelta(days=1)
+    _enriched(data_dir, today, {"A.SZ": 2})
+    assert sq.load_seal_quality(data_dir) is first
+    import os
+    import time
+    later = time.time() + 5
+    os.utime(data_dir / "kline_daily_enriched" / f"date={today.isoformat()}", (later, later))
+    assert sq.load_seal_quality(data_dir) is first
 
 
 def test_reopen_rate_null_before_2020(data_dir):

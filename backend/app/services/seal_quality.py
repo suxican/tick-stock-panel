@@ -8,11 +8,12 @@
 口径 (只看涨停一侧, ST 按情绪统计开关剔除, 按日名单优先):
 - touched = 涨停池 u/ub ∪ 收盘封住; sealed = 收盘封住; break_rate = 1 - sealed / touched
 - reopen_rate / early_share / late_share / oneword_share / fd_median 只统计「收盘封住且在涨停池
-  有记录」的股, pool_coverage 给出该覆盖率。open_times 在 2020-01-02 前为字段缺失 (全 0),
-  该区间 reopen_rate 记 null, 不记 0。
-- 某日没有涨停池分区则不出行 (不按 0 处理)。
+  有记录」的股, pool_coverage 给出该覆盖率。open_times 在 2020-01-02 前为字段缺失 (0 或 null),
+  该区间 reopen_rate 记 null, 不记 0; 此后个别行为 null (实测全部是 ST 股) 时按首封 != 末封判断。
+- 只对同时有涨停池分区和日线分区的交易日出行 (缺任一不按 0 处理)。
 
-全量计算 < 1 秒 (实测 1983 天), 不另存汇总表; 进程内缓存, 以两个目录的分区数与最新修改时间为签名。
+全量计算约 1-2.3 秒 (实测 1983 天, 含按日 ST 判定), 不另存汇总表; 进程内缓存, 签名为涨停池目录
+与参与计算的日线日期目录 (盘中当日日线反复重写不会让缓存失效)。
 不改 regime 时序与阶段规则 (规则改动须先离线验证)。
 """
 
@@ -87,6 +88,39 @@ def _pool_days(pool_dir: Path) -> list[date]:
     return sorted(days)
 
 
+def _enriched_days(enriched_dir: Path) -> set[date]:
+    days: set[date] = set()
+    for entry in os.scandir(enriched_dir) if enriched_dir.is_dir() else ():
+        if entry.name.startswith("date="):
+            try:
+                days.add(date.fromisoformat(entry.name.removeprefix("date=")))
+            except ValueError:
+                continue
+    return days
+
+
+def _days(data_dir: Path) -> list[date]:
+    """同时有涨停池分区和日线分区的交易日。
+
+    只有涨停池没有日线 (管道延后/失败) 时不出行: 否则 sealed=0 会给出 100% 炸板的误导值。
+    """
+    enriched = _enriched_days(data_dir / _ENRICHED)
+    return [d for d in _pool_days(data_dir.joinpath(*_POOL)) if d in enriched]
+
+
+def _enriched_signature(data_dir: Path, days: list[date]) -> tuple[int, int]:
+    """只看参与计算的日线日期目录: 盘中当日 enriched 每 ~15 秒原子重写, 当日涨停池落盘前
+    这些写入不影响结果, 不应让缓存失效。依赖写入方用 temp + os.replace (目录 mtime 随之更新)。"""
+    latest = 0
+    base = data_dir / _ENRICHED
+    for d in days:
+        try:
+            latest = max(latest, (base / f"date={d.isoformat()}").stat().st_mtime_ns)
+        except OSError:
+            continue
+    return len(days), latest
+
+
 def _empty() -> pl.DataFrame:
     return pl.DataFrame(schema={
         "date": pl.Date, "touched": pl.Int64, "sealed": pl.Int64, "break_rate": pl.Float64,
@@ -99,15 +133,15 @@ def compute_seal_quality(data_dir: Path, *, exclude_st: bool | None = None) -> p
     """全量计算每日封板质量, 按日期升序。"""
     data_dir = Path(data_dir)
     pool_dir = data_dir.joinpath(*_POOL)
-    days = _pool_days(pool_dir)
+    days = _days(data_dir)
     if not days:
         return _empty()
     if exclude_st is None:
         exclude_st = _exclude_st_default()
     pool = (
         pl.scan_parquet(str(pool_dir / "date=*.parquet"))
-        .filter(pl.col("type").is_in(["u", "ub"]))
-        .select("date", "symbol", "name", "first_time", "open_times", "fd_amount", "amount")
+        .filter(pl.col("type").is_in(["u", "ub"]) & pl.col("date").is_in(days))
+        .select("date", "symbol", "name", "first_time", "last_time", "open_times", "fd_amount", "amount")
         .with_columns(pl.lit(True).alias("_in_pool"))
         .collect()
     )
@@ -142,6 +176,12 @@ def compute_seal_quality(data_dir: Path, *, exclude_st: bool | None = None) -> p
 
     detail = pl.col("_sealed") & pl.col("_in_pool")
     timed = detail & pl.col("first_time").is_not_null()
+    # open_times 为 null (实测 2020-2023 有 6927 行) 时按「首封 != 末封」判断是否开过板:
+    # 非 null 行中两者一致率 99.8%; 首末封都缺失的行不进分母
+    opened = (pl.when(pl.col("open_times").is_null()).then(pl.col("first_time") != pl.col("last_time"))
+              .otherwise(pl.col("open_times") > 0))
+    known_open = detail & (pl.col("open_times").is_not_null()
+                           | (pl.col("first_time").is_not_null() & pl.col("last_time").is_not_null()))
 
     def share(cond: pl.Expr, base: pl.Expr) -> pl.Expr:
         n = base.sum()
@@ -150,7 +190,7 @@ def compute_seal_quality(data_dir: Path, *, exclude_st: bool | None = None) -> p
     daily = touched.group_by("date").agg(
         pl.len().alias("touched"),
         pl.col("_sealed").sum().cast(pl.Int64).alias("sealed"),
-        share(pl.col("open_times") > 0, detail).alias("reopen_rate"),
+        share(opened.fill_null(False), known_open).alias("reopen_rate"),
         share(pl.col("first_time") <= EARLY_CUTOFF, timed).alias("early_share"),
         share(pl.col("first_time") >= LATE_FROM, timed).alias("late_share"),
         share(pl.col("first_time") <= ONEWORD_CUTOFF, timed).alias("oneword_share"),
@@ -179,10 +219,11 @@ def compute_seal_quality(data_dir: Path, *, exclude_st: bool | None = None) -> p
 
 
 def load_seal_quality(data_dir: Path) -> pl.DataFrame:
-    """带进程内缓存的全量结果 (签名: 涨停池与日线目录的分区数 + 最新修改时间, ST 开关)。"""
+    """带进程内缓存的全量结果 (签名: 涨停池目录 + 参与计算的日线日期目录, ST 开关)。"""
     data_dir = Path(data_dir)
     exclude_st = _exclude_st_default()
-    key = (str(data_dir), exclude_st, _signature(data_dir.joinpath(*_POOL)), _signature(data_dir / _ENRICHED))
+    days = _days(data_dir)
+    key = (str(data_dir), exclude_st, _signature(data_dir.joinpath(*_POOL)), _enriched_signature(data_dir, days))
     with _lock:
         hit = _cache.get(key)
     if hit is not None:
