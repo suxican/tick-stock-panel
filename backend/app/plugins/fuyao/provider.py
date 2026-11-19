@@ -1150,12 +1150,38 @@ class FuyaoProvider:
         }
 
     def dragon_tiger(self, board_type: str = "all", date: str | None = None) -> dict:
-        """龙虎榜单榜 (复盘页卡片 + AI 复盘上下文)。返回原始 data 容器。
-
-        非路由数据集 (tickflow 无对应能力), 不进 plugin.yaml datasets,
-        由 services.dragon_tiger 统一做三榜聚合/缓存/交易日回退。
-        """
+        """龙虎榜单榜, 返回原始 data 容器。保留给既有调用方; 路由取数走 get_dragon_tiger。"""
         return self._get_client().dragon_tiger_list(board_type, date)
+
+    def get_dragon_tiger(self, day: date) -> dict | None:
+        """龙虎榜三榜 (dragon_tiger 能力契约); 该日无数据返回 None, 真失败抛 FuyaoError。
+
+        「无数据」: 总榜 0 条 (当日盘后未发布, 实测成功返回空表)、code 1002 (非交易日)、
+        code 1003 (超出一年窗口 / 未来日期)。任一榜真失败整日失败, 不返回半套。
+        thscode 归一化由服务层统一做。
+        """
+        iso = day.isoformat()
+        client = self._get_client()
+        try:
+            boards = {"all": client.dragon_tiger_list("all", iso)}
+            if not (boards["all"].get("stock_items") or []):
+                return None
+            for board in ("org", "hot_money"):
+                boards[board] = client.dragon_tiger_list(board, iso)
+        except FuyaoError as e:
+            if str(e.code) in {"1002", "1003"}:
+                return None
+            raise
+        out: dict = {"trade_date": boards["all"].get("trade_date") or iso}
+        for board, data in boards.items():
+            entry = {"trade_date": data.get("trade_date"), "count": data.get("count")}
+            if board == "hot_money":
+                entry["hot_money_items"] = data.get("hot_money_items") or []
+            else:
+                entry["stock_count"] = data.get("stock_count")
+                entry["stock_items"] = data.get("stock_items") or []
+            out[board] = entry
+        return out
 
     def anomaly_analysis(self, begin_date: str, end_date: str) -> dict:
         """日期范围异动解读 (资讯分析页的催化来源)。返回原始 data 容器。
