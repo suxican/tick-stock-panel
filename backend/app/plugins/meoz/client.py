@@ -20,6 +20,8 @@ import time
 
 import httpx
 
+from app.data_providers.errors import ProviderAuthError, ProviderQuotaError
+
 logger = logging.getLogger(__name__)
 
 LIVE_URLS = ("https://sz.meoz.cn:6688/api", "https://sh.meoz.cn:6688/api")
@@ -45,8 +47,12 @@ class MeozError(Exception):
         self.code = code
 
 
-class MeozAuthError(MeozError):
+class MeozAuthError(MeozError, ProviderAuthError):
     """Key 缺失、无效、停用, 或套餐权限/额度不足; 重试无意义。"""
+
+
+class MeozRateLimitError(MeozError, ProviderQuotaError):
+    """HTTP 429 重试耗尽 (兜底链按限频熔断)。"""
 
 
 class MeozTruncatedError(MeozError):
@@ -119,7 +125,7 @@ class MeozClient:
             if resp.status_code != 429:
                 break
             if attempt == _RATE_RETRIES:
-                raise MeozError(f"{apiname} 请求频率超限 (HTTP 429)", code=429)
+                raise MeozRateLimitError(f"{apiname} 请求频率超限 (HTTP 429)", code=429)
             try:
                 delay = float(resp.headers.get("Retry-After") or 1)
             except ValueError:
