@@ -26,6 +26,7 @@ import { toast } from '@/components/Toast'
 import { Modal } from '@/components/Modal'
 import { cn } from '@/lib/cn'
 import './Regime.css'
+import { SealQualityCard, useSealQuality } from './RegimeSealQuality'
 
 const STATE_ORDER: RegimeState[] = ['strong', 'lean_strong', 'range', 'lean_weak', 'weak']
 
@@ -207,6 +208,8 @@ export function Regime() {
   // 时间轴点击选中的交易日 (当日快照联动); null = 未选。窗口切换后失效。
   const [selDate, setSelDate] = useState<string | null>(null)
   useEffect(() => { setSelDate(null) }, [histRange.start, histRange.end, histRange.limit])
+  // 封板质量 (情绪周期新维度, 只展示): 卡片与时间轴当日快照共用同一查询
+  const sealQuality = useSealQuality(detailStart, detailEnd)
   const mainline = useQuery({
     queryKey: QK.regimeMainline(mainlineKind, detailStart, detailEnd),
     queryFn: () => api.regimeMainline(detailStart, detailEnd, 10, mainlineKind),
@@ -242,6 +245,10 @@ export function Regime() {
   const selRow = useMemo(
     () => (selDate ? rows.find(r => r.date === selDate) ?? null : null),
     [rows, selDate],
+  )
+  const selSeal = useMemo(
+    () => (selDate ? sealQuality.data?.rows.find(r => r.date === selDate) ?? null : null),
+    [sealQuality.data, selDate],
   )
   const selMainlines = useMemo(() => {
     if (!selDate) return []
@@ -868,6 +875,10 @@ export function Regime() {
                   <span className="text-muted"> = 首板{selRow.first_board ?? '—'} + 2板+{selRow.ge2_count ?? '—'}</span></span>
                 <span>晋级 <b className="text-foreground">{selRow.promo_rate != null ? (selRow.promo_rate * 100).toFixed(0) + '%' : '—'}</b></span>
                 <span>封板 <b className="text-foreground">{selRow.seal_rate != null ? (selRow.seal_rate * 100).toFixed(0) + '%' : '—'}</b></span>
+                {selSeal && <>
+                  <span>炸板 <b className="text-foreground">{selSeal.break_rate != null ? (selSeal.break_rate * 100).toFixed(0) + '%' : '—'}</b></span>
+                  <span>早盘封 <b className="text-foreground">{selSeal.early_share != null ? (selSeal.early_share * 100).toFixed(0) + '%' : '—'}</b></span>
+                </>}
               </span>
               <span className="flex flex-wrap items-center gap-1">
                 {selMainlines.length > 0 ? selMainlines.map(m => (
@@ -901,6 +912,9 @@ export function Regime() {
           </div>
         </div>
       )}
+
+      {/* ── 封板质量 (情绪周期新维度, 只展示不参与阶段判定) ── */}
+      {hasPhaseData && rows.length > 0 && <SealQualityCard start={detailStart} end={detailEnd} />}
 
       {/* ── 阶段 × 主线 (什么阶段走什么主升) ── */}
       {segments.length > 0 && (

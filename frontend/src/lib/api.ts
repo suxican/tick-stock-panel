@@ -1701,6 +1701,28 @@ export interface MarketGameModelEnvelope {
 }
 
 // ===== 龙虎榜 (fuyao 专有, 复盘页) =====
+/** 封板质量一日 (情绪周期新维度; 比率为小数, 封单额为元; 无数据为 null) */
+export interface SealQualityRow {
+  date: string
+  touched: number           // 盘中触及涨停家数 (涨停池 u/ub ∪ 收盘涨停)
+  sealed: number            // 收盘封住家数 (以日线为准)
+  break_rate: number | null
+  reopen_rate: number | null    // 2020-01-02 起
+  early_share: number | null    // 首封 <= 10:00
+  late_share: number | null     // 首封 >= 14:30
+  oneword_share: number | null  // 首封 <= 09:30
+  fd_median: number | null      // 封单额中位数 (元); 上游口径异常的日子为 null
+  pool_coverage: number | null  // 收盘封住股中有涨停池明细的占比
+}
+
+export interface SealQualityPayload {
+  rows: SealQualityRow[]
+  /** 截至区间末的最新一日 + 近一年 (250 交易日) 分位 0-100; 样本不足为 null */
+  latest: (SealQualityRow & { pct: Partial<Record<'break_rate' | 'reopen_rate' | 'early_share' | 'late_share' | 'oneword_share' | 'fd_median', number | null>> }) | null
+  first_date: string | null
+  reopen_from: string
+}
+
 export interface DragonTigerStockItem {
   /** 后端已归一 (缺失时由 ticker 推导); 旧缓存/异常数据源可能为 null, 消费方需兜底 */
   thscode: string | null
@@ -5122,6 +5144,13 @@ export const api = {
     return request<MainlineResult>(`/api/regime/mainline?${params.toString()}`)
   },
   regimeConclusion: () => request<EnvConclusion>('/api/regime/conclusion'),
+  regimeSealQuality: (start?: string, end?: string) => {
+    const params = new URLSearchParams()
+    if (start) params.set('start', start)
+    if (end) params.set('end', end)
+    const qs = params.toString()
+    return request<SealQualityPayload>(`/api/regime/seal-quality${qs ? `?${qs}` : ''}`)
+  },
   envMatrixPlan: () => request<{ plan: EnvMatrixPlan }>('/api/settings/preferences/env-matrix-plan'),
   envMatrixPlanUpdate: (plan: EnvMatrixPlan) =>
     request<{ plan: EnvMatrixPlan }>('/api/settings/preferences/env-matrix-plan', {

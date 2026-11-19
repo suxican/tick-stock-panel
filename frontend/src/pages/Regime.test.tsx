@@ -72,6 +72,7 @@ beforeEach(() => {
   vi.spyOn(api, 'regimeConclusion').mockResolvedValue(conclusion())
   vi.spyOn(api, 'envMatrixPlan').mockResolvedValue({ plan: {} })
   vi.spyOn(api, 'regimeMainline').mockResolvedValue({ rows: [], leaders: [], membership_note: '', filter: { min_members: 4, max_members: 600, blacklist: [], exclude_st: true } })
+  vi.spyOn(api, 'regimeSealQuality').mockResolvedValue({ rows: [], latest: null, first_date: null, reopen_from: '2020-01-02' })
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -184,6 +185,17 @@ it('容器尺寸变化触发图表重排, 空数据后重新挂载不引用已�
   await settle()
   expect(trendChart()).not.toBe(chart)
   expect(panel().querySelector('[aria-label="综合分 6，满分 100"]')).not.toBeNull()
+})
+
+it('情绪周期视图显示封板质量卡片', async () => {
+  const seal = { date: '2026-10-30', touched: 40, sealed: 30, break_rate: .25, reopen_rate: .4, early_share: .5,
+    late_share: .1, oneword_share: .1, fd_median: 6e7, pool_coverage: 1 }
+  vi.mocked(api.regimeSealQuality).mockResolvedValue({ rows: [seal], latest: { ...seal, pct: { break_rate: 40 } },
+    first_date: '2018-09-12', reopen_from: '2020-01-02' })
+  await render()
+  await click('情绪周期')
+  expect(api.regimeSealQuality).toHaveBeenCalledWith(rows[0].date, rows[4].date)
+  expect(host.querySelector('[data-metric="break_rate"]')?.textContent).toContain('25.0%')
 })
 
 it('旧数据缺少最新阶段时给出缺失说明, 不默认显示修复阶段', async () => {
