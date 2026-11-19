@@ -68,6 +68,8 @@ CAPABILITY_REGISTRY: list[dict] = [
         "field": "depth5_data_provider",
         "default": "tickflow",
         "tf_tier": "pro",
+        # 兜底链: 一轮结果只来自一个源, 主源整轮失败时同轮换下一个健康源 (routing_health)
+        "fallback": True,
     },
     {
         "id": "financial",
@@ -95,6 +97,8 @@ CAPABILITY_REGISTRY: list[dict] = [
         "default": "yahoo_overseas",
         # None means unsupported, distinct from the free domestic daily tier.
         "tf_tier": None,
+        # 兜底链: 单次请求结果只来自一个源
+        "fallback": True,
     },
     {
         "id": "ths_index",
@@ -130,6 +134,12 @@ CAPABILITY_REGISTRY: list[dict] = [
         "tf_tier": None,
     },
 ]
+
+# 兜底链默认顺序 (fallback=True 的能力): 偏好未配置时取其中除主源外、已声明该能力的源。
+DEFAULT_FALLBACK_ORDER: dict[str, list[str]] = {
+    "depth5": ["tdxquant", "tickflow", "meoz"],
+    "overseas": ["cn_overseas", "yahoo_overseas"],
+}
 
 _TICKFLOW_CANDIDATE = {
     "name": "tickflow",

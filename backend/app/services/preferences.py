@@ -429,6 +429,46 @@ def get_overseas_data_provider() -> str:
     return default
 
 
+# 兜底链能力 → 主源 getter (显式列出, 不拼函数名)
+_FALLBACK_PRIMARY_GETTERS = {
+    "depth5": lambda: get_depth5_data_provider(),
+    "overseas": lambda: get_overseas_data_provider(),
+}
+
+
+def get_capability_fallbacks(cap_id: str) -> list[str]:
+    """兜底顺序 (不含主源)。偏好键为 `<主源字段>_fallbacks`; 空列表 = 关闭兜底。
+
+    清洗: 去空白小写、去重、剔除主源与未声明该能力的源。字段缺失或非 list 时
+    用注册表默认顺序。只对注册表 fallback=True 的能力生效, 其它能力恒为 []。
+    """
+    from app.data_providers.capabilities import CAPABILITY_REGISTRY, DEFAULT_FALLBACK_ORDER
+
+    spec = next((c for c in CAPABILITY_REGISTRY if c["id"] == cap_id and c.get("fallback")), None)
+    primary_getter = _FALLBACK_PRIMARY_GETTERS.get(cap_id)
+    if spec is None or primary_getter is None:
+        return []
+    primary = primary_getter()
+
+    def declared(name: str) -> bool:
+        if name == "tickflow":
+            return spec["tf_tier"] is not None
+        try:
+            from app.data_providers import custom as custom_sources
+            return name in custom_sources.names() and custom_sources.provider_has_dataset(name, cap_id)
+        except Exception:  # noqa: BLE001 — an optional plugin failure must not break preferences
+            return False
+
+    stored = load().get(f"{spec['field']}_fallbacks")
+    raw = stored if isinstance(stored, list) else DEFAULT_FALLBACK_ORDER.get(cap_id, [])
+    result: list[str] = []
+    for item in raw:
+        name = str(item or "").strip().lower()
+        if name and name != primary and name not in result and declared(name):
+            result.append(name)
+    return result
+
+
 # ===== 盘后管道拉取内容开关 (A股 / ETF / 指数 独立控制) =====
 
 def get_ths_index_data_provider() -> str:

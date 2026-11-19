@@ -563,6 +563,9 @@ class DataProvidersIn(BaseModel):
     price_limits_data_provider: str | None = None
     st_status_data_provider: str | None = None
     limit_events_data_provider: str | None = None
+    # 兜底顺序 (不含主源); None = 不修改, [] = 关闭兜底
+    depth5_data_provider_fallbacks: list[str] | None = None
+    overseas_data_provider_fallbacks: list[str] | None = None
 
 
 class PluginKeyIn(BaseModel):
@@ -664,6 +667,8 @@ def get_preferences() -> dict:
         "price_limits_data_provider": preferences.get_price_limits_data_provider(),
         "st_status_data_provider": preferences.get_st_status_data_provider(),
         "limit_events_data_provider": preferences.get_limit_events_data_provider(),
+        "depth5_data_provider_fallbacks": preferences.get_capability_fallbacks("depth5"),
+        "overseas_data_provider_fallbacks": preferences.get_capability_fallbacks("overseas"),
         "data_source_job_timeout_s": preferences.get_data_source_job_timeout_s(),
         "data_source_long_job_timeout_s": preferences.get_data_source_long_job_timeout_s(),
         "minute_batch_compress": preferences.get_minute_batch_compress(),
@@ -994,10 +999,17 @@ def update_data_providers(req: DataProvidersIn, request: Request) -> dict:
     """保存数据源选择。"""
     from app.services import preferences
     updates = req.model_dump(exclude_none=True)
+    for key, value in updates.items():
+        if isinstance(value, list):
+            updates[key] = [str(v).strip().lower() for v in value if str(v).strip()]
     with preferences.mutation():
         from app.data_providers import custom as custom_sources
         removing = {p["name"] for p in custom_sources.list_plugins() if p.get("pending_remove")}
-        if any(provider.lower() in removing for provider in updates.values()):
+        referenced = [
+            name for value in updates.values()
+            for name in (value if isinstance(value, list) else [value])
+        ]
+        if any(provider.lower() in removing for provider in referenced):
             raise HTTPException(400, "该插件正在等待卸载，请选择其他数据源")
         if updates:
             preferences.save(updates)
@@ -1016,6 +1028,8 @@ def update_data_providers(req: DataProvidersIn, request: Request) -> dict:
         "price_limits_data_provider": preferences.get_price_limits_data_provider(),
         "st_status_data_provider": preferences.get_st_status_data_provider(),
         "limit_events_data_provider": preferences.get_limit_events_data_provider(),
+        "depth5_data_provider_fallbacks": preferences.get_capability_fallbacks("depth5"),
+        "overseas_data_provider_fallbacks": preferences.get_capability_fallbacks("overseas"),
     }
 
 
