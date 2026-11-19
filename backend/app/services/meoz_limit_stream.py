@@ -7,6 +7,8 @@
 - 事件写入 data/meoz_limit_events/v1/date=<日期>.jsonl (追加), 重启后当日事件从留档恢复。
 - 首次触板时间: 冲击涨停(1)、封死涨停(2)、涨停回封(3) 中最早的交易所事件时间。注意事件 2/3
   要求封单额与持续 60 秒, 晚于真实触板; 只有事件 1 才是触板时刻, 两者以 source 区分。
+- 兜底: 同一线程族内每 60 秒轮询一次涨停池 (limit_pool, 含炸板) 的首封时间 (source=pool),
+  补上连接建立前已发生、或推送漏收的触板, 重启后也能立即恢复。
 本模块只提供事实, 不参与任何交易规则判断。
 """
 from __future__ import annotations
@@ -61,12 +63,15 @@ class LimitStream:
                  is_trading_day: Callable[[datetime], bool | None] | None = None,
                  ticket: Callable[[dict], dict] | None = None,
                  connect: Callable[[str], object] | None = None,
-                 sleep: Callable[[float], bool] | None = None) -> None:
+                 sleep: Callable[[float], bool] | None = None,
+                 pool: Callable[[date], list[tuple[str, str]]] | None = None) -> None:
         self._dir = Path(data_dir).joinpath(*ROOT)
         self._enabled, self._now = enabled, now
         self._is_trading_day = is_trading_day or _default_trading_day
         self._ticket = ticket or _default_ticket
         self._connect = connect or _default_connect
+        self._pool = pool or _default_pool
+        self._pool_thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._wait = sleep or (lambda seconds: self._stop.wait(seconds))
         self._lock = threading.Lock()
@@ -75,7 +80,7 @@ class LimitStream:
         self._events: list[dict] = []
         self._touch: dict[str, Touch] = {}
         self._status = {"state": "idle", "connected_at": None, "last_message_at": None, "reconnects": 0,
-                        "seq_gaps": 0, "last_error": None}
+                        "seq_gaps": 0, "last_error": None, "pool_at": None, "pool_error": None}
 
     # ---- 事实读取 ----
     def touch_times(self, day: date | None = None) -> dict[str, Touch]:
@@ -100,11 +105,14 @@ class LimitStream:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="meoz-limit-stream", daemon=True)
         self._thread.start()
+        self._pool_thread = threading.Thread(target=self._pool_loop, name="meoz-limit-pool", daemon=True)
+        self._pool_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=5)
+        for thread in (self._thread, self._pool_thread):
+            if thread:
+                thread.join(timeout=5)
 
     def _in_window(self) -> bool:
         now = self._now()
@@ -139,6 +147,33 @@ class LimitStream:
                 if self._wait(backoff):
                     return
                 backoff = min(backoff * 2, 60.0)
+
+    def _pool_loop(self) -> None:
+        while not self._stop.is_set():
+            if self._enabled() and self._in_window():
+                self.poll_pool()
+            if self._wait(60):
+                return
+
+    def poll_pool(self) -> None:
+        """涨停池首封时间 → 触板兜底 (只补缺或取更早); 失败只记状态, 不影响推送。"""
+        now = self._now()
+        try:
+            rows = self._pool(now.date())
+        except Exception as exc:  # noqa: BLE001 -- 兜底轮询失败不得影响主流程
+            self._set(pool_error=type(exc).__name__)
+            return
+        with self._lock:
+            self._roll(now.date())
+            for symbol, first_time in rows:
+                try:
+                    at = datetime.combine(now.date(), time.fromisoformat(first_time), CN_TZ)
+                except (TypeError, ValueError):
+                    continue
+                old = self._touch.get(symbol)
+                if old is None or at < old.at:
+                    self._touch[symbol] = Touch(at, "pool")
+            self._status.update(pool_at=now.isoformat(timespec="seconds"), pool_error=None)
 
     def _session(self) -> None:
         self._set(state="connecting")
@@ -224,6 +259,14 @@ def _default_trading_day(now: datetime) -> bool | None:
     from app.services.trading_day import is_trading_day
 
     return is_trading_day(now)
+
+
+def _default_pool(day: date) -> list[tuple[str, str]]:
+    frame = custom_sources.get_provider("meoz").get_limit_events(day)
+    # 只取涨停方向 (u 涨停 / ub 涨停炸板); 跌停池的 first_time 是触及跌停的时间
+    return [(row["symbol"], row["first_time"])
+            for row in frame.filter(frame["type"].is_in(["u", "ub"])).select("symbol", "first_time").iter_rows(named=True)
+            if row["first_time"]]
 
 
 def _default_ticket(body: dict) -> dict:

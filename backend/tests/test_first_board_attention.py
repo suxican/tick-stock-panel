@@ -312,3 +312,45 @@ def test_group_with_fewer_than_five_peers_is_known_negative_not_unknown():
     result = evaluate(members=small)
     assert result["groups"][0]["strong"] is False
     assert result["strong_sector"] is False
+
+
+# ---- 交易所首封时间 ----
+
+def test_exchange_touch_replaces_late_local_observation():
+    # 首次评估已在 10:00, 本地观测会把领涨股触板记成 10:00, 晚于候选的分时窗口; 交易所时间为 09:35。
+    result = evaluate(exchange_touch={"000000.SZ": (stamp(9, 35), "touch")})
+    leader = result["groups"][0]["leader"]
+    assert result["leader_follow"] is True and result["group"] == "S1F1"
+    assert leader["observed_limit_at"] == stamp(9, 35).isoformat() and leader["limit_at_source"] == "touch"
+
+
+def test_source_labels_and_earliest_stamp_wins():
+    engine = observed_engine()  # 本地观测 09:40
+    later = evaluate(engine, exchange_touch={"000000.SZ": (stamp(9, 50), "sealed")})
+    assert later["groups"][0]["leader"]["limit_at_source"] == "observed"
+    earlier = evaluate(engine, exchange_touch={"000000.SZ": (stamp(9, 31), "pool")})
+    assert earlier["groups"][0]["leader"]["limit_at_source"] == "pool"
+    tied = evaluate(AttentionEvaluator(), now=stamp(9, 40), exchange_touch={"000000.SZ": (stamp(9, 40), "touch")})
+    assert tied["groups"][0]["leader"]["limit_at_source"] == "touch"
+
+
+def test_exchange_touch_ignores_other_days_future_times_and_unquoted_symbols():
+    result = evaluate(exchange_touch={
+        "000000.SZ": (stamp(9, 35, day=20), "touch"),      # 非当日
+        "000001.SZ": (stamp(10, 30), "touch"),             # 晚于评估时刻 (时钟偏差之外)
+        "999999.SZ": (stamp(9, 35), "touch")})             # 本轮无行情
+    leader = result["groups"][0]["leader"]
+    assert leader["observed_limit_at"] == stamp().isoformat() and leader["limit_at_source"] == "observed"
+
+
+def test_exchange_touch_gives_known_leader_that_already_opened():
+    # 领涨股已开板且本地从未观测到它封住: 有交易所时间时仍作为证据 (at_limit=False, 不再带动)
+    frame = quotes().with_columns(pl.lit(10.8).alias("raw_close"))
+    result = evaluate(frame=frame, exchange_touch={"000000.SZ": (stamp(9, 35), "touch")})
+    leader = result["groups"][0]["leader"]
+    assert leader["at_limit"] is False and leader["limit_at_source"] == "touch"
+    assert result["leader_follow"] is False
+
+
+def test_rule_version_is_v3():
+    assert mod.RULE_VERSION == "attention-v3"

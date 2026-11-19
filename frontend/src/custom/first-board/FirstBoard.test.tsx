@@ -433,6 +433,20 @@ it('filters every confirmed sector membership by source and excludes historical 
   expect(candidateNames()).toEqual([])
 })
 
+it.each([
+  ['touch', '交易所触板 09/30 09:40'], ['sealed', '交易所封死确认（晚于触板） 09/30 09:40'],
+  ['pool', '涨停池首封 09/30 09:40'], [undefined, '首次观测触板 09/30 09:40'],
+] as const)('labels the leader touch time by its source (%s)', async (source, label) => {
+  const base = attention()
+  const context = attention({ groups: [{ ...base.groups[0], leader: { ...base.groups[0].leader!, limit_at_source: source } }] })
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [candidate('A', { can_buy: false, attention_context: context })] })
+  await render()
+  await expandEvidence()
+  const cell = host.querySelector('[data-attention-cell]')!
+  await act(async () => { const detail = cell.querySelector('details')!; detail.open = true; detail.dispatchEvent(new Event('toggle')) })
+  expect(cell.textContent).toContain(label)
+})
+
 it('shows attention evidence with explicit decimal units without granting a simulated buy', async () => {
   calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [candidate('A', { can_buy: false, attention_context: attention() })] })
   await render()

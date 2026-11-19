@@ -182,3 +182,35 @@ def test_client_ws_ticket_posts_documented_body_and_returns_data(monkeypatch):
 def test_client_ws_ticket_errors(monkeypatch, response, error):
     with pytest.raises(error):
         _client(monkeypatch, lambda request: response).ws_ticket({})
+
+
+# ---- 涨停池兜底 ----
+
+def test_pool_poll_fills_missing_and_keeps_earlier_event(tmp_path):
+    stream = ls.LimitStream(tmp_path, now=lambda: NOW,
+                            pool=lambda day: [("000001.SZ", "09:50:00"), ("000002.SZ", "09:31:07"), ("000003.SZ", "bad"), ("000004.SZ", None)])
+    stream._ingest([{"symbol": "000001.SZ", "name": "x", "time": _ms(9, 38, 10), "event": 1}], NOW)
+    stream.poll_pool()
+    touch = stream.touch_times()
+    assert (touch["000001.SZ"].at.strftime("%H:%M:%S"), touch["000001.SZ"].source) == ("09:38:10", "touch")
+    assert (touch["000002.SZ"].at.strftime("%H:%M:%S"), touch["000002.SZ"].source) == ("09:31:07", "pool")
+    assert set(touch) == {"000001.SZ", "000002.SZ"} and stream.status()["pool_error"] is None
+
+
+def test_pool_earlier_than_sealed_event_wins_and_failures_are_contained(tmp_path):
+    stream = ls.LimitStream(tmp_path, now=lambda: NOW, pool=lambda day: [("000001.SZ", "09:35:00")])
+    stream._ingest([{"symbol": "000001.SZ", "name": "x", "time": _ms(9, 40, 0), "event": 2}], NOW)
+    stream.poll_pool()
+    assert stream.touch_times()["000001.SZ"].source == "pool"
+    stream._pool = lambda day: (_ for _ in ()).throw(RuntimeError("503"))
+    stream.poll_pool()
+    assert stream.status()["pool_error"] == "RuntimeError" and "000001.SZ" in stream.touch_times()
+
+
+def test_default_pool_ignores_limit_down_rows(monkeypatch):
+    import polars as pl
+
+    frame = pl.DataFrame({"symbol": ["a", "b", "c"], "type": ["u", "d", "ub"], "first_time": ["09:31:00", "09:32:00", "09:33:00"]})
+    provider = type("P", (), {"get_limit_events": lambda self, day: frame})()
+    monkeypatch.setattr(ls.custom_sources, "get_provider", lambda name: provider)
+    assert ls._default_pool(NOW.date()) == [("a", "09:31:00"), ("c", "09:33:00")]

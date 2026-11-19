@@ -13,6 +13,14 @@ const colors = {
   both: positiveBadgeClass,
 }
 const leaderStatus = (atLimit: boolean | null) => atLimit == null ? '触板状态待确认' : atLimit ? '触板' : '已开板'
+// 触板时间来源: 交易所事件/涨停池为交易所时点; 封死、回封事件晚于真实触板; observed 仅为本地首次看到的时间
+const LIMIT_AT_LABEL = {
+  touch: '交易所触板',
+  sealed: '交易所封死确认（晚于触板）',
+  resealed: '交易所回封确认（晚于触板）',
+  pool: '涨停池首封',
+  observed: '首次观测触板',
+} as const
 
 export function hasCurrentAttention(context: FirstBoardAttention | undefined, snapshotCurrent = true): context is FirstBoardAttention {
   return snapshotCurrent && context?.schema_version === 1 && (context.status === 'ready' || context.status === 'partial')
@@ -95,7 +103,7 @@ export function AttentionCell({ context, snapshotCurrent }: { context?: FirstBoa
             {group.market_mean_change_pct != null && <p>同来源分类均值 {pct(group.market_mean_change_pct)}</p>}
           </>}
           <p>{group.reason}</p>
-          {group.leader && <p>领涨股 {group.leader.name || group.leader.symbol}（{group.leader.symbol}）· {leaderStatus(group.leader.at_limit)}<br />首次观测触板 {stamp(group.leader.observed_limit_at)}</p>}
+          {group.leader && <p>领涨股 {group.leader.name || group.leader.symbol}（{group.leader.symbol}）· {leaderStatus(group.leader.at_limit)}<br />{LIMIT_AT_LABEL[group.leader.limit_at_source ?? 'observed']} {stamp(group.leader.observed_limit_at)}</p>}
           <p>来源 {group.source_id} · 分类 {group.field}</p>
         </div>)}
         <div className="space-y-1">

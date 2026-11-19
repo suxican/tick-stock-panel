@@ -16,7 +16,7 @@ import polars as pl
 from app.market_time import CN_TZ
 from app.strategy.intraday_features import build_feature_frame
 
-RULE_VERSION = "attention-v2"
+RULE_VERSION = "attention-v3"
 _MINUTE_COLUMNS = {"symbol", "datetime", "open", "high", "low", "close", "volume", "amount"}
 
 
@@ -279,13 +279,16 @@ def _peer_strength(groups: list[dict], ranked: dict, change: float | None) -> di
 
 
 class AttentionEvaluator:
-    """Single-worker evaluator. Its in-memory timestamps mean first *observed*
-    touch, never first exchange touch or proof of an executable sealed order.
-    The caller serializes evaluate; restarting intentionally loses observations.
+    """Single-worker evaluator. A stamp is the earliest known limit time: the
+    caller-supplied exchange time when available (``limit_at_source`` says which
+    kind), otherwise the first *observed* touch. Neither proves an executable
+    sealed order. The caller serializes evaluate; restarting loses local
+    observations, while exchange times are re-supplied on every call.
     """
 
     def __init__(self) -> None:
         self._observed: dict[str, datetime] = {}
+        self._observed_source: dict[str, str] = {}
         # Only uninterrupted, observed strong peer-groups need a pair of stamps.
         self._strong_runs: dict[tuple[str, str], tuple[datetime, datetime | None]] = {}
         self._last_now: datetime | None = None
@@ -296,11 +299,14 @@ class AttentionEvaluator:
 
     def evaluate(self, current: pl.DataFrame, groups: list[dict], candidate_symbols: list[str],
                  minute_df: pl.DataFrame, *, now: datetime, membership_version: str | None,
-                 minute_reason: str | None = None, minute_basis_raw: bool = False) -> dict[str, dict]:
+                 minute_reason: str | None = None, minute_basis_raw: bool = False,
+                 exchange_touch: dict[str, tuple[datetime, str]] | None = None) -> dict[str, dict]:
         """Fresh quotes are enriched (raw_close, limit_up_price, fraction change_pct).
 
         Groups contain resolved full symbols and stable source/field identities.
         Minute basis is explicit and defaults to unknown for legacy partitions.
+        exchange_touch maps full symbol -> (exchange time, source) for today's limit-up
+        touches; times later than ``now`` (clock skew) are ignored.
         The caller must not mutate minute_df in place. A stable frame identity
         denotes an unchanged batch and avoids repeated per-stock minute work.
         """
@@ -309,6 +315,7 @@ class AttentionEvaluator:
         if (self._last_now is None or now.date() != self._last_now.date() or now < self._last_now
                 or membership_version != self._membership_version):
             self._observed.clear()
+            self._observed_source.clear()
             self._strong_runs.clear()
         if previous_now is None or now - previous_now > timedelta(minutes=10) or (now.hour >= 13) != (previous_now.hour >= 13):
             self._strong_runs.clear()
@@ -319,8 +326,16 @@ class AttentionEvaluator:
         lookup = {row["symbol"]: row for row in quotes.to_dicts()}
         limits = {symbol: _at_limit(row) for symbol, row in lookup.items()}
         for symbol, at_limit in limits.items():
-            if at_limit:
-                self._observed.setdefault(symbol, now)
+            if at_limit and symbol not in self._observed:
+                self._observed[symbol], self._observed_source[symbol] = now, "observed"
+        for symbol, (at, source) in (exchange_touch or {}).items():
+            if symbol not in lookup or at.date() != now.date() or at > now + timedelta(seconds=60):
+                continue
+            at = at.astimezone(CN_TZ)
+            current = self._observed.get(symbol)
+            # 取最早时刻; 同一时刻保留触板类来源
+            if current is None or at < current or (at == current and source == "touch"):
+                self._observed[symbol], self._observed_source[symbol] = at, source
         symbols = set(candidate_symbols)
         minute_key = (now.replace(second=0, microsecond=0), tuple(sorted(symbols)),
                       minute_basis_raw, minute_reason)
@@ -378,7 +393,8 @@ class AttentionEvaluator:
                 if chosen:
                     at, leader = chosen[0]
                     item["leader"] = {"symbol": leader, "name": lookup[leader].get("name") or leader,
-                                      "observed_limit_at": at.isoformat(), "at_limit": limits[leader]}
+                                      "observed_limit_at": at.isoformat(), "at_limit": limits[leader],
+                                      "limit_at_source": self._observed_source.get(leader, "observed")}
                 if limits.get(symbol) is True or minute["_rising"] is False:
                     follow = False
                 elif limits.get(symbol) is None:

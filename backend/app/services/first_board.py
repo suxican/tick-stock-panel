@@ -718,6 +718,17 @@ class FirstBoardService:
                 "version": p["version"], "source": "event",
             }
 
+    def _exchange_touch(self) -> dict[str, tuple[datetime, str]]:
+        """交易所/涨停池给出的今日首次触板时间; 未启用或失败时为空, 回退本地观测。"""
+        try:
+            from app.services.meoz_limit_stream import get_stream
+
+            return {symbol: (touch.at, touch.source)
+                    for symbol, touch in get_stream(self.repo.store.data_dir).touch_times().items()}
+        except Exception:  # noqa: BLE001 - 可选证据来源不得阻断原有评估
+            logger.warning("交易所触板时间读取失败, 回退本地观测", exc_info=True)
+            return {}
+
     def _attention(self, rows: list[dict], fresh: pl.DataFrame, now: datetime, live: bool) -> dict:
         symbols = sorted({row["symbol"] for row in rows})
         self._attention_input = {"minute_price_basis": "unknown", "minute_reason": "分钟输入尚未确认"}
@@ -731,6 +742,7 @@ class FirstBoardService:
                 fresh if live else fresh.head(0), self._attention_data.groups, symbols, minute,
                 now=now, membership_version=self._attention_data.version,
                 minute_basis_raw=raw, minute_reason=reason,
+                exchange_touch=self._exchange_touch() if live else None,
             )
             if self._attention_data.reason:
                 for context in contexts.values():

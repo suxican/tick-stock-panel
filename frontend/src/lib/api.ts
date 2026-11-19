@@ -7203,7 +7203,8 @@ export interface FirstBoardAttentionGroup {
   peer_market_mean_change_pct?: number | null
   follow: boolean | null
   reason: string
-  leader: { symbol: string; name: string; observed_limit_at: string; at_limit: boolean | null } | null
+  /** limit_at_source (attention-v3 起): touch 交易所冲击涨停 / sealed、resealed 封死或回封确认 / pool 涨停池首封 / observed 本地观测; 旧样本缺失按 observed。 */
+  leader: { symbol: string; name: string; observed_limit_at: string; at_limit: boolean | null; limit_at_source?: 'touch' | 'sealed' | 'resealed' | 'pool' | 'observed' } | null
 }
 export interface FirstBoardAttention {
   schema_version: 1
