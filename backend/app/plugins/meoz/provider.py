@@ -43,6 +43,7 @@ import contextlib
 import itertools
 import json
 import logging
+import re
 import threading
 import time as time_mod
 from collections.abc import Callable, Iterator
@@ -203,9 +204,15 @@ _SEAT_NOISE = ("股份有限公司", "有限责任公司", "有限公司", "证�
 HOT_MONEY_BASIS = "meoz_seat_match"
 
 
+_LHB_RANGE_RE = re.compile(r"连续(三|\d+)个交易日")
+
+
 def _lhb_range_days(reason: object) -> int:
-    """上榜原因 → 统计天数: 「连续三个交易日…」为 3 日榜, 其余为当日榜。"""
-    return 3 if "连续三个交易日" in str(reason or "") else 1
+    """上榜原因 → 统计天数: 「连续三个交易日…」为 3, 「连续30个交易日…」为 30, 其余为当日榜 1。"""
+    m = _LHB_RANGE_RE.search(str(reason or ""))
+    if m is None:
+        return 1
+    return 3 if m.group(1) == "三" else int(m.group(1))
 
 
 def _seat_key(name: object) -> str:

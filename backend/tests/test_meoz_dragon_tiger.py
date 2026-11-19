@@ -101,6 +101,14 @@ def test_three_day_reason_becomes_range_days_3(make):
     assert {(i["range_days"], i["net_value"]) for i in board["stock_items"]} == {(1, -88290941.65), (3, 31669791.35)}
 
 
+def test_thirty_day_reason_becomes_range_days_30(make):
+    # 实测 11-18 奥精医疗: fuyao range_days=30
+    stock = [_stock("688613", "奥精医疗",
+                    reason="有价格涨跌幅限制的连续30个交易日内收盘价格跌幅偏离值累计达到-70%的证券")]
+    provider, _ = make(stock, [])
+    assert provider.get_dragon_tiger(DAY)["all"]["stock_items"][0]["range_days"] == 30
+
+
 def test_stock_counts(make):
     stock = [_stock("002148", "a", reason=R1), _stock("002148", "a", reason=R3), _stock("600715", "b")]
     provider, _ = make(stock, [])
