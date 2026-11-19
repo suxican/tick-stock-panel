@@ -3467,9 +3467,13 @@ export type ProviderField =
   | 'price_limits_data_provider'
   | 'st_status_data_provider'
   | 'limit_events_data_provider'
+  | 'dragon_tiger_data_provider'
 
 /** 兜底链能力的兜底顺序偏好 (`<主源字段>_fallbacks`, 不含主源; [] = 关闭兜底) */
-export type FallbackField = 'depth5_data_provider_fallbacks' | 'overseas_data_provider_fallbacks'
+export type FallbackField =
+  | 'depth5_data_provider_fallbacks'
+  | 'overseas_data_provider_fallbacks'
+  | 'dragon_tiger_data_provider_fallbacks'
 
 /** 兜底链上一个源的健康状态 (熔断 open 时 until 为恢复时间, 认证失败为 null 直到重试) */
 export interface CapabilityChainEntry {
@@ -3728,6 +3732,7 @@ export interface Preferences {
   price_limits_data_provider?: string
   st_status_data_provider?: string
   limit_events_data_provider?: string
+  dragon_tiger_data_provider?: string
   data_source_job_timeout_s: number
   data_source_long_job_timeout_s: number
   minute_batch_compress: boolean

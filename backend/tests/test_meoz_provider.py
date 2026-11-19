@@ -621,7 +621,7 @@ def test_loader_manifest_declares_plugin():
     assert manifest is not None
     datasets = manifest["datasets"] if isinstance(manifest, dict) else manifest.datasets
     assert set(datasets) == {"realtime", "depth5", "daily", "adj_factor", "minute", "full_minute",
-                             "price_limits", "st_status", "limit_events"}
+                             "price_limits", "st_status", "limit_events", "dragon_tiger"}
 
 
 # ---- depth5: 猫头鹰 tick 五档 ----

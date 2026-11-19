@@ -26,6 +26,7 @@ DEFAULT_CURRENT = {
     "price_limits_data_provider": "meoz",
     "st_status_data_provider": "meoz",
     "limit_events_data_provider": "meoz",
+    "dragon_tiger_data_provider": "fuyao",
 }
 
 
@@ -50,13 +51,13 @@ def test_registry_covers_all_routing_fields():
     assert len(set(routable)) == len(routable)
     assert {c["id"] for c in CAPABILITY_REGISTRY} == {
         "realtime", "daily", "minute", "full_minute", "depth5", "adj_factor", "financial", "overseas", "ths_index",
-        "price_limits", "st_status", "limit_events",
+        "price_limits", "st_status", "limit_events", "dragon_tiger",
     }
     full_minute = next(c for c in CAPABILITY_REGISTRY if c["id"] == "full_minute")
     assert full_minute["field"] == "full_minute_data_provider"
     assert full_minute["tf_tier"] == "expert"
     for cap in CAPABILITY_REGISTRY:
-        if cap["id"] == "ths_index":
+        if cap["id"] in ("ths_index", "dragon_tiger"):
             assert cap["default"] == "fuyao"
             assert cap["tf_tier"] is None
             continue
@@ -78,9 +79,9 @@ def test_matrix_without_third_party_sources(monkeypatch):
     _fake_sources(monkeypatch, [])
     matrix = build_capability_matrix(dict(DEFAULT_CURRENT), tickflow_tier="expert")
     assert matrix["tickflow_tier"] == "expert"
-    assert len(matrix["capabilities"]) == 12
+    assert len(matrix["capabilities"]) == 13
     for cap in matrix["capabilities"]:
-        if cap["id"] in {"overseas", "ths_index", *REFERENCE_CAPS}:
+        if cap["id"] in {"overseas", "ths_index", "dragon_tiger", *REFERENCE_CAPS}:
             assert cap["candidates"] == []
             assert cap["tf_available"] is False
             assert cap["usable"] is False
@@ -321,6 +322,7 @@ def test_api_endpoint_injects_all_routing_preferences(monkeypatch):
         "price_limits_data_provider": "pl-src",
         "st_status_data_provider": "st-src",
         "limit_events_data_provider": "le-src",
+        "dragon_tiger_data_provider": "dt-src",
     }
     getter_names = {
         "realtime_data_provider": "get_realtime_data_provider",
@@ -335,6 +337,7 @@ def test_api_endpoint_injects_all_routing_preferences(monkeypatch):
         "price_limits_data_provider": "get_price_limits_data_provider",
         "st_status_data_provider": "get_st_status_data_provider",
         "limit_events_data_provider": "get_limit_events_data_provider",
+        "dragon_tiger_data_provider": "get_dragon_tiger_data_provider",
     }
     for field, getter in getter_names.items():
         monkeypatch.setattr(preferences, getter, lambda f=field: getter_values[f])

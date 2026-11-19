@@ -429,10 +429,24 @@ def get_overseas_data_provider() -> str:
     return default
 
 
+def get_dragon_tiger_data_provider() -> str:
+    """龙虎榜主源: 须为已注册且声明 dragon_tiger 的插件, 否则回退 fuyao。"""
+    default = "fuyao"
+    provider = str(load().get("dragon_tiger_data_provider", default) or default).strip().lower()
+    try:
+        from app.data_providers import custom as custom_sources
+        if provider in custom_sources.names() and custom_sources.provider_has_dataset(provider, "dragon_tiger"):
+            return provider
+    except Exception:  # noqa: BLE001 — an optional plugin failure must not break preferences
+        pass
+    return default
+
+
 # 兜底链能力 → 主源 getter (显式列出, 不拼函数名)
 _FALLBACK_PRIMARY_GETTERS = {
     "depth5": lambda: get_depth5_data_provider(),
     "overseas": lambda: get_overseas_data_provider(),
+    "dragon_tiger": lambda: get_dragon_tiger_data_provider(),
 }
 
 

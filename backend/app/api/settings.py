@@ -563,9 +563,11 @@ class DataProvidersIn(BaseModel):
     price_limits_data_provider: str | None = None
     st_status_data_provider: str | None = None
     limit_events_data_provider: str | None = None
+    dragon_tiger_data_provider: str | None = None
     # 兜底顺序 (不含主源); None = 不修改, [] = 关闭兜底
     depth5_data_provider_fallbacks: list[str] | None = None
     overseas_data_provider_fallbacks: list[str] | None = None
+    dragon_tiger_data_provider_fallbacks: list[str] | None = None
 
 
 class PluginKeyIn(BaseModel):
@@ -667,8 +669,10 @@ def get_preferences() -> dict:
         "price_limits_data_provider": preferences.get_price_limits_data_provider(),
         "st_status_data_provider": preferences.get_st_status_data_provider(),
         "limit_events_data_provider": preferences.get_limit_events_data_provider(),
+        "dragon_tiger_data_provider": preferences.get_dragon_tiger_data_provider(),
         "depth5_data_provider_fallbacks": preferences.get_capability_fallbacks("depth5"),
         "overseas_data_provider_fallbacks": preferences.get_capability_fallbacks("overseas"),
+        "dragon_tiger_data_provider_fallbacks": preferences.get_capability_fallbacks("dragon_tiger"),
         "data_source_job_timeout_s": preferences.get_data_source_job_timeout_s(),
         "data_source_long_job_timeout_s": preferences.get_data_source_long_job_timeout_s(),
         "minute_batch_compress": preferences.get_minute_batch_compress(),
@@ -770,11 +774,13 @@ def get_capability_matrix() -> dict:
             "price_limits_data_provider": preferences.get_price_limits_data_provider(),
             "st_status_data_provider": preferences.get_st_status_data_provider(),
             "limit_events_data_provider": preferences.get_limit_events_data_provider(),
+            "dragon_tiger_data_provider": preferences.get_dragon_tiger_data_provider(),
         },
         tickflow_tier=policy.base_tier_name(),
         fallbacks={
             "depth5": preferences.get_capability_fallbacks("depth5"),
             "overseas": preferences.get_capability_fallbacks("overseas"),
+            "dragon_tiger": preferences.get_capability_fallbacks("dragon_tiger"),
         },
     )
 
@@ -1053,8 +1059,10 @@ def update_data_providers(req: DataProvidersIn, request: Request) -> dict:
         "price_limits_data_provider": preferences.get_price_limits_data_provider(),
         "st_status_data_provider": preferences.get_st_status_data_provider(),
         "limit_events_data_provider": preferences.get_limit_events_data_provider(),
+        "dragon_tiger_data_provider": preferences.get_dragon_tiger_data_provider(),
         "depth5_data_provider_fallbacks": preferences.get_capability_fallbacks("depth5"),
         "overseas_data_provider_fallbacks": preferences.get_capability_fallbacks("overseas"),
+        "dragon_tiger_data_provider_fallbacks": preferences.get_capability_fallbacks("dragon_tiger"),
     }
 
 

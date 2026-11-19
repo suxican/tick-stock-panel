@@ -27,6 +27,7 @@ import {
   Scale,
   Timer,
   Trash2,
+  Trophy,
   Zap,
 } from 'lucide-react'
 import {
@@ -64,6 +65,7 @@ const DATASET_LABEL: Record<string, string> = {
   price_limits: '涨跌停价',
   st_status: '风险警示',
   limit_events: '涨停池',
+  dragon_tiger: '龙虎榜',
 }
 
 /** 能力图标 (纯展示; 能力清单本身由后端注册表驱动) */
@@ -75,6 +77,7 @@ const CAP_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
   adj_factor: Scale,
   financial: Landmark,
   overseas: Globe2,
+  dragon_tiger: Trophy,
 }
 
 /** TickFlow 档位要求文本: none → 全档位, 其余 → starter+ 形式 */

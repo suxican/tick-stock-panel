@@ -133,12 +133,23 @@ CAPABILITY_REGISTRY: list[dict] = [
         "default": "meoz",
         "tf_tier": None,
     },
+    {
+        "id": "dragon_tiger",
+        "label": "龙虎榜",
+        "desc": "上榜个股、机构与游资席位",
+        "field": "dragon_tiger_data_provider",
+        "default": "fuyao",
+        "tf_tier": None,
+        # 兜底链: 同一交易日三张榜只来自一个源; 插件返回 None 表示该日无数据, 不计失败
+        "fallback": True,
+    },
 ]
 
 # 兜底链默认顺序 (fallback=True 的能力): 偏好未配置时取其中除主源外、已声明该能力的源。
 DEFAULT_FALLBACK_ORDER: dict[str, list[str]] = {
     "depth5": ["tdxquant", "tickflow", "meoz"],
     "overseas": ["cn_overseas", "yahoo_overseas"],
+    "dragon_tiger": ["meoz", "fuyao"],
 }
 
 _TICKFLOW_CANDIDATE = {
@@ -322,6 +333,7 @@ def _current_routing() -> dict[str, str]:
         "price_limits_data_provider": preferences.get_price_limits_data_provider(),
         "st_status_data_provider": preferences.get_st_status_data_provider(),
         "limit_events_data_provider": preferences.get_limit_events_data_provider(),
+        "dragon_tiger_data_provider": preferences.get_dragon_tiger_data_provider(),
     }
 
 

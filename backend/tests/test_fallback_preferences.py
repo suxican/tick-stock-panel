@@ -36,9 +36,9 @@ def _plugin_rows(plugins: dict, pending_remove=()) -> list[dict]:
              "pending_remove": n in pending_remove} for n, ds in plugins.items()]
 
 
-def test_registry_marks_only_depth5_and_overseas():
+def test_registry_marks_fallback_capabilities():
     flagged = {c["id"] for c in capabilities.CAPABILITY_REGISTRY if c.get("fallback")}
-    assert flagged == {"depth5", "overseas"}
+    assert flagged == {"depth5", "overseas", "dragon_tiger"}
 
 
 def test_missing_field_uses_registry_default(monkeypatch):
