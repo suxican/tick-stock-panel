@@ -361,7 +361,7 @@ export function ReviewPage() {
               <MarketSummaryBar data={data} />
 
 
-              {/* ===== 龙虎榜 (fuyao 专有, 资金动向上下文; 复盘日联动) ===== */}
+              {/* ===== 龙虎榜 (能力路由 + 兜底链, 资金动向上下文; 复盘日联动) ===== */}
               <DragonTigerCard date={dtDate} onOpenStock={setPreviewSymbol} />
 
               {/* ===== 今日盘中剧本核验(10:00 后, 按上一篇复盘的剧本) ===== */}
@@ -1104,11 +1104,11 @@ function HistoryPanel({
 }
 
 // ================================================================
-// 龙虎榜卡片 (fuyao 专有) —— 资金动向上下文, 市场摘要条之下
+// 龙虎榜卡片 (能力路由 + 兜底链, 标注实际来源) —— 资金动向上下文, 市场摘要条之下
 // 视觉对齐 MarketSummaryBar: 8x8 徽章 + rounded-card + surface 底。
 // 收起态: 奖杯徽章头部 + 净买/机构 Top3 排名药丸;
 // 展开态: 分段式三榜 tab, 股票表净买额带比例条, 游资席位带奖牌。
-// 状态: 当日未发布自动显示上一期 (fallback_prev); fuyao 未配置降级提示。
+// 状态: 当日未发布自动显示上一期 (fallback_prev); 没有可用数据源时降级提示。
 // ================================================================
 type _DtTabKey = 'all' | 'org' | 'hot_money'
 const _DT_TABS: { key: _DtTabKey; label: string }[] = [
@@ -1431,14 +1431,14 @@ export function DragonTigerCard({ date, onOpenStock }: {
     )
   }
 
-  // fuyao 未配置: 显式降级提示 (不用死区块, 给配置入口)
+  // 没有可用的龙虎榜数据源: 显式降级提示 (不用死区块, 给配置入口)
   if (d?.state === 'source_unavailable') {
     return (
       <div className="flex items-center gap-3 rounded-card border border-dashed border-border bg-surface/50 px-4 py-3">
         <span className="grid h-8 w-8 shrink-0 place-items-center rounded bg-elevated/60">
           <Trophy className="h-4 w-4 text-muted/50" />
         </span>
-        <span className="text-[11px] text-muted">龙虎榜需要 fuyao 数据源 (同花顺特色数据)</span>
+        <span className="text-[11px] text-muted">龙虎榜数据源未配置</span>
         <Link to="/settings?tab=data-sources" className="ml-auto inline-flex items-center gap-0.5 text-[10px] text-accent hover:underline">
           前往配置 <ChevronRight className="h-3 w-3" />
         </Link>
@@ -1482,6 +1482,15 @@ export function DragonTigerCard({ date, onOpenStock }: {
         <span className="leading-tight">
           <span className="flex items-center gap-2">
             <span className="text-[13px] font-semibold text-foreground">龙虎榜</span>
+            {d.source_display && (
+              <span
+                data-dt-source
+                className={cn('text-[10px]', d.degraded ? 'text-warning' : 'text-muted')}
+                title={d.degraded ? d.fallback_reason ?? '当前由兜底数据源提供' : '数据来源'}
+              >
+                {d.source_display}{d.degraded ? '（兜底）' : ''}
+              </span>
+            )}
             {isFallback && (
               <span
                 className="rounded border border-warning/30 bg-warning/10 px-1.5 py-px text-[9px] leading-tight text-warning"
@@ -1541,7 +1550,12 @@ export function DragonTigerCard({ date, onOpenStock }: {
               </div>
 
               {tab === 'hot_money' ? (
-                <_DtSeatList seats={seats} onOpenStock={onOpenStock} />
+                <>
+                  {d.hot_money_basis === 'meoz_seat_match' && (
+                    <p className="mb-2 text-[10px] text-muted">按猫爪游资名单匹配营业部，口径与 fuyao 不同</p>
+                  )}
+                  <_DtSeatList seats={seats} onOpenStock={onOpenStock} />
+                </>
               ) : (
                 <_DtStockTable
                   key={tab}

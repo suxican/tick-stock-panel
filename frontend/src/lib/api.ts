@@ -1733,6 +1733,14 @@ export interface DragonTigerPayload {
   requested_date?: string | null
   trade_date?: string | null
   message?: string
+  /** 实际提供这份数据的源 (经兜底链; 旧缓存为 fuyao) */
+  source?: string | null
+  source_display?: string | null
+  /** 实际来源不是当前主源 */
+  degraded?: boolean
+  fallback_reason?: string | null
+  /** 'meoz_seat_match' = 游资榜由猫爪游资名单匹配营业部得到 (近似口径) */
+  hot_money_basis?: string | null
   all?: { trade_date?: string | null; stock_count?: number | null; count?: number | null; stock_items?: DragonTigerStockItem[] }
   org?: { trade_date?: string | null; stock_count?: number | null; count?: number | null; stock_items?: DragonTigerStockItem[] }
   hot_money?: { trade_date?: string | null; count?: number | null; hot_money_items?: DragonTigerHotMoney[] }
