@@ -478,6 +478,20 @@ def get_overseas_quotes(self) -> dict:
 - 韩国个股缺少国内可用源，因此大盘博弈中存储组固定显示缺失，只有纳指和 KOSPI 参与外围判断。
 - 本插件的实盘解析只在境外网络（经代理）核验过，大陆服务器的可用性仍需部署后在设置页「测试」确认。
 
+### 龙虎榜数据集 `dragon_tiger`
+
+可路由、带兜底链的能力（默认主源 fuyao、兜底猫爪）。插件在 `plugin.yaml` 的 `datasets` 声明 `dragon_tiger`，并实现：
+
+```python
+def get_dragon_tiger(self, day: date) -> dict | None: ...
+```
+
+- 返回某一交易日的三张榜：`{"trade_date", "all": {...stock_items}, "org": {...stock_items}, "hot_money": {...hot_money_items}}`，
+  字段口径与复盘页 `DragonTigerPayload` 一致：金额为元，涨跌幅、净买占比为小数，`thscode` 带交易所后缀（缺失时服务层按 `ticker` 推导）。
+- 返回 `None` 表示**该日无数据**（当日未发布、非交易日、超出可查范围）：不计源失败、不换源，服务层回退上一交易日。
+- 真失败（网络、认证、额度、格式）直接抛异常，由兜底链换下一个源；三张榜要么全部返回，要么整日失败，不返回半套。
+- 游资榜不是插件原生口径时，在返回值中加 `"hot_money_basis": "<标识>"`，前端会注明口径不同（猫爪为 `meoz_seat_match`）。
+
 ### config.datasets 的作用
 
 `provider_has_dataset(name, dataset)` 通过 `dataset in provider.config.datasets` 判断。
