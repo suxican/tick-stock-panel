@@ -7448,6 +7448,13 @@ export interface FirstBoardFeedbackMember {
   reason: string | null
   /** 集合竞价指标 (猫爪, 09:15 起; 只展示与排序): 涨幅小数制, 金额元; 缺失为 null/undefined */
   auction?: FirstBoardAuction | null
+  /** 昨日封板质量 (本地涨停池归档): 首封北京时间 HH:MM:SS; opened 未知为 null; 封单额 (元) 口径异常日为 null */
+  seal?: FirstBoardSeal | null
+}
+export interface FirstBoardSeal {
+  first_time: string | null
+  opened: boolean | null
+  fd_amount: number | null
 }
 export interface FirstBoardAuction {
   pct_chg: number
@@ -7498,6 +7505,10 @@ export interface FirstBoardFeedback {
   sectors: FirstBoardFeedbackSector[]
   /** 竞价指标来源与取数时间; 未接入或不可用时为 null/缺省 */
   auction?: { source: 'meoz'; fetched_at: string } | null
+  /** 按昨日封板质量分层的今日表现 (早封 ≤10:00 / 之后封 / 未开板 / 开过板); 归档缺失为 null */
+  layers?: Record<'all' | 'main' | 'growth', Record<'early' | 'late' | 'unopened' | 'reopened', FirstBoardFeedbackSummary>> | null
+  /** 封板信息来源: 昨日归档日期与覆盖 (有封板信息的样本数 / 样本数) */
+  seal_source?: { date: string; matched: number; sample: number } | null
 }
 export interface FirstBoardSnapshot {
   data_status?: FirstBoardDataStatus

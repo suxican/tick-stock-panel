@@ -8,12 +8,24 @@ import { buttonClass, panelClass, pct, stamp } from './shared'
 
 type Scope = 'all' | 'main' | 'growth'
 /** 个股名单排序: 默认按当前涨幅; 有竞价数据时可按竞价指标排 (盘前 09:15–09:30 即可用) */
-type SortKey = 'change' | 'auction_pct' | 'auction_amount' | 'auction_ratio'
-const sortOptions: { id: SortKey; label: string; value: (row: FirstBoardFeedbackMember) => number | null | undefined }[] = [
-  { id: 'change', label: '涨幅', value: row => row.change_pct },
-  { id: 'auction_pct', label: '竞价涨幅', value: row => row.auction?.pct_chg },
-  { id: 'auction_amount', label: '竞价金额', value: row => row.auction?.amount },
-  { id: 'auction_ratio', label: '竞价量比', value: row => row.auction?.vol_ratio },
+type SortKey = 'change' | 'auction_pct' | 'auction_amount' | 'auction_ratio' | 'first_seal'
+/** HH:MM:SS → 秒; 排序按降序取值, 首封越早取值越大 (取负) */
+const sealSeconds = (value?: string | null) => {
+  const m = value ? /^(\d{2}):(\d{2}):(\d{2})$/.exec(value) : null
+  return m ? -(Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3])) : null
+}
+const sortOptions: { id: SortKey; label: string; group: 'base' | 'auction' | 'seal'; value: (row: FirstBoardFeedbackMember) => number | null | undefined }[] = [
+  { id: 'change', label: '涨幅', group: 'base', value: row => row.change_pct },
+  { id: 'auction_pct', label: '竞价涨幅', group: 'auction', value: row => row.auction?.pct_chg },
+  { id: 'auction_amount', label: '竞价金额', group: 'auction', value: row => row.auction?.amount },
+  { id: 'auction_ratio', label: '竞价量比', group: 'auction', value: row => row.auction?.vol_ratio },
+  { id: 'first_seal', label: '昨日首封', group: 'seal', value: row => sealSeconds(row.seal?.first_time) },
+]
+const layerRows: { key: 'early' | 'late' | 'unopened' | 'reopened'; label: string; hint: string }[] = [
+  { key: 'early', label: '早封', hint: '昨日首次封板在 10:00 之前' },
+  { key: 'late', label: '10:00 后封', hint: '昨日首次封板在 10:00 之后' },
+  { key: 'unopened', label: '未开板', hint: '昨日封板后盘中没有开过板' },
+  { key: 'reopened', label: '开过板', hint: '昨日盘中开过板后回封' },
 ]
 type StockLink = { symbol: string; name: string }
 const scopes: { id: Scope; label: string }[] = [{ id: 'all', label: '全部' }, { id: 'main', label: '主板' }, { id: 'growth', label: '双创' }]
@@ -48,13 +60,18 @@ function SectorTable({ rows, muted }: { rows: FirstBoardFeedbackSector[]; muted:
   </div>
 }
 
-function MemberTable({ rows, muted, showAuction, onOpenStock }: { rows: FirstBoardFeedbackMember[]; muted: boolean; showAuction: boolean; onOpenStock: (symbol: string, name: string, navList: StockLink[]) => void }) {
+function MemberTable({ rows, muted, showAuction, showSeal, onOpenStock }: { rows: FirstBoardFeedbackMember[]; muted: boolean; showAuction: boolean; showSeal: boolean; onOpenStock: (symbol: string, name: string, navList: StockLink[]) => void }) {
   const navList = rows.map(({ symbol, name }) => ({ symbol, name }))
   return <div className="max-h-96 overflow-auto">
-    <table className={cn(tableClass, showAuction ? 'min-w-[1080px]' : 'min-w-[760px]')} aria-label="昨日首板个股表现">
-      <thead className="sticky top-0 bg-surface"><tr><th scope="col" className="py-3 pr-3 font-normal text-secondary">股票</th>{showAuction && <><th scope="col" className={headClass}>竞价涨幅</th><th scope="col" className={headClass}>竞价金额</th><th scope="col" className={headClass}>竞价量比</th><th scope="col" className={headClass} title="竞价封涨停时涨停价上的委买金额">涨停委买</th></>}<th scope="col" className={headClass}>现价</th><th scope="col" className={headClass}>涨幅</th><th scope="col" className={headClass}>开盘溢价</th><th scope="col" className={headClass}>开盘后涨幅</th><th scope="col" className={headClass}>状态</th><th scope="col" className={headClass}>报价时间</th></tr></thead>
+    <table className={cn(tableClass, showAuction ? 'min-w-[1080px]' : 'min-w-[760px]', showSeal && 'min-w-[1240px]')} aria-label="昨日首板个股表现">
+      <thead className="sticky top-0 bg-surface"><tr><th scope="col" className="py-3 pr-3 font-normal text-secondary">股票</th>{showSeal && <><th scope="col" className={headClass} title="昨日首次封板时间 (北京时间)">昨日首封</th><th scope="col" className={headClass} title="昨日封板后盘中是否开过板">开板</th><th scope="col" className={headClass} title="昨日收盘封单额; 上游口径异常的日子不显示">封单额</th></>}{showAuction && <><th scope="col" className={headClass}>竞价涨幅</th><th scope="col" className={headClass}>竞价金额</th><th scope="col" className={headClass}>竞价量比</th><th scope="col" className={headClass} title="竞价封涨停时涨停价上的委买金额">涨停委买</th></>}<th scope="col" className={headClass}>现价</th><th scope="col" className={headClass}>涨幅</th><th scope="col" className={headClass}>开盘溢价</th><th scope="col" className={headClass}>开盘后涨幅</th><th scope="col" className={headClass}>状态</th><th scope="col" className={headClass}>报价时间</th></tr></thead>
       <tbody>{rows.map(row => <tr key={row.symbol} className="border-t border-border">
         <td className="py-2.5 pr-3"><button type="button" className="text-left font-medium hover:underline focus-visible:outline focus-visible:outline-accent" onClick={() => onOpenStock(row.symbol, row.name, navList)}>{row.name}<span className="block font-normal text-secondary">{row.symbol}</span></button></td>
+        {showSeal && <>
+          <td className={cellClass}>{row.seal?.first_time ? row.seal.first_time.slice(0, 5) : '—'}</td>
+          <td className={cellClass}>{row.seal?.opened == null ? '—' : row.seal.opened ? '开过' : '未开'}</td>
+          <td className={cellClass}>{row.seal?.fd_amount == null ? '—' : fmtBigNum(row.seal.fd_amount)}</td>
+        </>}
         {showAuction && <>
           <td className={cn(cellClass, priceColorClass(row.auction?.pct_chg))}>{fmtPct(row.auction?.pct_chg)}</td>
           <td className={cellClass}>{row.auction?.amount == null ? '—' : fmtBigNum(row.auction.amount)}</td>
@@ -104,7 +121,11 @@ export function YesterdayFeedback({ data, refreshFailed = false, onOpenStock, ch
   const available = !!data && data.status !== 'waiting' && data.status !== 'unavailable'
   const quoteNote = data && available && data.message ? `${refreshFailed ? '保留快照' : statusLabels[data.status]} · ${data.message}` : null
   const showAuction = !!data?.auction && (data.rows ?? []).some(row => row.auction)
-  const activeSort = showAuction ? sortKey : 'change'
+  const showSeal = !!data?.layers && (data.rows ?? []).some(row => row.seal)
+  const sortChoices = sortOptions.filter(option => option.group === 'base'
+    || (option.group === 'auction' && showAuction) || (option.group === 'seal' && showSeal))
+  const activeSort = sortChoices.some(option => option.id === sortKey) ? sortKey : 'change'
+  const layers = data?.layers?.[scope]
   const members = useMemo(() => {
     const value = sortOptions.find(option => option.id === activeSort)!.value
     return (data?.rows ?? []).filter(row => scope === 'all' || row.board === scope)
@@ -183,13 +204,32 @@ export function YesterdayFeedback({ data, refreshFailed = false, onOpenStock, ch
       <div className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h4 className="text-sm font-medium">个股表现 <span className="font-normal text-secondary">{scopes.find(item => item.id === scope)?.label} · {members.length} 只</span></h4>
-          {showAuction && <div className="flex items-center gap-1" role="group" aria-label="个股排序">
-            <span className="text-xs text-secondary" title={`猫爪集合竞价指标，09:15 起更新；只用于排序观察，不改变优先分或买入提示。取数 ${stamp(data?.auction?.fetched_at)}`}>排序</span>
-            {sortOptions.map(option => <button type="button" key={option.id} aria-pressed={activeSort === option.id} className={cn(buttonClass, 'min-h-7 px-2', activeSort === option.id && 'border-accent/50 text-foreground')} onClick={() => setSortKey(option.id)}>{option.label}</button>)}
+          {sortChoices.length > 1 && <div className="flex items-center gap-1" role="group" aria-label="个股排序">
+            <span className="text-xs text-secondary" title={`只用于排序观察，不改变优先分或买入提示。${showAuction ? `竞价为猫爪集合竞价指标，09:15 起更新，取数 ${stamp(data?.auction?.fetched_at)}。` : ''}${showSeal ? '昨日首封越早越靠前。' : ''}`}>排序</span>
+            {sortChoices.map(option => <button type="button" key={option.id} aria-pressed={activeSort === option.id} className={cn(buttonClass, 'min-h-7 px-2', activeSort === option.id && 'border-accent/50 text-foreground')} onClick={() => setSortKey(option.id)}>{option.label}</button>)}
           </div>}
         </div>
-        {members.length ? <MemberTable rows={members} muted={muted} showAuction={showAuction} onOpenStock={onOpenStock} /> : <p className="text-xs text-secondary">该范围暂无可展示的个股明细。</p>}
+        {members.length ? <MemberTable rows={members} muted={muted} showAuction={showAuction} showSeal={showSeal} onOpenStock={onOpenStock} /> : <p className="text-xs text-secondary">该范围暂无可展示的个股明细。</p>}
       </div>
+      {showSeal && layers && <div className="space-y-3">
+        <h4 className="text-sm font-medium">按昨日封板质量分层 <span className="font-normal text-secondary">{scopes.find(item => item.id === scope)?.label}</span></h4>
+        <div className="overflow-x-auto">
+          <table className={cn(tableClass, 'min-w-[560px]')} aria-label="按昨日封板质量分层">
+            <thead><tr><th scope="col" className="pb-3 pr-3 font-normal text-secondary">昨日封板</th><th scope="col" className={headClass}>样本</th><th scope="col" className={headClass}>平均溢价</th><th scope="col" className={headClass}>上涨占比</th><th scope="col" className={headClass}>当前二板</th></tr></thead>
+            <tbody>{layerRows.map(({ key, label, hint }) => {
+              const layer = layers[key]
+              return <tr key={key} className="border-t border-border">
+                <td className="py-2.5 pr-3" title={hint}>{label}</td>
+                <td className={cellClass}>{layer.sample_count}</td>
+                <td className={cn(cellClass, !muted && priceColorClass(layer.mean_change_pct))}>{fmtPct(layer.mean_change_pct)}</td>
+                <td className={cellClass}>{pct(layer.up_ratio)}</td>
+                <td className={cellClass}>{layer.sample_count ? layer.limit_up_count : '—'}</td>
+              </tr>
+            })}</tbody>
+          </table>
+        </div>
+        <p className="text-xs leading-relaxed text-secondary">昨日封板信息来自本地涨停池归档（{data.seal_source?.date}，覆盖 {data.seal_source?.matched} / {data.seal_source?.sample} 只）；只作观察，不改变优先分或买入提示。各层样本可能很少，比例容易受个别股票影响。</p>
+      </div>}
       <div className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-3"><h4 className="text-sm font-medium">关联板块对照</h4><div className="flex gap-1" role="group" aria-label="关联板块分类">{(['industry', 'concept'] as const).map(kind => <button key={kind} type="button" aria-pressed={sectorKind === kind} className={cn(buttonClass, sectorKind === kind && 'border-accent/50 text-foreground')} onClick={() => setSectorKind(kind)}>{kind === 'industry' ? '行业' : '概念'}</button>)}</div></div>
         <p className="text-xs leading-relaxed text-secondary">行业／概念对照固定为沪深非 ST 全范围，不随上方市场范围切换。{data.membership_note || '按当前板块成分计算等权涨幅，非官方板块指数；概念可重复归属，不跨概念加总。'}</p>

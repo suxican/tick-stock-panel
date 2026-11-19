@@ -223,3 +223,77 @@ it('hides auction columns and sort control without auction data', async () => {
   expect(host.querySelector('table[aria-label="昨日首板个股表现"]')!.textContent).not.toContain('竞价涨幅')
   expect(host.querySelector('[aria-label="个股排序"]')).toBeNull()
 })
+
+
+function withSeal(): FirstBoardFeedback {
+  const base = feedback()
+  const layer = (n: number, mean: number | null) => ({ ...summary, sample_count: n, quote_count: n, mean_change_pct: mean, up_ratio: n ? .5 : null, limit_up_count: n ? 1 : 0 })
+  return {
+    ...base,
+    rows: [
+      { ...base.rows[0], seal: { first_time: '13:45:00', opened: true, fd_amount: 12000000 } },
+      { ...base.rows[1], seal: { first_time: '09:31:00', opened: false, fd_amount: 85000000 } },
+    ],
+    layers: {
+      all: { early: layer(18, .031), late: layer(22, .002), unopened: layer(20, .028), reopened: layer(20, -.004) },
+      main: { early: layer(15, .02), late: layer(18, 0), unopened: layer(16, .01), reopened: layer(17, -.01) },
+      growth: { early: layer(3, .09), late: layer(4, -.02), unopened: layer(4, .05), reopened: layer(3, .01) },
+    },
+    seal_source: { date: '2026-10-26', matched: 40, sample: 40 },
+  }
+}
+
+it('shows yesterday seal facts per stock and a seal-quality layer table in the details', async () => {
+  await render(withSeal())
+  await click('展开分布')
+  await click('查看明细')
+  const table = host.querySelector('[aria-label="按昨日封板质量分层"]')!
+  expect(table).not.toBeNull()
+  const rows = [...table.querySelectorAll('tbody tr')].map(r => r.textContent)
+  expect(rows[0]).toContain('早封')
+  expect(rows[0]).toContain('18')
+  expect(rows[0]).toContain('3.10%')
+  expect(rows[3]).toContain('开过板')
+  const stocks = host.querySelector('[aria-label="昨日首板个股表现"]')!
+  expect(stocks.textContent).toContain('09:31')
+  expect(stocks.textContent).toContain('开过')
+  expect(stocks.textContent).toContain('8500万')
+})
+
+it('sorts stocks by yesterday first-seal time, earliest first', async () => {
+  await render(withSeal())
+  await click('展开分布')
+  await click('查看明细')
+  await click('昨日首封')
+  const names = [...host.querySelectorAll('[aria-label="昨日首板个股表现"] tbody tr')].map(r => r.querySelector('button')?.textContent)
+  expect(names[0]).toContain('创业板样本')
+})
+
+it('layer table follows the market scope', async () => {
+  await render(withSeal())
+  await click('展开分布')
+  await click('查看明细')
+  await click('双创')
+  const first = host.querySelector('[aria-label="按昨日封板质量分层"] tbody tr')!
+  expect(first.textContent).toContain('3')
+  expect(first.textContent).toContain('9.00%')
+})
+
+it('hides seal columns and layers when the archive is unavailable', async () => {
+  await render({ ...feedback(), layers: null, seal_source: null })
+  await click('展开分布')
+  await click('查看明细')
+  expect(host.querySelector('[aria-label="按昨日封板质量分层"]')).toBeNull()
+  expect(host.querySelector('[aria-label="昨日首板个股表现"]')!.textContent).not.toContain('昨日首封')
+})
+
+it('shows a dash for unknown reopen status and blanked seal amount', async () => {
+  const data = withSeal()
+  data.rows[0] = { ...data.rows[0], seal: { first_time: '10:20:00', opened: null, fd_amount: null } }
+  await render(data)
+  await click('展开分布')
+  await click('查看明细')
+  const row = [...host.querySelectorAll('[aria-label="昨日首板个股表现"] tbody tr')].find(r => r.textContent?.includes('主板样本'))!
+  expect(row.textContent).toContain('10:20')
+  expect(row.textContent).not.toContain('0.00亿')
+})
