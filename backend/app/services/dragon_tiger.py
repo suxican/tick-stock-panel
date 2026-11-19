@@ -1,15 +1,17 @@
-"""龙虎榜数据服务 (fuyao 专有) — 复盘页卡片 + AI 复盘上下文。
+"""龙虎榜数据服务 — 复盘页卡片 + AI 复盘上下文 + 短线博弈机构披露。
 
-非路由数据集: tickflow 无对应能力, 直接经 custom_sources 调 fuyao provider;
-fuyao 未配置时返回 source_unavailable 状态, 前端降级提示。
+可路由能力 `dragon_tiger` (默认 fuyao 主源、猫爪兜底), 按交易日经兜底链取数:
+同一交易日的三张榜只来自一个源; 插件返回 None 表示该日无数据 (未发布/非交易日),
+不计源失败、不换源。生效链为空时返回 source_unavailable, 前端降级提示。
 
-数据契约 (实测 2026-08, 文档的 limit_reason/amount 实际不返回):
-- 三榜一次取齐: all/org 为股票表 (org 额外带机构 4 字段), hot_money 为席位表
-- 历史榜单不可变 → 按日落 JSON 缓存 (data/dragon_tiger/date=YYYY-MM-DD.json)
-- 当日榜单盘中未发布 → 自动回退上一交易日并标记 state=fallback_prev
+数据契约 (三榜结构沿用 fuyao 实测口径, 猫爪适配器对齐):
+- all/org 为股票表 (org 额外带机构 4 字段), hot_money 为游资表 (猫爪为名单匹配的近似口径,
+  hot_money_basis 标注)
+- 历史榜单不可变 → 按日落 JSON 缓存 (data/dragon_tiger/date=YYYY-MM-DD.json), 带实际来源;
+  旧缓存无来源字段一律视为 fuyao
+- 当日榜单未发布 → 自动回退上一交易日并标记 state=fallback_prev
 
-日期解析: 接口对显式非交易日报 code=1002, 本层用本地 kline_daily 分区日期
-把目标日回退到「≤目标日的最近交易日」, 规避报错。
+日期解析: 用本地 kline_daily 分区日期把目标日回退到「≤目标日的最近交易日」。
 """
 
 from __future__ import annotations
@@ -21,11 +23,13 @@ import re
 from datetime import date as date_cls
 from pathlib import Path
 
+from app.data_providers import routing_health
 from app.market_time import cn_today
 
 logger = logging.getLogger(__name__)
 
-_BOARDS = ("all", "org", "hot_money")
+_CAP = "dragon_tiger"
+_LEGACY_SOURCE = "fuyao"  # 旧缓存 (接入兜底链前) 只可能来自 fuyao
 _DATE_DIR_RE = re.compile(r"^date=(\d{4}-\d{2}-\d{2})$")
 
 
@@ -67,29 +71,38 @@ def _prev_trading_day(data_dir: Path, d: date_cls) -> date_cls | None:
     return max(earlier) if earlier else None
 
 
-def _provider():
-    from app.data_providers import custom as custom_sources
-
-    if not custom_sources.is_custom_provider("fuyao"):
-        return None
-    return custom_sources.get_provider("fuyao")
+def _valid_day(data: object) -> bool:
+    """插件返回 None (该日无数据) 或含三榜的 dict 都是有效结果; 其它形状计为数据失败。"""
+    return data is None or (isinstance(data, dict) and isinstance(data.get("all"), dict))
 
 
-def _fetch_boards(provider, d: date_cls) -> dict:
-    """三榜取齐。任一榜失败抛 FuyaoError (整日失败, 不留半套缓存)。"""
-    return {
-        bt: _boards_of(provider, bt, d.isoformat()) for bt in _BOARDS
+def _fetch_day(day: date_cls) -> tuple[dict | None, routing_health.FallbackResult]:
+    """经兜底链取一个交易日的三榜。返回 (缓存形态的 payload 或 None, 调度结果)。"""
+    result = routing_health.call_with_fallback(_CAP, "get_dragon_tiger", day, validate=_valid_day)
+    if result.source is None or result.data is None:
+        return None, result
+    data = dict(result.data)
+    payload = {
+        "trade_date": data.get("trade_date") or day.isoformat(),
+        "all": data.get("all") or {},
+        "org": data.get("org") or {},
+        "hot_money": data.get("hot_money") or {},
+        "source": result.source,
+        "hot_money_basis": data.get("hot_money_basis"),
     }
+    return normalize_payload(payload), result
 
 
-def _boards_of(provider, board_type: str, iso: str | None) -> dict:
-    data = provider.dragon_tiger(board_type, iso)
+def _with_routing(payload: dict, *, fallback_reason: str | None = None) -> dict:
+    """补齐来源展示字段; degraded = 这份数据的实际来源不是当前主源。"""
+    source = payload.get("source") or _LEGACY_SOURCE
     return {
-        "trade_date": data.get("trade_date"),
-        "stock_count": data.get("stock_count"),
-        "count": data.get("count"),
-        "stock_items": normalize_stock_items(data.get("stock_items") or []),
-        "hot_money_items": normalize_hot_money_items(data.get("hot_money_items") or []),
+        **payload,
+        "source": source,
+        "source_display": routing_health._display(source),
+        "degraded": source != routing_health._primary(_CAP),
+        "fallback_reason": fallback_reason,
+        "hot_money_basis": payload.get("hot_money_basis"),
     }
 
 
@@ -204,72 +217,51 @@ def get_dragon_tiger(data_dir: Path, target: date_cls | None = None) -> dict:
     """取龙虎榜 (三榜)。返回给前端的统一容器。
 
     state: ok (正常) | fallback_prev (当日未发布, 已回退上一期并带上一期数据)
-          | source_unavailable (未配置 fuyao) | no_data (拉取失败)
+          | source_unavailable (没有可用的龙虎榜数据源) | no_data (拉取失败或无数据)
+    附带 source / source_display / degraded / fallback_reason / hot_money_basis。
     """
-    # 无目标日 → 最近本地交易日 (走缓存判定; 本地无任何分区才让 fuyao 自取默认)
+    # 无目标日 → 最近本地交易日; 本地无任何分区 → 北京时间今天
     if target is None:
         days = _local_trading_days(data_dir)
-        target = max(days) if days else None
-    trade_date = resolve_trade_date(data_dir, target)
+        target = max(days) if days else cn_today()
+    trade_date = resolve_trade_date(data_dir, target) or target
     today = cn_today()
+    explicit = trade_date.isoformat()
 
     # 历史日缓存优先 (纯本地, 不触发插件注册表加载)
-    if trade_date is not None and trade_date < today:
+    if trade_date < today:
         cached = _load_cache(_cache_path(data_dir, trade_date))
         if cached is not None:
-            return cached
+            return _with_routing({**cached, "state": "ok", "requested_date": explicit})
 
-    provider = _provider()
-    if provider is None:
+    if not routing_health.effective_chain(_CAP):
         return {"state": "source_unavailable"}
 
-    from app.plugins.fuyao.client import FuyaoError
-
-    # 日期未知 (target=None / 本地无分区) → 省略 date 让 fuyao 取最近已发布交易日
-    explicit = trade_date.isoformat() if trade_date is not None else None
-    try:
-        raw = {bt: _boards_of(provider, bt, explicit) for bt in _BOARDS}
-        try:
-            actual = date_cls.fromisoformat(str(raw["all"].get("trade_date")))
-        except ValueError:
-            actual = None
-        payload = {
-            "state": "ok",
-            "requested_date": explicit,
-            "trade_date": raw["all"].get("trade_date"),
-            **raw,
-        }
-        # 历史日不可变 → 落缓存; 当日不缓存 (盘中 fallback / 盘后补充都以现拉为准)
-        if actual is not None and actual < today:
+    payload, result = _fetch_day(trade_date)
+    if payload is not None:
+        # 历史日不可变 → 落缓存; 当日不缓存 (盘后补充以现拉为准)。运行时字段不落盘。
+        if trade_date < today:
             with contextlib.suppress(OSError):
-                _store_cache(_cache_path(data_dir, actual), payload)
-        return payload
-    except FuyaoError as e:
-        # 显式日期失败 (当日未发布 / 边界日) → 回退上一交易日一次
-        if trade_date is not None:
-            prev = _prev_trading_day(data_dir, trade_date)
-            if prev is not None:
-                try:
-                    cached_prev = _load_cache(_cache_path(data_dir, prev))
-                    if cached_prev is not None:
-                        base = dict(cached_prev)
-                        base.pop("state", None)
-                        return {**base, "state": "fallback_prev",
-                                "requested_date": explicit}
-                    raw_prev = _fetch_boards(provider, prev)
-                    base = {
-                        "requested_date": prev.isoformat(),
-                        "trade_date": prev.isoformat(),
-                        **raw_prev,
-                    }
-                    with contextlib.suppress(OSError):
-                        _store_cache(_cache_path(data_dir, prev), {**base, "state": "ok"})
-                    return {**base, "state": "fallback_prev",
-                            "requested_date": explicit}
-                except FuyaoError:
-                    pass
-        logger.warning("龙虎榜拉取失败: %s", e)
-        return {"state": "no_data", "message": str(e)}
+                _store_cache(_cache_path(data_dir, trade_date), {**payload, "state": "ok"})
+        return _with_routing({**payload, "state": "ok", "requested_date": explicit},
+                             fallback_reason=result.reason if result.degraded else None)
+
+    # 该日无数据 (未发布/非交易日) 或全链失败 → 回退上一交易日一次
+    prev = _prev_trading_day(data_dir, trade_date)
+    if prev is not None:
+        cached_prev = _load_cache(_cache_path(data_dir, prev))
+        if cached_prev is not None:
+            return _with_routing({**cached_prev, "state": "fallback_prev", "requested_date": explicit})
+        prev_payload, prev_result = _fetch_day(prev)
+        if prev_payload is not None:
+            with contextlib.suppress(OSError):
+                _store_cache(_cache_path(data_dir, prev), {**prev_payload, "state": "ok"})
+            return _with_routing({**prev_payload, "state": "fallback_prev", "requested_date": explicit},
+                                 fallback_reason=prev_result.reason if prev_result.degraded else None)
+
+    message = result.reason if result.source is None else f"{explicit} 暂无龙虎榜数据"
+    logger.warning("龙虎榜拉取失败或无数据 (%s): %s", explicit, message)
+    return {"state": "no_data", "requested_date": explicit, "message": message or "暂无龙虎榜数据"}
 
 
 def build_recap_context(data_dir: Path, target: date_cls | None = None) -> str:
@@ -285,7 +277,8 @@ def build_recap_context(data_dir: Path, target: date_cls | None = None) -> str:
         org_items = payload.get("org", {}).get("stock_items") or []
         hm_items = payload.get("hot_money", {}).get("hot_money_items") or []
         trade_date = payload.get("trade_date") or ""
-        lines = [f"(数据日期: {trade_date})"]
+        source = payload.get("source_display") or payload.get("source") or ""
+        lines = [f"(数据日期: {trade_date}；来源: {source})" if source else f"(数据日期: {trade_date})"]
 
         top_buy = sorted(
             [i for i in items if (i.get("net_value") or 0) > 0],
@@ -310,7 +303,8 @@ def build_recap_context(data_dir: Path, target: date_cls | None = None) -> str:
                 f"{i.get('name')} 机构净买{float(i.get('org_net_value') or 0)/1e8:.2f}亿"
                 for i in sorted(org_items, key=lambda x: x.get("org_net_value") or 0, reverse=True)[:5]))
         if hm_items:
-            lines.append("活跃游资: " + "; ".join(
+            basis = " (按猫爪游资名单匹配)" if payload.get("hot_money_basis") else ""
+            lines.append(f"活跃游资{basis}: " + "; ".join(
                 f"{h.get('name')} 净买{float(h.get('buying') or 0)/1e8:.2f}亿"
                 for h in sorted(hm_items, key=lambda x: x.get('buying') or 0, reverse=True)[:5]))
         return "\n".join(lines)
