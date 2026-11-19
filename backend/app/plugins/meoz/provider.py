@@ -191,6 +191,7 @@ def _six(symbol: str) -> str:
 _REASON_MAP = {"kpl": "reason_main_kpl", "jygs": "reason_main_jygs", "jygs_detail": "reason_jygs",
                "xgb": "reason_xgb"}
 _REASON_FIELDS = "tradedate,symbol,type," + ",".join(_REASON_MAP.values())
+_AUCTION_FIELDS = "tradedate,symbol,auc_pct_chg,auc_amt,auc_vol_ratio,ztwme"
 _DEPTH_BATCH = 500  # tick 单次代码数 (实测 1000 只可用, 留余量)
 
 
@@ -904,6 +905,28 @@ class MeozProvider:
                 symbol = wanted.get(_six(str(row.get("symbol") or "")))
                 if entry is not None and symbol is not None:
                     out[symbol] = entry
+        return out
+
+    def get_auction(self, day: date) -> dict[str, dict]:
+        """`screening` 集合竞价指标 → {带后缀代码: {pct_chg 小数, amount 元, vol_ratio, limit_bid_amount 元}}。
+
+        专业版 09:15 起更新; 当日走实时, 历史日按 tradedate (2019 起)。涨停委买额只在竞价
+        封涨停的股票有值。行的交易日与请求不一致时整批视为尚未更新, 返回空表。
+        """
+        params = {} if day == cn_now().date() else {"tradedate": _ymd(day)}
+        rows = self._get_client().query("screening", params, _AUCTION_FIELDS)
+        if any(str(row.get("tradedate")) != _ymd(day) for row in rows):
+            return {}
+        universe = self._universe_map()
+        out: dict[str, dict] = {}
+        for row in rows:
+            symbol = _full_symbol(row.get("symbol"), universe)
+            pct = _to_float(row.get("auc_pct_chg"))
+            if symbol is None or pct is None:
+                continue
+            out[symbol] = {"pct_chg": pct / 100.0, "amount": _to_float(row.get("auc_amt")),
+                           "vol_ratio": _to_float(row.get("auc_vol_ratio")),
+                           "limit_bid_amount": _to_float(row.get("ztwme"))}
         return out
 
     def get_limit_reasons(self, day: date) -> list[dict]:

@@ -191,3 +191,35 @@ it('distinguishes unknown sector limit states from confirmed zero promotions', a
   const cell = host.querySelector('table[aria-label="昨日首板行业与概念对照"] tbody tr')!.children[3]
   expect(cell.textContent).toBe('—待确认 3')
 })
+
+function names() {
+  return [...host.querySelectorAll('table[aria-label="昨日首板个股表现"] tbody tr')].map(row => row.querySelector('button')?.firstChild?.textContent)
+}
+
+it('shows auction columns and sorts by auction metrics only when auction data exists', async () => {
+  const data = feedback()
+  data.auction = { source: 'meoz', fetched_at: '2026-10-27T09:25:31+08:00' }
+  data.rows[0].auction = { pct_chg: .05, amount: 3e7, vol_ratio: 8.5, limit_bid_amount: null }
+  data.rows[1].auction = { pct_chg: .02, amount: 1e8, vol_ratio: 2.1, limit_bid_amount: 5e7 }
+  await render(data)
+  await click('展开分布')
+  await click('查看明细')
+  const table = host.querySelector('table[aria-label="昨日首板个股表现"]')!
+  expect(table.textContent).toContain('竞价涨幅')
+  expect(table.textContent).toContain('+5.00%')
+  expect(names()).toEqual(['创业板样本', '主板样本'])  // 默认按当前涨幅
+  await click('竞价涨幅')
+  expect(names()).toEqual(['主板样本', '创业板样本'])
+  await click('竞价金额')
+  expect(names()).toEqual(['创业板样本', '主板样本'])
+  await click('竞价量比')
+  expect(names()).toEqual(['主板样本', '创业板样本'])
+})
+
+it('hides auction columns and sort control without auction data', async () => {
+  await render(feedback())
+  await click('展开分布')
+  await click('查看明细')
+  expect(host.querySelector('table[aria-label="昨日首板个股表现"]')!.textContent).not.toContain('竞价涨幅')
+  expect(host.querySelector('[aria-label="个股排序"]')).toBeNull()
+})

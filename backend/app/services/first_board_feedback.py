@@ -129,8 +129,10 @@ def expire_feedback(result: dict, *, now: datetime, max_quote_age_seconds: float
 
 
 class FirstBoardFeedback:
-    def __init__(self, repo):
+    def __init__(self, repo, auction=None):
         self.repo = repo
+        # 集合竞价指标 (可选展示): day -> {fetched_at, rows} | None; 非阻塞, 不可用时为 None
+        self._auction = auction
         self._membership = AttentionData(repo)
         self._key: tuple | None = None
         self._prepared_at = 0.0
@@ -146,6 +148,15 @@ class FirstBoardFeedback:
     def invalidate(self) -> None:
         self._key = None
         self._sessions = []
+
+    def _auction_for(self, as_of: date) -> dict | None:
+        if self._auction is None:  # 未注入 (测试、无猫爪装配) 时不取竞价数据
+            return None
+        try:
+            return self._auction(as_of)
+        except Exception:  # noqa: BLE001 - 可选展示数据不得影响反馈
+            logger.debug("集合竞价指标不可用", exc_info=True)
+            return None
 
     def _prepare(self, as_of: date) -> None:
         if (self._session_day != as_of or not self._sessions
@@ -376,6 +387,9 @@ class FirstBoardFeedback:
         result["opening_distribution"] = _opening_distribution(
             self._non_one_price_limits, self._opening_excluded, quotes,
         )
+        auction = self._auction_for(as_of)
+        auction_rows = auction["rows"] if auction else {}
+        result["auction"] = ({"source": "meoz", "fetched_at": auction["fetched_at"]} if auction else None)
         rows = []
         for member in self._pool:
             quote = quotes.get(member["symbol"], {"status": "missing"})
@@ -387,7 +401,7 @@ class FirstBoardFeedback:
             status = quote["status"]
             rows.append({**member, **{key: quote.get(key) for key in (
                 "price", "change_pct", "open_premium", "open_change", "at_limit",
-            )}, "quote_time": quote_time, "status": status,
+            )}, "quote_time": quote_time, "status": status, "auction": auction_rows.get(member["symbol"]),
                 "reason": {"valid": None, "missing": "缺少对应交易日行情", "stale": "行情已过期或时间缺失",
                            "invalid": "行情重复、价格或时间无效"}[status]})
         summaries = {key: _summary(rows if key == "all" else [r for r in rows if r["board"] == key])

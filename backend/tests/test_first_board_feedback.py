@@ -499,3 +499,21 @@ def test_api_returns_feedback_and_no_history_reads_on_get(setup, monkeypatch):
         assert payload["groups"]["all"]["mean_change_pct"] == pytest.approx(.025)
         assert payload["opening_distribution"]["open_count"] == 2
     assert state["reads"] == 1
+
+
+def test_auction_attached_only_when_injected_and_does_not_change_summary(setup):
+    service, _ = setup
+    plain = service.evaluate(quotes(), DAY, now=NOW, live=True)
+    assert plain["auction"] is None and all(row["auction"] is None for row in plain["rows"])
+    seen = []
+    service._auction = lambda day: seen.append(day) or {
+        "fetched_at": "2026-10-26T09:25:31+08:00",
+        "rows": {"600000.SH": {"pct_chg": .05, "amount": 1e7, "vol_ratio": 3.2, "limit_bid_amount": None}}}
+    result = service.evaluate(quotes(), DAY, now=NOW, live=True)
+    assert seen == [DAY]
+    assert result["auction"] == {"source": "meoz", "fetched_at": "2026-10-26T09:25:31+08:00"}
+    by_symbol = {row["symbol"]: row["auction"] for row in result["rows"]}
+    assert by_symbol["600000.SH"]["pct_chg"] == .05 and by_symbol["300001.SZ"] is None
+    assert result["groups"] == plain["groups"]  # 只展示, 不改变任何统计
+    service._auction = lambda day: (_ for _ in ()).throw(RuntimeError("502"))
+    assert service.evaluate(quotes(), DAY, now=NOW, live=True)["auction"] is None

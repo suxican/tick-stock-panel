@@ -7375,6 +7375,15 @@ export interface FirstBoardFeedbackMember {
   quote_time: string | null
   status: 'valid' | 'missing' | 'stale' | 'invalid'
   reason: string | null
+  /** 集合竞价指标 (猫爪, 09:15 起; 只展示与排序): 涨幅小数制, 金额元; 缺失为 null/undefined */
+  auction?: FirstBoardAuction | null
+}
+export interface FirstBoardAuction {
+  pct_chg: number
+  amount: number | null
+  vol_ratio: number | null
+  /** 涨停委买额 (元), 只在竞价封涨停的股票有值 */
+  limit_bid_amount: number | null
 }
 export interface FirstBoardFeedbackSector {
   id: string
@@ -7416,6 +7425,8 @@ export interface FirstBoardFeedback {
   groups: Record<'all' | 'main' | 'growth', FirstBoardFeedbackSummary>
   rows: FirstBoardFeedbackMember[]
   sectors: FirstBoardFeedbackSector[]
+  /** 竞价指标来源与取数时间; 未接入或不可用时为 null/缺省 */
+  auction?: { source: 'meoz'; fetched_at: string } | null
 }
 export interface FirstBoardSnapshot {
   data_status?: FirstBoardDataStatus

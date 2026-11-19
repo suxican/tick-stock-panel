@@ -498,11 +498,13 @@ async def _application_lifespan(app: FastAPI):
     app.state.first_board_service = None
     try:
         from app.services.first_board import FirstBoardService
+        from app.services.meoz_auction import lookup as _meoz_auction_lookup
 
         first_board_service = FirstBoardService(
             repo, history_loader=_screener_svc._load_enriched_history,
             publish=qs.publish_first_board_alerts, quote_service=qs,
             depth_service=getattr(app.state, "depth_service", None),
+            auction=_meoz_auction_lookup(),
         )
         first_board_service.start()
         app.state.first_board_service = first_board_service

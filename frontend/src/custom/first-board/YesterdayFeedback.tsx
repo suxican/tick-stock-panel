@@ -2,11 +2,19 @@ import { useId, useMemo, useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronUp, Info } from 'lucide-react'
 import type { FirstBoardFeedback, FirstBoardFeedbackMember, FirstBoardFeedbackSector } from '@/lib/api'
 import { cn } from '@/lib/cn'
-import { fmtPct, fmtPrice, priceColorClass } from '@/lib/format'
+import { fmtBigNum, fmtPct, fmtPrice, priceColorClass } from '@/lib/format'
 import { storage } from '@/lib/storage'
 import { buttonClass, panelClass, pct, stamp } from './shared'
 
 type Scope = 'all' | 'main' | 'growth'
+/** 个股名单排序: 默认按当前涨幅; 有竞价数据时可按竞价指标排 (盘前 09:15–09:30 即可用) */
+type SortKey = 'change' | 'auction_pct' | 'auction_amount' | 'auction_ratio'
+const sortOptions: { id: SortKey; label: string; value: (row: FirstBoardFeedbackMember) => number | null | undefined }[] = [
+  { id: 'change', label: '涨幅', value: row => row.change_pct },
+  { id: 'auction_pct', label: '竞价涨幅', value: row => row.auction?.pct_chg },
+  { id: 'auction_amount', label: '竞价金额', value: row => row.auction?.amount },
+  { id: 'auction_ratio', label: '竞价量比', value: row => row.auction?.vol_ratio },
+]
 type StockLink = { symbol: string; name: string }
 const scopes: { id: Scope; label: string }[] = [{ id: 'all', label: '全部' }, { id: 'main', label: '主板' }, { id: 'growth', label: '双创' }]
 const statusLabels = { waiting: '正在准备', ready: '行情可用', partial: '部分数据待确认', unavailable: '暂不可用', stale: '行情已过期' }
@@ -40,13 +48,19 @@ function SectorTable({ rows, muted }: { rows: FirstBoardFeedbackSector[]; muted:
   </div>
 }
 
-function MemberTable({ rows, muted, onOpenStock }: { rows: FirstBoardFeedbackMember[]; muted: boolean; onOpenStock: (symbol: string, name: string, navList: StockLink[]) => void }) {
+function MemberTable({ rows, muted, showAuction, onOpenStock }: { rows: FirstBoardFeedbackMember[]; muted: boolean; showAuction: boolean; onOpenStock: (symbol: string, name: string, navList: StockLink[]) => void }) {
   const navList = rows.map(({ symbol, name }) => ({ symbol, name }))
   return <div className="max-h-96 overflow-auto">
-    <table className={cn(tableClass, 'min-w-[760px]')} aria-label="昨日首板个股表现">
-      <thead className="sticky top-0 bg-surface"><tr><th scope="col" className="py-3 pr-3 font-normal text-secondary">股票</th><th scope="col" className={headClass}>现价</th><th scope="col" className={headClass}>涨幅</th><th scope="col" className={headClass}>开盘溢价</th><th scope="col" className={headClass}>开盘后涨幅</th><th scope="col" className={headClass}>状态</th><th scope="col" className={headClass}>报价时间</th></tr></thead>
+    <table className={cn(tableClass, showAuction ? 'min-w-[1080px]' : 'min-w-[760px]')} aria-label="昨日首板个股表现">
+      <thead className="sticky top-0 bg-surface"><tr><th scope="col" className="py-3 pr-3 font-normal text-secondary">股票</th>{showAuction && <><th scope="col" className={headClass}>竞价涨幅</th><th scope="col" className={headClass}>竞价金额</th><th scope="col" className={headClass}>竞价量比</th><th scope="col" className={headClass} title="竞价封涨停时涨停价上的委买金额">涨停委买</th></>}<th scope="col" className={headClass}>现价</th><th scope="col" className={headClass}>涨幅</th><th scope="col" className={headClass}>开盘溢价</th><th scope="col" className={headClass}>开盘后涨幅</th><th scope="col" className={headClass}>状态</th><th scope="col" className={headClass}>报价时间</th></tr></thead>
       <tbody>{rows.map(row => <tr key={row.symbol} className="border-t border-border">
         <td className="py-2.5 pr-3"><button type="button" className="text-left font-medium hover:underline focus-visible:outline focus-visible:outline-accent" onClick={() => onOpenStock(row.symbol, row.name, navList)}>{row.name}<span className="block font-normal text-secondary">{row.symbol}</span></button></td>
+        {showAuction && <>
+          <td className={cn(cellClass, priceColorClass(row.auction?.pct_chg))}>{fmtPct(row.auction?.pct_chg)}</td>
+          <td className={cellClass}>{row.auction?.amount == null ? '—' : fmtBigNum(row.auction.amount)}</td>
+          <td className={cellClass}>{row.auction?.vol_ratio == null ? '—' : row.auction.vol_ratio.toFixed(2)}</td>
+          <td className={cellClass}>{row.auction?.limit_bid_amount == null ? '—' : fmtBigNum(row.auction.limit_bid_amount)}</td>
+        </>}
         <td className={cn(cellClass, !muted && row.status === 'valid' && priceColorClass(row.price == null ? null : row.change_pct))}>{fmtPrice(row.price)}</td>
         <td className={cn(cellClass, !muted && row.status === 'valid' && priceColorClass(row.change_pct))}>{fmtPct(row.change_pct)}</td>
         <td className={cn(cellClass, !muted && row.status === 'valid' && priceColorClass(row.open_premium))}>{fmtPct(row.open_premium)}</td>
@@ -80,6 +94,7 @@ export function YesterdayFeedback({ data, refreshFailed = false, onOpenStock, ch
   const [expanded, setExpanded] = useState(false)
   const [showQuoteNote, setShowQuoteNote] = useState(false)
   const [sectorKind, setSectorKind] = useState<'industry' | 'concept'>('industry')
+  const [sortKey, setSortKey] = useState<SortKey>('change')
   const bodyId = useId()
   const detailId = useId()
   const titleId = useId()
@@ -88,7 +103,13 @@ export function YesterdayFeedback({ data, refreshFailed = false, onOpenStock, ch
   const muted = refreshFailed || data?.status === 'stale'
   const available = !!data && data.status !== 'waiting' && data.status !== 'unavailable'
   const quoteNote = data && available && data.message ? `${refreshFailed ? '保留快照' : statusLabels[data.status]} · ${data.message}` : null
-  const members = useMemo(() => (data?.rows ?? []).filter(row => scope === 'all' || row.board === scope).toSorted((a, b) => (b.change_pct ?? -Infinity) - (a.change_pct ?? -Infinity)), [data?.rows, scope])
+  const showAuction = !!data?.auction && (data.rows ?? []).some(row => row.auction)
+  const activeSort = showAuction ? sortKey : 'change'
+  const members = useMemo(() => {
+    const value = sortOptions.find(option => option.id === activeSort)!.value
+    return (data?.rows ?? []).filter(row => scope === 'all' || row.board === scope)
+      .toSorted((a, b) => (value(b) ?? -Infinity) - (value(a) ?? -Infinity))
+  }, [data?.rows, scope, activeSort])
   const sectors = useMemo(() => (data?.sectors ?? []).filter(row => row.kind === sectorKind), [data?.sectors, sectorKind])
   const unknownLimits = summary ? Math.max(0, summary.sample_count - summary.limit_known_count) : 0
   const opening = data?.opening_distribution
@@ -159,7 +180,16 @@ export function YesterdayFeedback({ data, refreshFailed = false, onOpenStock, ch
       {!summary?.sample_count && quoteNote && <p className="mt-2 text-xs leading-relaxed text-secondary">{quoteNote}</p>}
     </section>
     {expanded && available && summary && <div id={detailId} className="min-w-0 space-y-5 border-t border-border pt-4 xl:col-span-2">
-      <div className="space-y-3"><h4 className="text-sm font-medium">个股表现 <span className="font-normal text-secondary">{scopes.find(item => item.id === scope)?.label} · {members.length} 只</span></h4>{members.length ? <MemberTable rows={members} muted={muted} onOpenStock={onOpenStock} /> : <p className="text-xs text-secondary">该范围暂无可展示的个股明细。</p>}</div>
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h4 className="text-sm font-medium">个股表现 <span className="font-normal text-secondary">{scopes.find(item => item.id === scope)?.label} · {members.length} 只</span></h4>
+          {showAuction && <div className="flex items-center gap-1" role="group" aria-label="个股排序">
+            <span className="text-xs text-secondary" title={`猫爪集合竞价指标，09:15 起更新；只用于排序观察，不改变优先分或买入提示。取数 ${stamp(data?.auction?.fetched_at)}`}>排序</span>
+            {sortOptions.map(option => <button type="button" key={option.id} aria-pressed={activeSort === option.id} className={cn(buttonClass, 'min-h-7 px-2', activeSort === option.id && 'border-accent/50 text-foreground')} onClick={() => setSortKey(option.id)}>{option.label}</button>)}
+          </div>}
+        </div>
+        {members.length ? <MemberTable rows={members} muted={muted} showAuction={showAuction} onOpenStock={onOpenStock} /> : <p className="text-xs text-secondary">该范围暂无可展示的个股明细。</p>}
+      </div>
       <div className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-3"><h4 className="text-sm font-medium">关联板块对照</h4><div className="flex gap-1" role="group" aria-label="关联板块分类">{(['industry', 'concept'] as const).map(kind => <button key={kind} type="button" aria-pressed={sectorKind === kind} className={cn(buttonClass, sectorKind === kind && 'border-accent/50 text-foreground')} onClick={() => setSectorKind(kind)}>{kind === 'industry' ? '行业' : '概念'}</button>)}</div></div>
         <p className="text-xs leading-relaxed text-secondary">行业／概念对照固定为沪深非 ST 全范围，不随上方市场范围切换。{data.membership_note || '按当前板块成分计算等权涨幅，非官方板块指数；概念可重复归属，不跨概念加总。'}</p>

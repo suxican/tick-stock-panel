@@ -200,7 +200,8 @@ def _feedback_gate(feedback: dict, config: FirstBoardConfig, as_of: date) -> dic
 
 
 class FirstBoardService:
-    def __init__(self, repo, *, history_loader, publish=None, quote_service=None, depth_service=None):
+    def __init__(self, repo, *, history_loader, publish=None, quote_service=None, depth_service=None,
+                 auction=None):
         self.repo = repo
         self._depth_service = depth_service
         self.root: Path = repo.store.data_dir / "user_data" / "first_board"
@@ -240,7 +241,7 @@ class FirstBoardService:
         self._last_priorities: dict[tuple[str, str], dict] = {}
         self._first_approach: dict[tuple[str, str], datetime] = {}
         self._priority_session: tuple[date, int] | None = None
-        self._feedback = FirstBoardFeedback(repo)
+        self._feedback = FirstBoardFeedback(repo, auction=auction)
         self._attention_evaluator = AttentionEvaluator()
         self._attention_input: dict = {}
         self._observation_store = FirstBoardObservationStore(self.root / "observations")
