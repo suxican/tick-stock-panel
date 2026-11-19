@@ -285,6 +285,16 @@ def _current_routing() -> dict[str, str]:
     }
 
 
+def candidate_names(cap_id: str, tickflow_tier: str = "none") -> set[str]:
+    """当前确实可提供该能力的源名 (与矩阵 candidates 同口径)。"""
+    cap = _cap_specs_by_id().get(cap_id)
+    if cap is None:
+        return set()
+    tier_rank = _TIER_RANK.get(_tier_base(tickflow_tier), -1)
+    names = {"tickflow"} if cap["tf_tier"] is not None and tier_rank >= _TIER_RANK[cap["tf_tier"]] else set()
+    return names | {s["name"] for s in _declared_sources() if cap_id in s["datasets"] and s["available"]}
+
+
 def resolve_capability_sources(tickflow_tier: str = "none") -> list[dict]:
     """每个能力一行: 生效源 + 展示名 + 该源当前能否真正提供 (usable)。
 
