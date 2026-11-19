@@ -194,6 +194,27 @@ _REASON_FIELDS = "tradedate,symbol,type," + ",".join(_REASON_MAP.values())
 _AUCTION_FIELDS = "tradedate,symbol,auc_pct_chg,auc_amt,auc_vol_ratio,ztwme"
 _DEPTH_BATCH = 500  # tick 单次代码数 (实测 1000 只可用, 留余量)
 
+# ---- 龙虎榜 (longhubang_*) ----
+_HOT_MONEY_TTL_S = 86400.0  # 游资名单 (营业部简称) 进程内缓存
+_LHB_ORG_SEAT = "机构专用"
+# 名单中不是游资的通道/机构条目, 不进游资榜
+_LHB_NOT_HOT_MONEY = ("机构专用", "沪股通专用", "深股通专用")
+_SEAT_NOISE = ("股份有限公司", "有限责任公司", "有限公司", "证券营业部", "营业部", "分公司", "证券")
+HOT_MONEY_BASIS = "meoz_seat_match"
+
+
+def _lhb_range_days(reason: object) -> int:
+    """上榜原因 → 统计天数: 「连续三个交易日…」为 3 日榜, 其余为当日榜。"""
+    return 3 if "连续三个交易日" in str(reason or "") else 1
+
+
+def _seat_key(name: object) -> str:
+    """营业部名归一化, 使名单简称 (华泰证券南京六合雄州西路) 与席位全称可比。"""
+    text = str(name or "").strip()
+    for noise in _SEAT_NOISE:
+        text = text.replace(noise, "")
+    return text
+
 
 def _depth_entry(row: dict, now_ms: int) -> dict | None:
     bids = [_to_float(row.get(f"bid{i}")) for i in range(1, 6)]
@@ -394,6 +415,8 @@ class MeozProvider:
         self._calendar: dict[tuple[date, date], tuple[float, list[date]]] = {}
         self._universe: dict[str, str] = {}
         self._universe_at = 0.0
+        self._hot_money: dict[str, str] = {}
+        self._hot_money_at = 0.0
 
     def close(self) -> None:  # loader.load_all 重建注册表时会对每个 provider 调 close
         with self._lock:
@@ -401,6 +424,8 @@ class MeozProvider:
             self._calendar.clear()
             self._universe = {}
             self._universe_at = 0.0
+            self._hot_money = {}
+            self._hot_money_at = 0.0
         if client is not None:
             with contextlib.suppress(Exception):
                 client.close()
@@ -928,6 +953,155 @@ class MeozProvider:
                            "vol_ratio": _to_float(row.get("auc_vol_ratio")),
                            "limit_bid_amount": _to_float(row.get("ztwme"))}
         return out
+
+    # ---------------------------------------------------------------- 龙虎榜
+
+    def _hot_money_alias(self) -> dict[str, str]:
+        """归一化营业部名 → 游资名 (`longhubang_hot_money`, 24 小时缓存; 剔除机构/通道条目)。"""
+        now = time_mod.monotonic()
+        with self._lock:
+            if self._hot_money and now - self._hot_money_at < _HOT_MONEY_TTL_S:
+                return self._hot_money
+        alias: dict[str, str] = {}
+        for row in self._get_client().query("longhubang_hot_money", {}, service="history"):
+            name = str(row.get("name") or "").strip()
+            if not name or any(tag in name for tag in _LHB_NOT_HOT_MONEY):
+                continue
+            try:
+                seats = json.loads(row.get("seats") or "[]")
+            except (TypeError, ValueError):
+                continue
+            for seat in seats if isinstance(seats, list) else []:
+                key = _seat_key(seat)
+                if key:
+                    alias.setdefault(key, name)
+        with self._lock:
+            self._hot_money, self._hot_money_at = alias, now
+        return alias
+
+    def get_dragon_tiger(self, day: date) -> dict | None:
+        """龙虎榜三榜 (总榜 / 机构 / 游资), 口径对齐 fuyao 契约; 该日无数据返回 None。
+
+        - 总榜: `longhubang_stock` 同一股票每条上榜原因一行, 按 (代码, 统计天数) 去重;
+          百分数 → 小数; 无人气排名与概念。
+        - 机构榜: `longhubang_seat` 中「机构专用」席位按 (代码, 统计天数) 汇总。
+        - 游资榜: 席位全称与游资名单的营业部简称归一化后匹配 (近似口径, hot_money_basis 标注);
+          同一席位在同一股票上只计一次 (取当日榜那条)。
+        """
+        from app.services.dragon_tiger import derive_thscode  # 方法内导入: 插件不在模块级依赖服务层
+
+        ymd = _ymd(day)
+        client = self._get_client()
+        stock_rows = client.query("longhubang_stock", {"tradedate": ymd}, service="history")
+        if not stock_rows:
+            return None
+        _same_day(stock_rows, "tradedate", ymd, "longhubang_stock")
+        seat_rows = client.query("longhubang_seat", {"tradedate": ymd}, service="history")
+        _same_day(seat_rows, "tradedate", ymd, "longhubang_seat")
+        universe = self._universe_map()
+
+        def code_of(value) -> str | None:
+            six = _six(str(value or "").strip())
+            return _full_symbol(six, universe) or derive_thscode(six)
+
+        # 总榜
+        items: dict[tuple[str, int], dict] = {}
+        reasons: dict[tuple[str, int], list[str]] = {}
+        dropped: list[str] = []
+        for row in stock_rows:
+            thscode = code_of(row.get("symbol"))
+            if thscode is None:
+                dropped.append(str(row.get("symbol")))
+                continue
+            key = (thscode, _lhb_range_days(row.get("reason")))
+            reason = str(row.get("reason") or "").strip()
+            if reason and reason not in reasons.setdefault(key, []):
+                reasons[key].append(reason)
+            if key in items:
+                continue
+            net_rate, pct = _to_float(row.get("net_rate")), _to_float(row.get("pct_chg"))
+            items[key] = {
+                "thscode": thscode, "ticker": _six(thscode), "name": row.get("name"),
+                "change": None if pct is None else pct / 100.0,
+                "net_value": _to_float(row.get("net_amount")),
+                "net_rate": None if net_rate is None else net_rate / 100.0,
+                "buy_value": _to_float(row.get("lhb_buy")), "sell_value": _to_float(row.get("lhb_sell")),
+                "hot_rank": None, "range_days": key[1], "concept_list": None,
+                "_amount": _to_float(row.get("amount")),
+            }
+        if dropped:
+            logger.warning("猫爪龙虎榜 %d 条代码无法识别, 已跳过: %s", len(dropped), dropped[:5])
+        for key, item in items.items():
+            item["limit_reason"] = "；".join(reasons.get(key, []))
+        amounts = {key: item.pop("_amount") for key, item in items.items()}
+
+        # 席位去重: 同一席位在同一 (代码, 统计天数) 下因多条上榜原因重复出现的行只计一次。
+        # 键含买卖金额: 多家机构共用席位名「机构专用」且同方向, 只能靠金额区分。
+        seats: dict[tuple, dict] = {}
+        for row in seat_rows:
+            thscode = code_of(row.get("symbol"))
+            if thscode is None:
+                continue
+            key = (thscode, _lhb_range_days(row.get("reason")), str(row.get("seat_name") or ""),
+                   row.get("side"), row.get("buy"), row.get("sell"))
+            seats.setdefault(key, row)
+
+        # 机构榜: 家数按所在榜单方向计; 净额每家机构只计一次 (同一机构可能同时进买入前五与
+        # 卖出前五, 两行金额相同, 按方向分别累加会重复)
+        org: dict[tuple[str, int], dict] = {}
+        counted: set[tuple] = set()
+        for (thscode, days, seat_name, side, buy, sell), row in seats.items():
+            if _LHB_ORG_SEAT not in seat_name or (thscode, days) not in items:
+                continue
+            agg = org.setdefault((thscode, days), {"org_net_value": 0.0, "org_buy_num": 0, "org_sell_num": 0})
+            if (thscode, days, seat_name, buy, sell) not in counted:
+                counted.add((thscode, days, seat_name, buy, sell))
+                agg["org_net_value"] += _to_float(row.get("net_buy")) or 0.0
+            if str(side) == "0":
+                agg["org_buy_num"] += 1
+            elif str(side) == "1":
+                agg["org_sell_num"] += 1
+        org_items = []
+        for key, agg in org.items():
+            amount = amounts.get(key)
+            org_items.append({**items[key], **agg,
+                              "org_net_rate": agg["org_net_value"] / amount if amount else None})
+
+        # 游资榜: 同一席位在同一股票上只计一次, 优先当日榜
+        alias = self._hot_money_alias()
+        per_stock: dict[tuple[str, str], tuple[int, dict]] = {}
+        for (thscode, days, seat_name, _side, _buy, _sell), row in seats.items():
+            prev = per_stock.get((thscode, seat_name))
+            if prev is None or days < prev[0]:
+                per_stock[(thscode, seat_name)] = (days, row)
+        groups: dict[str, dict[str, float]] = {}
+        for (thscode, seat_name), (days, row) in per_stock.items():
+            name = alias.get(_seat_key(seat_name))
+            if name is None or (thscode, days) not in items:
+                continue
+            stocks = groups.setdefault(name, {})
+            stocks[thscode] = stocks.get(thscode, 0.0) + (_to_float(row.get("net_buy")) or 0.0)
+        def base_item(code: str) -> dict:
+            return items.get((code, 1)) or next(v for k, v in items.items() if k[0] == code)
+
+        hot_items = []
+        for name, stocks in groups.items():
+            rows = [{**base_item(code), "hot_money_item_net_value": net}
+                    for code, net in sorted(stocks.items(), key=lambda kv: -kv[1])]
+            hot_items.append({"name": name, "buying": sum(stocks.values()), "rows": rows})
+        hot_items.sort(key=lambda h: -(h["buying"] or 0.0))
+
+        iso = day.isoformat()
+        all_items = list(items.values())
+        return {
+            "trade_date": iso,
+            "all": {"trade_date": iso, "stock_count": len({k[0] for k in items}), "count": len(all_items),
+                    "stock_items": all_items},
+            "org": {"trade_date": iso, "stock_count": len({k[0] for k in org}), "count": len(org_items),
+                    "stock_items": org_items},
+            "hot_money": {"trade_date": iso, "count": len(hot_items), "hot_money_items": hot_items},
+            "hot_money_basis": HOT_MONEY_BASIS,
+        }
 
     def get_limit_reasons(self, day: date) -> list[dict]:
         """`screening` 涨停/炸板股的个股归因: 开盘啦、韭菜公社 (主因+详情)、选股宝。
