@@ -308,11 +308,25 @@ YAML 源的 `batch/rpm/timeout` 继续有效，由源自身执行；无须迁移
 | --- | --- |
 | `get_realtime` | **软失败**: 返回 `[]` + warning 日志, 保证轮询线程不中断 |
 | `get_realtime_indices` | **软失败**: 返回 `None` + warning 日志, 保留上轮有效缓存; 成功无数据返回 `[]` |
-| `get_depth_batch` | 单批异常由服务隔离并保留其他批次; 不跨数据源回退 |
+| `get_depth_batch` | 单批异常由服务隔离并保留其他批次; 一轮只用一个源。整轮全部批次异常或请求非空却返回 0 只时, 服务按兜底链在同一轮换下一个源重跑 |
+| `get_overseas_quotes` / `get_overseas_index_*` | 异常或返回形状不符时按兜底链换下一个源; 空 list 是有效结果, 不触发换源 |
 | `get_minute` | `ProviderRequestError` 明确上报失败，不跨源；旧非流式调用的普通异常保留告警与空帧语义 |
 | `iter_minute` | 取数或数据契约错误中止本次任务，不跨源；已保存帧保留并刷新查询视图，后续可重新补齐。取消异常原样透传 |
 | `get_daily` / `get_adj_factors` / `get_financials` | 异常由上层同步流程捕获记录; 无数据返回空 DataFrame |
 | `iter_daily` | 可选; 每批必须符合 `get_daily` 契约。流正常结束后才提交 staging; 未捕获异常会丢弃 staging。provider 内已定义的单标的软失败语义保持不变 |
+
+**兜底链的错误分类** (`depth5`、`overseas` 两个能力): 插件可抛出 `app.data_providers.errors`
+中的源中立错误 (或其子类), 调度层据此熔断该源在该能力上的调用:
+
+| 错误类型 | 含义 | 熔断 |
+| --- | --- | --- |
+| `ProviderAuthError` | Key 失效、权限或套餐不足 | 直到 Key 变更或用户在设置页点「重试主源」 |
+| `ProviderQuotaError(retry_after=秒)` | 限频或日额度耗尽 | 到北京时间次日 00:00, `retry_after` 更短时取之 |
+| `ProviderDataError` | 返回空、格式不符 | 计一次失败 |
+| 其它任何异常 | 视为超时 / 5xx 类瞬时错误 | 连续 3 次后熔断 300 秒, 到期放行一次探测 |
+
+错误消息可能出现在日志里, 不得包含 API Key。猫爪插件的 `MeozAuthError`、`MeozRateLimitError`
+分别继承 `ProviderAuthError`、`ProviderQuotaError`, 可作参考。
 
 `iter_daily` 用于避免大范围日K同步在 provider 内累积完整 DataFrame。实现该方法后,
 `kline_sync` 会优先消费它; 未实现的 provider 继续调用 `get_daily`,保持兼容。批次大小应有
