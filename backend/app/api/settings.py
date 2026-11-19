@@ -772,7 +772,28 @@ def get_capability_matrix() -> dict:
             "limit_events_data_provider": preferences.get_limit_events_data_provider(),
         },
         tickflow_tier=policy.base_tier_name(),
+        fallbacks={
+            "depth5": preferences.get_capability_fallbacks("depth5"),
+            "overseas": preferences.get_capability_fallbacks("overseas"),
+        },
     )
+
+
+class CapabilityResetIn(BaseModel):
+    source: str | None = None
+
+
+@router.post("/capability/{cap_id}/reset")
+def reset_capability(cap_id: str, body: CapabilityResetIn | None = None) -> dict:
+    """清除兜底链能力的熔断状态 (设置页「重试主源」); 返回该能力的新矩阵行。"""
+    from app.data_providers import routing_health
+    from app.data_providers.capabilities import CAPABILITY_REGISTRY
+
+    if not any(c["id"] == cap_id and c.get("fallback") for c in CAPABILITY_REGISTRY):
+        raise HTTPException(status_code=404, detail=f"能力 '{cap_id}' 不支持兜底链")
+    source = (body.source or "").strip().lower() if body else ""
+    routing_health.reset(cap_id, source or None)
+    return next(c for c in get_capability_matrix()["capabilities"] if c["id"] == cap_id)
 
 
 @router.post("/plugin-key")
@@ -809,6 +830,8 @@ def save_plugin_key(req: PluginKeyIn) -> dict:
             else:
                 secrets_store.save({f"{name}_api_key": previous})
             return {"ok": False, "error": "插件初始化失败，已保留原配置"}
+    from app.data_providers import routing_health
+    routing_health.reset(source=name)  # Key 变更: 清除该源在各能力上的熔断
     status = next((p for p in custom_sources.list_plugins() if p["name"] == name), None)
     return {
         "ok": True,
@@ -830,6 +853,8 @@ def clear_plugin_key(name: str) -> dict:
         raise HTTPException(status_code=400, detail=f"插件 '{name}' 不支持在界面配置 Key")
     secrets_store.clear(f"{name.lower()}_api_key")
     custom_sources.refresh_plugin(name)
+    from app.data_providers import routing_health
+    routing_health.reset(source=name.lower())
     status = next((p for p in custom_sources.list_plugins() if p["name"] == name), None)
     return {
         "ok": True,

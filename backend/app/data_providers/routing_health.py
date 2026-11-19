@@ -195,11 +195,15 @@ def pick_source(cap_id: str, exclude: Collection[str] = ()) -> str | None:
 
 
 def chain_status(cap_id: str) -> list[dict]:
-    chain = effective_chain(cap_id)
+    return source_status(cap_id, effective_chain(cap_id))
+
+
+def source_status(cap_id: str, sources: list[str]) -> list[dict]:
+    """给定源列表的健康状态 (不读偏好, 供能力矩阵按注入的路由组装)。"""
     now = cn_now()
     rows = []
     with _lock:
-        for source in chain:
+        for source in sources:
             h = _get(cap_id, source, now)
             rows.append({
                 "source": source,

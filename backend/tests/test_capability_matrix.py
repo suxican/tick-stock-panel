@@ -342,9 +342,12 @@ def test_api_endpoint_injects_all_routing_preferences(monkeypatch):
 
     captured: dict[str, dict] = {}
 
-    def _spy(current, tickflow_tier="none"):
+    monkeypatch.setattr(preferences, "get_capability_fallbacks", lambda cap_id: [f"{cap_id}-fb"])
+
+    def _spy(current, tickflow_tier="none", fallbacks=None):
         captured["current"] = dict(current)
-        return build_capability_matrix(current, tickflow_tier=tickflow_tier)
+        captured["fallbacks"] = dict(fallbacks or {})
+        return build_capability_matrix(current, tickflow_tier=tickflow_tier, fallbacks=fallbacks)
 
     monkeypatch.setattr(capabilities_mod, "build_capability_matrix", _spy)
     settings_api.get_capability_matrix()
@@ -353,6 +356,9 @@ def test_api_endpoint_injects_all_routing_preferences(monkeypatch):
     assert routable_fields == set(getter_values)
     # 注入完整: 每个路由字段都来自对应 getter, 不允许缺键 (缺键会在构建侧静默回退默认)
     assert captured["current"] == getter_values
+    # 兜底链能力的兜底顺序同样全部注入
+    fallback_caps = {c["id"] for c in CAPABILITY_REGISTRY if c.get("fallback")}
+    assert captured["fallbacks"] == {cap_id: [f"{cap_id}-fb"] for cap_id in fallback_caps}
 
 
 def test_api_endpoint_full_minute_usable_follows_preference(monkeypatch):

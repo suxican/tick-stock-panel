@@ -196,7 +196,8 @@ def _display_of(sources: list[dict], name: str) -> str:
     return name
 
 
-def build_capability_matrix(current: dict[str, str], tickflow_tier: str = "none") -> dict:
+def build_capability_matrix(current: dict[str, str], tickflow_tier: str = "none",
+                            fallbacks: dict[str, list[str]] | None = None) -> dict:
     """注册表 + 源能力声明 + 当前偏好 → 能力路由矩阵。
 
     current 为 {偏好字段: 当前值}, 由 API 层经 preferences getters 注入;
@@ -207,6 +208,10 @@ def build_capability_matrix(current: dict[str, str], tickflow_tier: str = "none"
     由 API 层从 tickflow policy 注入。当前档位不提供的能力里 TickFlow
     不进候选, 但偏好仍指向 tickflow 时以 tf_available=False 标记,
     供前端提示「档位不足」。未知档按 none 处理。
+
+    fallbacks 为 {能力 id: 兜底顺序}, 由 API 层经 preferences 注入 (缺省为空);
+    注册表 fallback=True 的能力额外给出 fallbacks / chain / active_source /
+    degraded / fallback_reason, 其它能力不含这些键。
     """
     tier_base = _tier_base(tickflow_tier)
     tier_rank = _TIER_RANK.get(tier_base, -1)
@@ -234,7 +239,7 @@ def build_capability_matrix(current: dict[str, str], tickflow_tier: str = "none"
             }
             (candidates if s["available"] else pending).append(entry)
         usable = any(c["name"] == effective for c in candidates)
-        capabilities.append({
+        row = {
             "id": cap["id"],
             "label": cap["label"],
             "desc": cap["desc"],
@@ -249,8 +254,43 @@ def build_capability_matrix(current: dict[str, str], tickflow_tier: str = "none"
             "effective_display": _display_of(sources, effective),
             "candidates": candidates,
             "pending": pending,
-        })
+        }
+        if cap.get("fallback"):
+            view = _fallback_view(cap["id"], effective, {c["name"] for c in candidates},
+                                  (fallbacks or {}).get(cap["id"], []), sources)
+            row["usable"] = bool(view.pop("_chain_names"))
+            row.update(view)
+        capabilities.append(row)
     return {"tickflow_tier": tier_base, "capabilities": capabilities}
+
+
+def _fallback_view(cap_id: str, effective: str, candidate_set: set[str],
+                   fallbacks: list[str], sources: list[dict]) -> dict:
+    """兜底链能力的展示字段: 生效链健康状态、实际生效源、是否降级及原因。
+
+    usable 改为「生效链非空」: 只要有一个可提供该能力的源 (主源或兜底) 即可用;
+    链上源暂时熔断不影响 usable, 由 degraded / fallback_reason 展示。
+    """
+    from app.data_providers import routing_health
+
+    chain_names = [n for n in dict.fromkeys([effective, *fallbacks]) if n in candidate_set]
+    chain = routing_health.source_status(cap_id, chain_names)
+    active = next((c["source"] for c in chain if c["state"] != "open"), None)
+    reasons = [] if effective in candidate_set else [f"{_display_of(sources, effective)}：当前不可用"]
+    for c in chain:
+        if c["source"] == active:
+            break
+        reasons.append(f"{_display_of(sources, c['source'])}：{c['reason'] or '熔断中'}")
+    degraded = active is not None and active != effective
+    return {
+        "_chain_names": chain_names,
+        "fallbacks": list(fallbacks),
+        "chain": chain,
+        "active_source": active,
+        "active_display": _display_of(sources, active) if active else None,
+        "degraded": degraded,
+        "fallback_reason": "；".join(reasons) if reasons and (degraded or active is None) else None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +361,7 @@ def resolve_capability_sources(tickflow_tier: str = "none") -> list[dict]:
             s["name"] for s in sources
             if cap["id"] in s["datasets"] and s["available"]
         }
-        rows.append({
+        row = {
             "id": cap["id"],
             "label": cap["label"],
             "field": field,
@@ -329,7 +369,15 @@ def resolve_capability_sources(tickflow_tier: str = "none") -> list[dict]:
             "source_display": _display_of(sources, effective),
             "usable": effective in provider_names,
             "tf_available": tf_available,
-        })
+        }
+        if cap.get("fallback"):
+            from app.services import preferences
+
+            view = _fallback_view(cap["id"], effective, provider_names,
+                                  preferences.get_capability_fallbacks(cap["id"]), sources)
+            row["usable"] = bool(view.pop("_chain_names"))
+            row.update(view)
+        rows.append(row)
     return rows
 
 
@@ -349,7 +397,9 @@ def capability_gate(cap_id: str, tickflow_tier: str | None = None) -> tuple[bool
     for row in resolve_capability_sources(tickflow_tier):
         if row["id"] == cap_id:
             label = f"{row['label']} ← {row['source_display']}"
-            if not row["usable"] and row["source"] == "tickflow" and not row["tf_available"]:
+            if row.get("degraded"):
+                label = f"{row['label']} ← {row['active_display']}（兜底：{row['fallback_reason']}）"
+            elif not row["usable"] and row["source"] == "tickflow" and not row["tf_available"]:
                 label += "(档位不足)"
             elif not row["usable"]:
                 label += "(当前源不可用)"
