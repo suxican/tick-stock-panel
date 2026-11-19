@@ -72,6 +72,7 @@ EXPECTED_OPEN_ENDPOINTS: set[str] = {
     "GET /api/regime/latest",
     "GET /api/regime/mainline",
     "GET /api/regime/phases",
+    "GET /api/regime/seal-quality",
     "GET /api/regime/states",
     "GET /api/screener/cached",
     "GET /api/screener/limit-ladder",

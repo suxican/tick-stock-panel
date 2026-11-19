@@ -182,6 +182,17 @@ def regime_recompute(request: Request, start: date | None = None, end: date | No
     }
 
 
+@router.get("/seal-quality")
+def regime_seal_quality(request: Request, start: date | None = None, end: date | None = None):
+    """封板质量 (炸板率 / 开板率 / 首封时间分布 / 封单额): 区间每日行 + 最新一日及近一年分位。
+
+    只读本地涨停池归档与日线, 不改情绪周期阶段规则。开板率 2020-01-02 起才有数据。
+    """
+    from app.services import seal_quality
+
+    return seal_quality.seal_quality_payload(_data_dir(request), start, end)
+
+
 @router.get("/conclusion")
 def regime_conclusion(request: Request):
     """最新交易日的环境结论: 当天格子、用户预设、叠加市场闸门后的上限与该格历史证据。"""
