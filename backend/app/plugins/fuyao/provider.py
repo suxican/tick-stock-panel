@@ -1166,6 +1166,11 @@ class FuyaoProvider:
             boards = {"all": client.dragon_tiger_list("all", iso)}
             if not (boards["all"].get("stock_items") or []):
                 return None
+            returned = str(boards["all"].get("trade_date") or iso)
+            if returned != iso:
+                # 显式日期却给了别的交易日: 视为该日无数据, 不能按请求日缓存成错误日期的榜单
+                logger.warning("fuyao 龙虎榜请求 %s 返回了 %s 的数据, 按该日无数据处理", iso, returned)
+                return None
             for board in ("org", "hot_money"):
                 boards[board] = client.dragon_tiger_list(board, iso)
         except FuyaoError as e:

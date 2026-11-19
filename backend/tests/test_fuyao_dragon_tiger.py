@@ -68,6 +68,16 @@ def test_fuyao_out_of_range_returns_none(monkeypatch):
     assert _provider(monkeypatch, client).get_dragon_tiger(DAY) is None
 
 
+def test_fuyao_mismatched_trade_date_returns_none(monkeypatch):
+    # 显式日期却返回别的交易日: 当作该日无数据, 不能按请求日缓存成错误日期的榜单
+    class _OtherDay(_Client):
+        def dragon_tiger_list(self, board_type="all", date=None):
+            out = super().dragon_tiger_list(board_type, date)
+            return {**out, "trade_date": "2026-11-17"}
+
+    assert _provider(monkeypatch, _OtherDay()).get_dragon_tiger(DAY) is None
+
+
 def test_fuyao_other_error_raises(monkeypatch):
     client = _Client(errors={"all": FuyaoError("server", code=5000)})
     with pytest.raises(FuyaoError):
