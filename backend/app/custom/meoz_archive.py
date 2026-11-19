@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from app.extensions import BACKEND_EXTENSION_API_VERSION, BackendExtensionRegistrar
 from app.market_time import cn_now
 from app.services.meoz_archive import ArchiveUnavailableError, archive_today, status
+from app.services.meoz_limit_reasons import read as read_reasons
 from app.services.trading_day import is_trading_day
 
 EXTENSION_ID = "meoz.archive"
@@ -25,8 +26,13 @@ def _run(data_dir: Path) -> None:
         archive_today(data_dir)
     except ArchiveUnavailableError:
         logger.debug("猫爪未就绪, 跳过盘后留档")
+        return
     except Exception:  # 定时任务不得因上游异常中断调度
         logger.exception("猫爪盘后留档失败")
+    try:  # 个股涨停归因随盘后留档定版 (已存在则不改写)
+        read_reasons(data_dir, cn_now().date())
+    except Exception:  # 与快照留档互不影响
+        logger.exception("猫爪涨停归因留档失败")
 
 
 @asynccontextmanager

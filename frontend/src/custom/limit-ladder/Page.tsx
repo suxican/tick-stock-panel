@@ -16,8 +16,9 @@ import { ErrorState } from '@/components/ErrorState'
 import { useTheme } from '@/lib/theme'
 import { useCapabilities, usePreferences } from '@/lib/useSharedQueries'
 import { useZzshareReasons } from '@/lib/useZzshareReasons'
+import { useMeozReasons } from '@/lib/useMeozReasons'
 import { useKaipanlaIntraday, useKaipanlaStatus } from '@/lib/useKaipanla'
-import { filterTiersBySymbols, mergeReasons, sealText, themeSymbolsFor, type LadderReason } from './kaipanlaReasons'
+import { filterTiersBySymbols, detailLines, mergeReasons, sealText, themeSymbolsFor, type LadderReason } from './kaipanlaReasons'
 import { KaipanlaStrip } from './KaipanlaStrip'
 import { SealedBadge } from '@/components/SealedBadge'
 import { useDialogBackdrop } from '@/lib/useDialogBackdrop'
@@ -62,6 +63,13 @@ interface ExtFieldConfig {
   showConceptGroupStats?: boolean
   /** 显示分组行业分布统计 */
   showIndustryGroupStats?: boolean
+}
+
+// 归因角标 (主文本来源): 猫=猫爪 (开盘啦/韭菜公社/选股宝, 盘中即有、收盘定版), 优先; zz=ZZShare 盘后, 猫爪缺失时; 开=开盘啦非官方接口
+const REASON_SOURCE: Record<LadderReason['source'], { badge: string; title: string }> = {
+  zzshare: { badge: 'zz', title: 'ZZShare（盘后）' },
+  meoz: { badge: '猫', title: '猫爪（开盘啦/韭菜公社/选股宝，盘中补齐、收盘定版）' },
+  kpl: { badge: '开', title: '开盘啦（盘中）' },
 }
 
 const DEFAULT_BF: BrokenFailedConfig = {
@@ -404,13 +412,16 @@ const StockCard = React.memo(function StockCard({ stock, reason, extFields, dire
       <details className="group/reason mt-1 rounded bg-elevated/40 px-2 py-1 text-xs">
         <summary className="cursor-pointer truncate text-secondary focus-visible:outline-accent">
           涨停归因
-          <span className="ml-1 text-[10px] text-muted" title={reason.source === 'kpl' ? '开盘啦（盘中）' : 'ZZShare（盘后）'}>
-            {reason.source === 'kpl' ? '开' : 'zz'}
+          <span className="ml-1 text-[10px] text-muted" title={REASON_SOURCE[reason.source].title}>
+            {REASON_SOURCE[reason.source].badge}
           </span>
           <span className="ml-2 text-muted group-open/reason:hidden">{reason.text}</span>
         </summary>
         <p className="mt-1.5 max-w-prose whitespace-pre-wrap break-words leading-relaxed text-foreground">{reason.text}</p>
-        {reason.alt && <p className="mt-1 text-secondary">开盘啦：{reason.alt}</p>}
+        {detailLines(reason).map(line => (
+          <p key={line.label} className="mt-1 max-w-prose whitespace-pre-wrap break-words text-secondary">{line.label}：{line.text}</p>
+        ))}
+        {reason.alt && <p className="mt-1 text-secondary">开盘啦题材：{reason.alt}</p>}
         {reason.seal && <p className="mt-1 tabular-nums text-muted">{sealText(reason.seal)}</p>}
       </details>
     )}
@@ -1579,6 +1590,7 @@ export function LimitUpLadder() {
   })
   const reasonDate = direction === 'up' && data?.tiers.length ? data.as_of : undefined
   const reasons = useZzshareReasons(reasonDate)
+  const meozReasons = useMeozReasons(reasonDate)
   // 开盘啦（非官方）: 仅涨停方向且设置中开启时请求; 只展示, 不参与梯队计算
   const kplStatus = useKaipanlaStatus()
   const kplOn = direction === 'up' && !!kplStatus.data?.enabled
@@ -1588,8 +1600,9 @@ export function LimitUpLadder() {
   const kplThemeSymbols = themeSymbolsFor(kplSnapshot, kplTheme, data?.as_of)
   const ladderReasons = useMemo(
     () => mergeReasons(reasonDate ? reasons.data : undefined,
-      reasonDate && kplSnapshot?.date === reasonDate ? kplSnapshot.stocks : undefined),
-    [reasonDate, reasons.data, kplSnapshot],
+      reasonDate && kplSnapshot?.date === reasonDate ? kplSnapshot.stocks : undefined,
+      reasonDate ? meozReasons.data : undefined),
+    [reasonDate, reasons.data, kplSnapshot, meozReasons.data],
   )
   const handleOpenDimension = useCallback((kind: DimensionKind, value: string, sourceField?: string) => {
     if (!sourceField) return

@@ -1189,6 +1189,21 @@ export interface KplExpression {
   kpl_summary?: string
 }
 
+/** 猫爪个股涨停归因 (screening: 开盘啦 / 韭菜公社 / 选股宝 原文); 盘中实时, 收盘后定版留档 */
+export interface MeozLimitReason {
+  symbol: string
+  kpl: string | null
+  jygs: string | null
+  jygs_detail: string | null
+  xgb: string | null
+}
+export interface MeozLimitReasons {
+  date: string
+  source: 'live' | 'archive'
+  final: boolean
+  rows: MeozLimitReason[]
+}
+
 export interface KplSnapshot {
   date: string
   fetched_at: string
@@ -4048,6 +4063,8 @@ export const api = {
   kaipanlaIntraday: (date?: string) =>
     // 一轮 9 个上游请求 (间隔 1 秒, 慢时单个 2.5 秒), 可能超过默认 30 秒
     request<KplSnapshot>(`/api/kaipanla/intraday${date ? `?date=${date}` : ''}`, { quiet: true, timeoutMs: 90_000 }),
+  meozLimitReasons: (date: string) =>
+    request<MeozLimitReasons>(`/api/meoz/limit-reasons?date=${date}`, { quiet: true, timeoutMs: 60_000 }),
   huichunConfig: () => request<HuichunConfig>('/api/huichun/config', { quiet: true }),
   huichunSaveConfig: (body: { rules: HuichunRules; expected_revision: number }) => request<HuichunConfig>('/api/huichun/config', {
     method: 'PUT', body: JSON.stringify(body), quiet: true,

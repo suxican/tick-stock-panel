@@ -188,6 +188,9 @@ def _six(symbol: str) -> str:
     return symbol.split(".")[0]
 
 
+_REASON_MAP = {"kpl": "reason_main_kpl", "jygs": "reason_main_jygs", "jygs_detail": "reason_jygs",
+               "xgb": "reason_xgb"}
+_REASON_FIELDS = "tradedate,symbol,type," + ",".join(_REASON_MAP.values())
 _DEPTH_BATCH = 500  # tick 单次代码数 (实测 1000 只可用, 留余量)
 
 
@@ -901,6 +904,25 @@ class MeozProvider:
                 symbol = wanted.get(_six(str(row.get("symbol") or "")))
                 if entry is not None and symbol is not None:
                     out[symbol] = entry
+        return out
+
+    def get_limit_reasons(self, day: date) -> list[dict]:
+        """`screening` 涨停/炸板股的个股归因: 开盘啦、韭菜公社 (主因+详情)、选股宝。
+
+        当日走实时 (盘中即有, 覆盖不全且会补齐), 历史日按 tradedate 查询。只返回至少有一家
+        归因的股票; 文本为第三方原文, 不作加工。
+        """
+        params = {} if day == cn_now().date() else {"tradedate": _ymd(day)}
+        rows = self._get_client().query("screening", params, _REASON_FIELDS)
+        universe = self._universe_map()
+        out = []
+        for row in rows:
+            if row.get("type") not in ("u", "ub") or str(row.get("tradedate") or _ymd(day)) != _ymd(day):
+                continue
+            item = {key: (str(row.get(src)).strip() if row.get(src) else None) for key, src in _REASON_MAP.items()}
+            symbol = _full_symbol(row.get("symbol"), universe)
+            if symbol and any(item.values()):
+                out.append({"symbol": symbol, **item})
         return out
 
     def ws_ticket(self, body: dict) -> dict:
