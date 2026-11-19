@@ -79,7 +79,8 @@ def test_all_sources_fail_keeps_reason(env):
     result = overseas_indices.get_quotes()
     assert result["rows"] == []
     assert result["reason"]
-    assert result["degraded"] is True
+    assert result["degraded"] is False   # 没有任何源提供数据, 不标「兜底」
+    assert result["fallback_reason"]     # 各源失败原因仍可供悬停查看
 
 
 def test_cache_key_separates_sources(env, monkeypatch):

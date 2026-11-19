@@ -333,8 +333,13 @@ def _augment_custom_sources(capset: CapabilitySet) -> None:
             "full_minute": preferences.get_full_minute_data_provider(),
         }
         for dataset, cap in _DATASET_CAP_MAP:
-            provider = active_providers[dataset]
-            if provider != "tickflow" and custom_sources.provider_has_dataset(provider, dataset):
+            # 兜底链能力 (depth5) 与能力矩阵 usable 同口径: 主源或兜底链上任一插件可提供即授予
+            providers = [active_providers[dataset]]
+            if dataset == "depth5":
+                providers += preferences.get_capability_fallbacks(dataset)
+            provider = next((p for p in providers
+                             if p != "tickflow" and custom_sources.provider_has_dataset(p, dataset)), None)
+            if provider is not None:
                 capset.grant(cap)
                 logger.info(
                     "custom source '%s' provides dataset '%s': granted %s",

@@ -324,13 +324,15 @@ class DepthService:
         """为持仓监控提供盘口；复用五档能力路由和全服务请求节流。"""
         if not symbols or not self._has_capability():
             return {}
-        return self._call_depth_batch(list(dict.fromkeys(symbols)))
+        # 持仓可能停牌或是某源不支持的品种, 返回 0 只是正常结果, 不据此判定源失效
+        return self._call_depth_batch(list(dict.fromkeys(symbols)), empty_is_failure=False)
 
-    def _call_depth_batch(self, symbols: list[str]) -> dict:
+    def _call_depth_batch(self, symbols: list[str], *, empty_is_failure: bool = True) -> dict:
         """按五档兜底链取数: 一轮结果只来自一个源, 每个条目带 source。
 
-        链上第一个可用源取完整轮; 整轮失败 (所有批次异常, 或请求非空却拿到 0 只 ——
-        tdxquant 凭据失效时会吞掉批次异常返回空) 时同轮换下一个源重跑;
+        链上第一个可用源取完整轮; 整轮失败 (所有批次异常, 或 empty_is_failure 时请求非空
+        却拿到 0 只 —— tdxquant 凭据失效时会吞掉批次异常返回空; 只用于涨跌停封单, 交易时段
+        内它们的盘口不应为空) 时同轮换下一个源重跑;
         部分批次失败保留已拿到的数据并计一次失败, 不换源 (避免轮内混源)。
         所有源共用分片限速与请求节流。
         """
@@ -354,8 +356,13 @@ class DepthService:
                 logger.warning("depth provider %s 未加载或未实现 get_depth_batch, 尝试下一个源", source)
                 continue
 
-            result, failed, total, last_error = self._fetch_round(source, fetch_depth, symbols)
-            if total and (failed == total or not result):
+            try:
+                result, failed, total, last_error = self._fetch_round(source, fetch_depth, symbols)
+            except BaseException:
+                # 取数前置步骤 (capset/限速解析) 异常: 归还可能持有的半开探测权, 避免该源永久卡住
+                routing_health.release("depth5", source)
+                raise
+            if total and (failed == total or (empty_is_failure and not result)):
                 routing_health.record("depth5", source, last_error or ProviderDataError("empty round"))
                 logger.warning("depth provider %s 整轮无数据 (%d/%d 批失败), 尝试下一个源", source, failed, total)
                 continue

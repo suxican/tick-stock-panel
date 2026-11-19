@@ -323,7 +323,7 @@ YAML 源的 `batch/rpm/timeout` 继续有效，由源自身执行；无须迁移
 | `ProviderAuthError` | Key 失效、权限或套餐不足 | 直到 Key 变更或用户在设置页点「重试主源」 |
 | `ProviderQuotaError(retry_after=秒)` | 限频或日额度耗尽 | 到北京时间次日 00:00, `retry_after` 更短时取之 |
 | `ProviderDataError` | 返回空、格式不符 | 计一次失败 |
-| 其它任何异常 | 视为超时 / 5xx 类瞬时错误 | 连续 3 次后熔断 300 秒, 到期放行一次探测 |
+| 其它任何异常 | 视为超时 / 5xx 类瞬时错误 | 连续 3 次后熔断 300 秒, 到期放行一次探测; 链上只有这一个源时不拦截 |
 
 错误消息可能出现在日志里, 不得包含 API Key。猫爪插件的 `MeozAuthError`、`MeozRateLimitError`
 分别继承 `ProviderAuthError`、`ProviderQuotaError`, 可作参考。

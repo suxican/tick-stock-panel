@@ -56,7 +56,8 @@ def collect_overseas_quotes() -> dict:
             reason = "外围数据源返回格式无法核验"
         else:
             reason = "外围数据源暂不可用"
-        return {"source": source, "fetched_at": None, "quotes": [], "degraded": result.degraded,
+        # 全链失败时没有任何源提供数据, 不标「兜底」
+        return {"source": source, "fetched_at": None, "quotes": [], "degraded": False,
                 "fallback_reason": result.reason, "reason": reason}
     return {"source": result.source, "fetched_at": result.data.get("fetched_at"),
             "quotes": deepcopy(result.data["quotes"]), "degraded": result.degraded,

@@ -26,8 +26,11 @@ logger = logging.getLogger(__name__)
 
 FAILURE_THRESHOLD = 3
 TRANSIENT_OPEN_S = 300
+# 半开探测权的租期: 拿到探测权却没有登记结果 (调用方异常退出) 时, 超期后允许下一个探测
+PROBE_LEASE_S = 120
 
 _HEALTHY, _OPEN, _HALF_OPEN = "healthy", "open", "half_open"
+_TRANSIENT, _AUTH, _QUOTA = "transient", "auth", "quota"
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,8 @@ class _Health:
     until: datetime | None = None
     reason: str | None = None
     probing: bool = False
+    probe_at: datetime | None = None
+    kind: str | None = None  # open 的原因类别: transient / auth / quota
 
 
 _lock = threading.Lock()
@@ -114,23 +119,30 @@ def _get(cap_id: str, source: str, now: datetime) -> _Health:
     return h
 
 
-def _claim(cap_id: str, source: str, now: datetime) -> bool:
-    """能否使用该源; half_open 时只有第一个调用者拿到探测权 (调用方持锁)。"""
+def _claim(cap_id: str, source: str, now: datetime, *, sole: bool = False) -> bool:
+    """能否使用该源 (调用方持锁)。
+
+    half_open 时只有第一个调用者拿到探测权; 探测权超过 PROBE_LEASE_S 未登记结果视为作废。
+    sole=True (链上只有这一个源): 瞬时熔断不拦截 —— 没有别的源可换时熔断只会造成数据空窗,
+    比不兜底的现状更差; 认证与额度熔断仍拦截 (继续请求注定失败)。
+    """
     h = _get(cap_id, source, now)
     if h.state == _HEALTHY:
         return True
-    if h.state == _HALF_OPEN and not h.probing:
-        h.probing = True
+    if h.state == _HALF_OPEN and (
+        not h.probing or (h.probe_at is not None and (now - h.probe_at).total_seconds() > PROBE_LEASE_S)
+    ):
+        h.probing, h.probe_at = True, now
         return True
-    return False
+    return sole and h.kind == _TRANSIENT
 
 
 def _hm(t: datetime) -> str:
     return t.strftime("%H:%M")
 
 
-def _open(h: _Health, until: datetime | None, reason: str) -> None:
-    h.state, h.until, h.reason, h.probing = _OPEN, until, reason, False
+def _open(h: _Health, until: datetime | None, reason: str, kind: str) -> None:
+    h.state, h.until, h.reason, h.probing, h.kind = _OPEN, until, reason, False, kind
 
 
 def _outcome_kind(exc: BaseException) -> str:
@@ -150,24 +162,24 @@ def record(cap_id: str, source: str, outcome: BaseException | None) -> None:
         h = _get(cap_id, source, now)
         before = h.state
         if outcome is None:
-            h.state, h.failures, h.until, h.reason, h.probing = _HEALTHY, 0, None, None, False
+            h.state, h.failures, h.until, h.reason, h.probing, h.kind = _HEALTHY, 0, None, None, False, None
         elif isinstance(outcome, ProviderAuthError):
-            _open(h, None, "认证失败或无权限，熔断至重试")
+            _open(h, None, "认证失败或无权限，熔断至重试", _AUTH)
         elif isinstance(outcome, ProviderQuotaError):
             midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
             until = midnight
             if outcome.retry_after is not None:
                 until = min(midnight, now + timedelta(seconds=float(outcome.retry_after)))
             text = "次日 00:00" if until == midnight else _hm(until)
-            _open(h, until, f"调用额度或频率超限，熔断至 {text}")
+            _open(h, until, f"调用额度或频率超限，熔断至 {text}", _QUOTA)
         else:
             h.failures += 1
-            if before == _HALF_OPEN or h.failures >= FAILURE_THRESHOLD:
+            if before != _HEALTHY or h.failures >= FAILURE_THRESHOLD:
                 until = now + timedelta(seconds=TRANSIENT_OPEN_S)
                 if before == _HALF_OPEN:
-                    _open(h, until, f"探测失败，熔断至 {_hm(until)}")
+                    _open(h, until, f"探测失败，熔断至 {_hm(until)}", _TRANSIENT)
                 else:
-                    _open(h, until, f"连续 {h.failures} 次失败，熔断至 {_hm(until)}")
+                    _open(h, until, f"连续 {h.failures} 次失败，熔断至 {_hm(until)}", _TRANSIENT)
             else:
                 h.reason = f"请求失败（连续 {h.failures} 次）"
         after, reason = h.state, h.reason
@@ -189,7 +201,7 @@ def pick_source(cap_id: str, exclude: Collection[str] = ()) -> str | None:
     now = cn_now()
     with _lock:
         for source in chain:
-            if source not in exclude and _claim(cap_id, source, now):
+            if source not in exclude and _claim(cap_id, source, now, sole=len(chain) == 1):
                 return source
     return None
 
@@ -243,6 +255,8 @@ def call_with_fallback(
     """沿生效链调用 provider.method; 结果只来自一个源, 异常不外抛。
 
     invoke(源名, 无参调用) 用于包装每次源调用 (例如按源缓存), 缺省直接调用。
+    invoke 未真正执行上游调用 (缓存命中、本地背压拒绝、共享同一请求的并发等待者) 时
+    不登记源的健康状态: 失败只由真正执行调用的那一方登记一次, 本地拒绝也不换源。
     """
     primary = _primary(cap_id)
     chain = effective_chain(cap_id)
@@ -253,7 +267,7 @@ def call_with_fallback(
 
     for source in chain:
         with _lock:
-            usable = _claim(cap_id, source, cn_now())
+            usable = _claim(cap_id, source, cn_now(), sole=len(chain) == 1)
             skipped_reason = None if usable else _health[(cap_id, source)].reason
         if not usable:
             attempts.append((source, "open"))
@@ -269,23 +283,42 @@ def call_with_fallback(
             reasons.append(f"{_display(source)}：未加载或未实现")
             continue
 
-        def call(fn=fn):
+        ran = [False]
+
+        def call(fn=fn, ran=ran):
+            ran[0] = True
             return fn(*args, **kwargs)
 
         try:
             data = invoke(source, call) if invoke is not None else call()
         except Exception as exc:  # noqa: BLE001 — 任何源失败都不能拖垮调用方
+            if not ran[0]:
+                release(cap_id, source)
+                attempts.append((source, "skipped"))
+                logger.info("%s ← %s 本次未发起请求 (%s), 不计入健康状态",
+                            _label(cap_id), source, type(exc).__name__)
+                return FallbackResult(None, None, False, "请求繁忙，请稍后重试", tuple(attempts))
             logger.warning("%s ← %s 调用失败: %s", _label(cap_id), source, type(exc).__name__)
             record(cap_id, source, exc)
             attempts.append((source, _outcome_kind(exc)))
             reasons.append(f"{_display(source)}：{_health_reason(cap_id, source) or '请求失败'}")
             continue
-        if validate is not None and not validate(data):
-            record(cap_id, source, ProviderDataError("validate"))
+        try:
+            valid = validate is None or bool(validate(data))
+        except Exception:  # noqa: BLE001 — 校验抛异常等同数据无效
+            valid = False
+        if not valid:
+            if ran[0]:
+                record(cap_id, source, ProviderDataError("validate"))
+            else:
+                release(cap_id, source)
             attempts.append((source, "data"))
             reasons.append(f"{_display(source)}：返回数据无效")
             continue
-        record(cap_id, source, None)
+        if ran[0]:
+            record(cap_id, source, None)
+        else:
+            release(cap_id, source)  # 缓存命中: 未实际探测, 不据此判定恢复
         attempts.append((source, "ok"))
         degraded = source != primary
         return FallbackResult(data, source, degraded, "；".join(reasons) if degraded else None, tuple(attempts))

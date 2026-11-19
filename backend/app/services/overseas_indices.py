@@ -30,8 +30,9 @@ def _read(method: str, *args) -> dict:
     primary = preferences.get_overseas_data_provider()
     result = routing_health.call_with_fallback(
         "overseas", method, *args, validate=lambda rows: isinstance(rows, list), invoke=invoke)
+    # 全链失败时没有任何源提供数据, 不标「兜底」(只给 reason)
     out = {"source": result.source or primary, "rows": result.data if result.source else [],
-           "degraded": result.degraded, "fallback_reason": result.reason}
+           "degraded": bool(result.source) and result.degraded, "fallback_reason": result.reason}
     if result.source is None:
         outcomes = {outcome for _, outcome in result.attempts}
         if not result.attempts:

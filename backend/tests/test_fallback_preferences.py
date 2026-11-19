@@ -26,8 +26,14 @@ def _setup(monkeypatch, stored: dict, *, plugins=None):
     monkeypatch.setattr(custom_sources, "names", lambda: set(plugins))
     monkeypatch.setattr(custom_sources, "provider_has_dataset",
                         lambda name, dataset: dataset in plugins.get(name, set()))
-    monkeypatch.setattr(custom_sources, "list_plugins", lambda: [])
+    monkeypatch.setattr(custom_sources, "list_plugins", lambda: _plugin_rows(plugins))
+    monkeypatch.setattr(custom_sources, "list_sources", lambda: [])
     monkeypatch.setattr(preferences, "load", lambda: stored)
+
+
+def _plugin_rows(plugins: dict, pending_remove=()) -> list[dict]:
+    return [{"name": n, "datasets": sorted(ds), "available": True, "status": "ok",
+             "pending_remove": n in pending_remove} for n, ds in plugins.items()]
 
 
 def test_registry_marks_only_depth5_and_overseas():
@@ -85,8 +91,7 @@ def test_non_fallback_capability_returns_empty(monkeypatch):
 
 def _api(monkeypatch, saved: dict, pending_remove=()):
     _setup(monkeypatch, saved)
-    monkeypatch.setattr(custom_sources, "list_plugins",
-                        lambda: [{"name": n, "pending_remove": True} for n in pending_remove])
+    monkeypatch.setattr(custom_sources, "list_plugins", lambda: _plugin_rows(_DECLARED, pending_remove))
     monkeypatch.setattr(preferences, "save", lambda values: saved.update(values))
     monkeypatch.setattr(settings_api, "detect_capabilities", lambda: "refreshed")
     return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))

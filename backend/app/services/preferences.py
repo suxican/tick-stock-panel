@@ -450,14 +450,18 @@ def get_capability_fallbacks(cap_id: str) -> list[str]:
         return []
     primary = primary_getter()
 
+    # 「已声明」含暂时不可用的插件 (依赖未就绪 / Key 未配): 盘后终端关闭时编辑兜底列表
+    # 不能把它从存储中删掉; 可用性过滤只在取数时 (routing_health.effective_chain) 做。
+    try:
+        from app.data_providers.capabilities import _declared_sources
+        declared_names = {s["name"] for s in _declared_sources() if cap_id in s["datasets"]}
+    except Exception:  # noqa: BLE001 — an optional plugin failure must not break preferences
+        declared_names = set()
+
     def declared(name: str) -> bool:
         if name == "tickflow":
             return spec["tf_tier"] is not None
-        try:
-            from app.data_providers import custom as custom_sources
-            return name in custom_sources.names() and custom_sources.provider_has_dataset(name, cap_id)
-        except Exception:  # noqa: BLE001 — an optional plugin failure must not break preferences
-            return False
+        return name in declared_names
 
     stored = load().get(f"{spec['field']}_fallbacks")
     raw = stored if isinstance(stored, list) else DEFAULT_FALLBACK_ORDER.get(cap_id, [])
