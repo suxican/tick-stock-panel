@@ -545,11 +545,10 @@ def test_intraday_batch_skips_failed_group_and_stops_on_auth(monkeypatch):
 
 def test_datasets_declaration_and_unsupported_test_dataset(monkeypatch):
     provider, _ = _provider(monkeypatch, lambda *a: [])
-    assert set(provider.config.datasets) == {"realtime", "daily", "adj_factor", "minute",
+    assert set(provider.config.datasets) == {"realtime", "depth5", "daily", "adj_factor", "minute",
                                              "full_minute", "price_limits", "st_status", "limit_events"}
-    assert "depth5" not in provider.config.datasets
     assert "financial" not in provider.config.datasets
-    out = provider.test_dataset("depth5")
+    out = provider.test_dataset("financial")
     assert out["rows"] == 0 and "未接入" in out["error"]
 
 
@@ -604,5 +603,58 @@ def test_loader_manifest_declares_plugin():
     manifest = loader.plugin_manifest("meoz")
     assert manifest is not None
     datasets = manifest["datasets"] if isinstance(manifest, dict) else manifest.datasets
-    assert set(datasets) == {"realtime", "daily", "adj_factor", "minute", "full_minute",
+    assert set(datasets) == {"realtime", "depth5", "daily", "adj_factor", "minute", "full_minute",
                              "price_limits", "st_status", "limit_events"}
+
+
+# ---- depth5: 猫头鹰 tick 五档 ----
+
+def _tick(code, **over):
+    row = {"symbol": code, "time": 1794987026000, "close": 10.0,
+           **{f"bid{i}": 10.0 - i * 0.01 for i in range(1, 6)}, **{f"ask{i}": 10.0 + i * 0.01 for i in range(1, 6)},
+           **{f"bid_vol{i}": 100 * i for i in range(1, 6)}, **{f"ask_vol{i}": 10 * i for i in range(1, 6)}}
+    return {**row, **over}
+
+
+def test_depth_batch_maps_lots_market_time_and_full_symbols(monkeypatch):
+    seen = []
+
+    def handler(api, params, fields, service):
+        seen.append((api, params))
+        return [_tick("600519.SH"), _tick("000001.SZ", time=None)]
+
+    provider, _ = _provider(monkeypatch, handler)
+    book = provider.get_depth_batch(["600519.SH", "000001.SZ"])
+    assert seen == [("tick", {"symbols": "000001,600519", "tradedate": "20261111", "type": 1})]
+    entry = book["600519.SH"]
+    assert entry["bid_prices"] == pytest.approx([9.99, 9.98, 9.97, 9.96, 9.95])
+    assert entry["bid_volumes"] == [100, 200, 300, 400, 500] and entry["ask_volumes"] == [10, 20, 30, 40, 50]
+    assert entry["timestamp"] == 1794987026000
+    assert book["000001.SZ"]["timestamp"] > 1_700_000_000_000  # 缺 time 回退本机时间
+
+
+def test_depth_sealed_limit_up_keeps_zero_ask_and_bad_rows_are_skipped(monkeypatch):
+    rows = [_tick("600519.SH", **{f"ask{i}": 0 for i in range(1, 6)}, **{f"ask_vol{i}": 0 for i in range(1, 6)}),
+            _tick("000001.SZ", ask1=None), _tick("000002.SZ")]
+    provider, _ = _provider(monkeypatch, lambda *a: rows)
+    book = provider.get_depth_batch(["600519.SH", "000001.SZ"])  # 000002 未请求
+    assert set(book) == {"600519.SH"}
+    assert book["600519.SH"]["ask_volumes"] == [0] * 5 and book["600519.SH"]["ask_prices"] == [0.0] * 5
+
+
+def test_depth_batches_by_symbol_count_and_empty_input(monkeypatch):
+    calls = []
+    provider, _ = _provider(monkeypatch, lambda api, params, *a: calls.append(params["symbols"].count(",") + 1) or [])
+    assert provider.get_depth_batch([]) == {}
+    symbols = [f"{600000 + i}.SH" for i in range(mp._DEPTH_BATCH + 1)]
+    provider.get_depth_batch(symbols)
+    assert calls == [mp._DEPTH_BATCH, 1]
+
+
+def test_depth_request_failure_propagates_for_service_to_handle(monkeypatch):
+    def boom(*a):
+        raise mc.MeozError("tick HTTP 502")
+
+    provider, _ = _provider(monkeypatch, boom)
+    with pytest.raises(mc.MeozError):
+        provider.get_depth_batch(["600519.SH"])

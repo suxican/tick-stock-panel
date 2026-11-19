@@ -7,11 +7,11 @@ display_name: "猫爪数据"
 runtime: none
 entry: app.plugins.meoz.provider:MeozProvider
 check: app.plugins.meoz.provider:availability
-datasets: [realtime, daily, adj_factor, minute, full_minute, price_limits, st_status, limit_events]
+datasets: [realtime, depth5, daily, adj_factor, minute, full_minute, price_limits, st_status, limit_events]
 api_key_env: MEOZ_API_KEY   # 声明后设置页提供 Key 输入框(先探后存, secrets.json 优先)
 key_manage_url: "https://meoz.cn/console"
 key_manage_label: "获取 Key / 查看用量"
-description: "猫爪数据 HTTP API：A 股实时快照、日K（原始价）、除权因子、1 分钟K与全量分钟，以及按日的涨跌停价、ST 名单和涨停池。五档盘口与财务未接入，按能力路由使用其他数据源。"
+description: "猫爪数据 HTTP API：A 股实时快照、日K（原始价）、除权因子、1 分钟K与全量分钟，以及按日的涨跌停价、ST 名单和涨停池。五档盘口（猫头鹰 tick，手口径）。财务未接入，按能力路由使用其他数据源。"
 usage_notes:
   - "实时快照：股票全市场 1 个请求/轮；ETF、指数按需补拉"
   - "全量分钟：增量轮每根分钟 1 个全市场请求；修复轮 24 只/请求，全市场约 230 个请求"

@@ -547,7 +547,7 @@ Fuyao 股票批量历史日K固定请求 `interval=1d&adjust=none`，并核对�
   - `daily`：股票 `daily`、ETF `etf_daily` 原始价，收盘前丢弃最新交易日的盘中行；指数日K成交量单位未确认，空手而归由上层回退。
   - `adj_factor`：`adj_factor` 是累计复权因子，相邻交易日比值即单事件 `ex_factor`（与除权除息明细示例 `dr` 同向）。标的较多时先比较窗口前一交易日与末日的全市场因子，只为有变化的标的拉序列；比值小于 1 说明口径与契约相反，抛 `ProviderRequestError` 整轮不写入。ETF 无因子接口，返回空并由核心回退。
   - `minute` / `full_minute`：猫头鹰 `minute` / `etf_minute`。`trademin` 为收盘桶（0930 含集合竞价、0931–1130、1301–1500 共 241 根），分钟时间取 `trademin`（实测日内服务的 `time` 是桶内最后一笔时刻，如 09:25:01），声明 `minute_time_grid=auction_end`；`vol` 为相邻累计量差分，按 `vwap` 公式口径为手。当日行走日内服务并声明 `minute_price_basis=raw`（接口无复权参数，由实时累计行情差分生成，与 TickFlow 日内同理）；历史沉淀分钟官方未写明价格口径，不声明。历史分钟按“交易日 × 24 只”请求；全量分钟修复轮 24 只/请求，稳态增量轮按交易分钟不传代码取全市场，每根 1 个请求。指数分钟成交量单位未确认，不提供。
-  - 未声明 `depth5`（分笔快照委托量单位未写明）与 `financial`，按能力路由使用其他源。测试见 `tests/test_meoz_provider.py`（假客户端与 `httpx.MockTransport`，不访问网络）。
+  - `depth5` 使用猫头鹰 `tick` 五档快照（多代码批量，单次 500 只；委托量单位经 2026-11 与本地盘口逐只核对为手；`time` 为该股真实市场时间；卖盘为空即涨停封死，价格为 0 原样透传，不当缺失）。未声明 `financial`，按能力路由使用其他源。测试见 `tests/test_meoz_provider.py`（假客户端与 `httpx.MockTransport`，不访问网络）。
 
 ## 路由机制(无需关心, 仅参考)
 

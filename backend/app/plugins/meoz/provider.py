@@ -30,7 +30,11 @@
   - 单次最多 6000 行, 达到上限按截断处理 (client 抛 MeozTruncatedError)。
   - price_limits / st_status / limit_events  交易所参考数据 (`pricelimit` 2020 起、`st` 2021 起、
     `limit_pool` 2017 起), 按交易日整表返回, 由 services.market_reference 同步落盘。
-未声明 depth5 (盘口委托量单位未写明) 与 financial, provider_has_dataset 为 False。
+  - depth5       猫头鹰 `tick` 五档快照 (多代码批量, 单次 1000 只实测可用): bid1-5/ask1-5 价格,
+                 bid_vol/ask_vol 委托量单位为手 (2026-11 实测 bid_vol1 与本地 depth5 逐只一致, 16/16),
+                 `time` 为该股真实市场时间 (毫秒, 盘中比本机晚 1-5 秒)。卖盘为空 (涨停封死) 时
+                 ask 价为 0, 原样透传, 不当缺失丢弃; 全天停牌股买一卖一均为 0 且成交量不变。
+未声明 financial, provider_has_dataset 为 False。
 """
 
 from __future__ import annotations
@@ -56,7 +60,7 @@ from app.plugins.meoz.client import MeozAuthError, MeozClient, MeozError, MeozTr
 
 logger = logging.getLogger(__name__)
 
-_DATASETS = ("realtime", "daily", "adj_factor", "minute", "full_minute",
+_DATASETS = ("realtime", "depth5", "daily", "adj_factor", "minute", "full_minute",
              "price_limits", "st_status", "limit_events")
 
 API_KEY_ENV = "MEOZ_API_KEY"
@@ -180,6 +184,23 @@ def _parse_ymd(value) -> date | None:
 
 def _six(symbol: str) -> str:
     return symbol.split(".")[0]
+
+
+_DEPTH_BATCH = 500  # tick 单次代码数 (实测 1000 只可用, 留余量)
+
+
+def _depth_entry(row: dict, now_ms: int) -> dict | None:
+    bids = [_to_float(row.get(f"bid{i}")) for i in range(1, 6)]
+    asks = [_to_float(row.get(f"ask{i}")) for i in range(1, 6)]
+    if any(v is None for v in (*bids, *asks)):
+        return None
+    stamp = _to_float(row.get("time"))
+    return {
+        "bid_prices": bids, "ask_prices": asks,
+        "bid_volumes": [int(_to_float(row.get(f"bid_vol{i}")) or 0) for i in range(1, 6)],
+        "ask_volumes": [int(_to_float(row.get(f"ask_vol{i}")) or 0) for i in range(1, 6)],
+        "timestamp": int(stamp) if stamp else now_ms,
+    }
 
 
 _NO_LIMIT_SENTINEL = 9999.0  # pricelimit 对无涨跌幅限制日返回 99999.999
@@ -780,6 +801,9 @@ class MeozProvider:
                 frame = self.get_minute(syms, now - timedelta(days=3), now)
             elif dataset == "full_minute":
                 frame = self.get_intraday_batch(syms)
+            elif dataset == "depth5":
+                book = self.get_depth_batch(syms)
+                frame = pl.DataFrame([{"symbol": k, **v} for k, v in book.items()])
             elif dataset in ("price_limits", "st_status", "limit_events"):
                 # 取上一交易日 (当日涨停池收盘后才有), 只看是否可取与字段口径
                 prior = [d for d in self._trading_days(now.date() - timedelta(days=15), now.date())
@@ -855,6 +879,27 @@ class MeozProvider:
                 "amount": _to_float(row.get("amount")), "source": self.name,
             })
         return pl.DataFrame(out, schema=LIMIT_EVENT_SCHEMA)
+
+    def get_depth_batch(self, symbols: list[str]) -> dict[str, dict]:
+        """五档盘口 → {symbol: 标准盘口字典} (数量为手, timestamp 为该股市场时间毫秒)。
+
+        整批请求失败抛异常由服务层按"本轮失败, 不跨源回退"处理; 单只缺字段的行跳过。
+        """
+        wanted = {_six(s): s for s in symbols if s}
+        if not wanted:
+            return {}
+        client = self._get_client()
+        out: dict[str, dict] = {}
+        now_ms = int(time_mod.time() * 1000)
+        codes = sorted(wanted)
+        for group in _chunks(codes, _DEPTH_BATCH):
+            rows = client.query("tick", {"symbols": ",".join(group), "tradedate": _ymd(cn_now().date()), "type": 1})
+            for row in rows:
+                entry = _depth_entry(row, now_ms)
+                symbol = wanted.get(_six(str(row.get("symbol") or "")))
+                if entry is not None and symbol is not None:
+                    out[symbol] = entry
+        return out
 
     def ws_ticket(self, body: dict) -> dict:
         """实时订阅票据 (异动订阅 WebSocket); 返回的 url 含票据, 调用方不得记录。"""
