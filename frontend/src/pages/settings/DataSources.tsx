@@ -34,6 +34,7 @@ import {
   type CapabilityMatrix,
   type CapabilityRoute,
   type DataSourceItem,
+  type FallbackField,
   type PluginDataSourceItem,
   type Preferences,
   type ProviderField,
@@ -46,6 +47,7 @@ import { DEFAULT_ROUTING, buildProviderRouting } from '@/lib/provider-routing'
 import { toast } from '@/components/Toast'
 import { PluginMetadata } from '@/components/data/PluginMetadata'
 import { DataSourceEditor } from './DataSourceEditor'
+import { FallbackBanner, FallbackControls } from './CapabilityFallbacks'
 import { ZzshareActions } from './ZzshareActions'
 import { TickFlowKeySection, TierHelpPopover, useInvalidateTierRelated } from './Keys'
 
@@ -159,10 +161,12 @@ function patchMatrix(
 /** 单个能力卡: 当前生效提供方 + 候选切换标签。
  *  candidates 只含当前可提供该能力的源; 未就绪源 (pending) 置灰提示;
  *  生效源无法提供该能力 (usable=False, 无论档位不足还是源未就绪) 时显示琥珀警示。 */
-function CapabilityCard({ cap, pendingKey, onSelect }: {
+function CapabilityCard({ cap, pendingKey, onSelect, onFallbacks, onRetry }: {
   cap: CapabilityRoute
   pendingKey: string | null
   onSelect: (field: ProviderField, provider: string) => void
+  onFallbacks: (field: ProviderField, next: string[]) => void
+  onRetry: (capId: string) => void
 }) {
   const Icon = CAP_ICON[cap.id] ?? Database
   const busy = (provider: string) => pendingKey === `${cap.field}:${provider}`
@@ -170,7 +174,10 @@ function CapabilityCard({ cap, pendingKey, onSelect }: {
   const unmet = !cap.usable
   const chipsEmpty = cap.candidates.length === 0 && cap.pending.length === 0
   return (
-    <div className="rounded-lg border border-border/50 bg-elevated/20 px-3 py-2.5 flex flex-col transition-colors hover:border-border">
+    <div
+      data-capability={cap.id}
+      className="rounded-lg border border-border/50 bg-elevated/20 px-3 py-2.5 flex flex-col transition-colors hover:border-border"
+    >
       <div className="flex items-center gap-1.5">
         <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-accent/10">
           <Icon className="h-3 w-3 text-accent" />
@@ -197,6 +204,9 @@ function CapabilityCard({ cap, pendingKey, onSelect }: {
           </>
         )}
       </div>
+      {cap.fallbacks !== undefined && (
+        <FallbackBanner cap={cap} busy={pendingKey != null} onRetry={() => onRetry(cap.id)} />
+      )}
 
       {/* 候选标签: 点谁该能力就由谁提供 */}
       <div className="flex flex-wrap gap-1 mt-2 pt-2 border-t border-border/50 min-h-[26px] items-center">
@@ -247,6 +257,13 @@ function CapabilityCard({ cap, pendingKey, onSelect }: {
           </span>
         )}
       </div>
+      {cap.fallbacks !== undefined && cap.field != null && (
+        <FallbackControls
+          cap={cap}
+          busy={pendingKey != null}
+          onChange={next => cap.field != null && onFallbacks(cap.field, next)}
+        />
+      )}
     </div>
   )
 }
@@ -296,6 +313,34 @@ function CapabilityRoutingSection() {
       rollback(ctx)
       toast(`路由切换失败: ${e.message}`, 'error')
     },
+    onSettled: () => {
+      setPendingKey(null)
+      invalidateRouting()
+    },
+  })
+
+  const fallbackMut = useMutation({
+    mutationFn: ({ field, next }: { field: ProviderField; next: string[] }) =>
+      api.updateDataProviders({ [`${field}_fallbacks`]: next } as Partial<Record<FallbackField, string[]>>),
+    onMutate: (v) => setPendingKey(`${v.field}:fallbacks`),
+    onSuccess: (_d, v) => {
+      const cap = matrix.data?.capabilities.find(c => c.field === v.field)
+      toast(v.next.length
+        ? `「${cap?.label || v.field}」兜底顺序已更新`
+        : `「${cap?.label || v.field}」已关闭兜底`, 'success')
+    },
+    onError: (e: Error) => toast(`兜底顺序保存失败: ${e.message}`, 'error'),
+    onSettled: () => {
+      setPendingKey(null)
+      invalidateRouting()
+    },
+  })
+
+  const retryMut = useMutation({
+    mutationFn: (capId: string) => api.resetCapability(capId),
+    onMutate: (capId) => setPendingKey(`${capId}:retry`),
+    onSuccess: () => toast('已重试主源, 下一次取数将先尝试主源', 'success'),
+    onError: (e: Error) => toast(`重试失败: ${e.message}`, 'error'),
     onSettled: () => {
       setPendingKey(null)
       invalidateRouting()
@@ -371,6 +416,8 @@ function CapabilityRoutingSection() {
               cap={cap}
               pendingKey={pendingKey}
               onSelect={(field, provider) => routeMut.mutate({ field, provider })}
+              onFallbacks={(field, next) => fallbackMut.mutate({ field, next })}
+              onRetry={capId => retryMut.mutate(capId)}
             />
           ))}
         </div>

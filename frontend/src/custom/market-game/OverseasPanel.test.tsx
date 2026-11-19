@@ -36,6 +36,19 @@ function context(): MarketGameOverseasContext {
   }
 }
 
+it('marks a context served by a fallback source', async () => {
+  await render({ ...context(), source: 'cn_overseas', degraded: true, fallback_reason: 'yahoo_overseas：认证失败' })
+  const label = host.querySelector<HTMLElement>('[data-overseas-fallback]')
+  expect(label?.textContent).toBe('（兜底）')
+  expect(label?.title).toContain('认证失败')
+  expect(host.textContent).toContain('来源 cn_overseas（兜底）')
+})
+
+it('shows no fallback mark for the selected source or old reports', async () => {
+  await render(context())
+  expect(host.querySelector('[data-overseas-fallback]')).toBeNull()
+})
+
 it('keeps old frozen reports and unrecorded observations honest', async () => {
   await render()
   expect(host.textContent).toContain('新增观察不回填原计划')

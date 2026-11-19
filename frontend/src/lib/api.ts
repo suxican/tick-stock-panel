@@ -1516,6 +1516,9 @@ export interface MarketGameOverseasContext {
   risk_state: 'caution' | 'support' | 'mixed' | 'neutral' | 'unknown'
   affected_sectors: string[]
   limitations: string[]
+  /** 兜底链: 实际来源不是所选主源 (旧报告无此字段) */
+  degraded?: boolean
+  fallback_reason?: string | null
 }
 
 /** 离线校准的可信度摘要；ew_1 为次日全市场等权涨幅（小数），diff 为信号组减对照组。 */
@@ -3465,6 +3468,17 @@ export type ProviderField =
   | 'st_status_data_provider'
   | 'limit_events_data_provider'
 
+/** 兜底链能力的兜底顺序偏好 (`<主源字段>_fallbacks`, 不含主源; [] = 关闭兜底) */
+export type FallbackField = 'depth5_data_provider_fallbacks' | 'overseas_data_provider_fallbacks'
+
+/** 兜底链上一个源的健康状态 (熔断 open 时 until 为恢复时间, 认证失败为 null 直到重试) */
+export interface CapabilityChainEntry {
+  source: string
+  state: 'healthy' | 'open' | 'half_open'
+  reason: string | null
+  until: string | null
+}
+
 /** 能力路由矩阵中的一个候选源 (candidates 只含当前确实可提供该能力的源) */
 export interface CapabilityCandidate {
   name: string
@@ -3491,6 +3505,13 @@ export interface CapabilityRoute {
   effective_display: string
   candidates: CapabilityCandidate[]                // 当前可用候选 (按当前 TickFlow 档位过滤)
   pending: CapabilityCandidate[]                   // 声明了该能力但未就绪的源 (置灰提示)
+  // 以下仅兜底链能力 (depth5 / overseas) 有
+  fallbacks?: string[]                             // 兜底顺序 (不含主源)
+  chain?: CapabilityChainEntry[]                   // 生效链 (主源 + 兜底, 已按候选过滤) 的健康状态
+  active_source?: string | null                    // 链上第一个未熔断的源 (实际取数源)
+  active_display?: string | null
+  degraded?: boolean                               // 实际取数源不是主源
+  fallback_reason?: string | null                  // 主源未被使用的原因
 }
 
 export interface CapabilityMatrix {
@@ -4339,11 +4360,16 @@ export const api = {
     request<ZzshareThemesResult>('/api/zzshare/themes/sync', {
       method: 'POST', body: JSON.stringify({ date }), quiet: true,
     }),
-  updateDataProviders: (cfg: Partial<Pick<Preferences, ProviderField>>) =>
-    request<Pick<Preferences, ProviderField>>(
+  updateDataProviders: (cfg: Partial<Pick<Preferences, ProviderField>> & Partial<Record<FallbackField, string[]>>) =>
+    request<Pick<Preferences, ProviderField> & Partial<Record<FallbackField, string[]>>>(
       '/api/settings/preferences/data-providers',
       { method: 'PUT', body: JSON.stringify(cfg) },
     ),
+  /** 清除兜底链能力的熔断 (设置页「重试主源」); 返回该能力新的矩阵行 */
+  resetCapability: (capId: string, source?: string) =>
+    request<CapabilityRoute>(`/api/settings/capability/${encodeURIComponent(capId)}/reset`, {
+      method: 'POST', body: JSON.stringify(source ? { source } : {}),
+    }),
   updateDataSourceJobTimeouts: (dataSourceJobTimeoutS: number, dataSourceLongJobTimeoutS: number) =>
     request<Pick<Preferences, 'data_source_job_timeout_s' | 'data_source_long_job_timeout_s'>>(
       '/api/settings/preferences/data-source-job-timeouts',
@@ -4799,7 +4825,10 @@ export const api = {
     ),
   indexCatalog: () => request<{ rows: CatalogIndex[] }>('/api/index/catalog'),
   overseasIndexQuotes: () =>
-    request<{ rows: IndexQuote[]; source: string; reason?: string }>('/api/index/overseas-quotes'),
+    request<{
+      rows: IndexQuote[]; source: string; reason?: string
+      degraded?: boolean; fallback_reason?: string | null // 兜底链: source 为实际来源
+    }>('/api/index/overseas-quotes'),
   thsIndexQuotes: () =>
     request<{ rows: IndexQuote[]; source: string; reason?: string }>('/api/index/ths-quotes'),
   indexDaily: (symbol: string, days = 120, dateRange?: { start: string; end: string }) =>

@@ -272,6 +272,12 @@ export function Indices() {
                   {!matrix.isLoading && !thsRoute?.usable && <Link to="/settings?tab=data-sources" className="ml-1 text-accent hover:underline">配置同花顺指数数据源</Link>}
                 </> : selectedQuote ? [isOverseas ? '海外行情（可能延迟）' : '', quoteTime(selectedQuote, isOverseas)].filter(Boolean).join(' · ')
                   : (isOverseas ? overseasQuotes : quotes).isLoading ? '行情加载中…' : '暂无报价'}
+                {isOverseas && overseasQuotes.data?.degraded && (
+                  <span data-overseas-fallback className="ml-1 text-warning" title={overseasQuotes.data.fallback_reason ?? undefined}>
+                    {overseasRoute?.candidates?.find(c => c.name === overseasQuotes.data?.source)?.display
+                      ?? overseasQuotes.data.source}（兜底）
+                  </span>
+                )}
               </div>
             </div>
             <div className="flex max-w-full flex-wrap items-center gap-2 text-xs">

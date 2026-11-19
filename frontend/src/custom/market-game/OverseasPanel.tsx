@@ -37,7 +37,7 @@ export function OverseasPanel({ data, mode }: { data?: MarketGameOverseasContext
     {!data ? <p className="mt-3 max-w-prose text-xs leading-relaxed text-secondary">{mode === 'frozen' ? '这份报告未采集外围行情。可在资金观察中按需刷新，新增观察不回填原计划。' : '这次观察没有记录海外行情。下次刷新观察时按当时可用的数据记录，原计划保持冻结。'}</p> : <>
       <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1"><span className={cn('text-sm font-semibold', factorClass(data.risk_state))}>{riskLabels[data.risk_state]}</span><p className="max-w-prose text-xs leading-relaxed text-secondary">{data.summary}</p></div>
       <p className="mt-2 text-xs leading-relaxed text-secondary">截止 {time(data.cutoff)} · 取得 {time(data.fetched_at)}（北京时间）</p>
-      <p className="mt-1 break-words text-xs leading-relaxed text-secondary">来源 {data.source || '未提供'}</p>
+      <p className="mt-1 break-words text-xs leading-relaxed text-secondary">来源 {data.source || '未提供'}{data.degraded && <span data-overseas-fallback className={warning} title={data.fallback_reason ?? undefined}>（兜底）</span>}</p>
       {data.quotes.length > 0 ? <div className="mt-4 grid grid-cols-1 gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-4">
         {data.quotes.map(quote => <article key={quote.symbol} aria-label={quote.name} className="min-w-0 border-t border-border pt-3">
           <div className="flex flex-wrap items-baseline justify-between gap-2"><h3 className="text-sm font-medium">{quote.name}</h3><span className={cn('font-mono text-base font-semibold', signedClass(quote.change_pct))}>{percent(quote.change_pct)}</span></div>

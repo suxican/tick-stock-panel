@@ -123,6 +123,21 @@ it('groups the catalog and shows the trading date and percentage of the selected
   expect(host.textContent).not.toContain('同步指数日K')
 })
 
+it('labels overseas quotes served by a fallback source', async () => {
+  fixtures.overseasQuotes.mockResolvedValueOnce({ rows: [
+    { symbol: '^N225', last_price: 50001, change_pct: -0.62, date: '2026-09-11' },
+  ], source: 'cn_overseas', degraded: true, fallback_reason: 'Yahoo：连续 3 次失败' } as never)
+  await openIndices('/indices?symbol=%5EN225')
+  const label = host.querySelector<HTMLElement>('[data-overseas-fallback]')
+  expect(label?.textContent).toBe('cn_overseas（兜底）')
+  expect(label?.title).toContain('连续 3 次失败')
+})
+
+it('shows no fallback label when overseas quotes come from the selected source', async () => {
+  await openIndices('/indices?symbol=%5EN225')
+  expect(host.querySelector('[data-overseas-fallback]')).toBeNull()
+})
+
 it('shows missing overseas history and keeps its quote separate from other markets', async () => {
   await openIndices('/indices?symbol=%5EKS11')
   expect(host.querySelector('h2')?.textContent).toBe('韩国综合指数')
