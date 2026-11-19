@@ -223,7 +223,7 @@ export function YesterdayFeedback({ data, refreshFailed = false, onOpenStock, ch
                 <td className={cellClass}>{layer.sample_count}</td>
                 <td className={cn(cellClass, !muted && priceColorClass(layer.mean_change_pct))}>{fmtPct(layer.mean_change_pct)}</td>
                 <td className={cellClass}>{pct(layer.up_ratio)}</td>
-                <td className={cellClass}>{layer.sample_count ? layer.limit_up_count : '—'}</td>
+                <td className={cellClass} title={layer.sample_count && layer.limit_known_count < layer.sample_count ? '部分样本涨停状态待确认' : undefined}>{layer.sample_count && layer.limit_known_count >= layer.sample_count ? `${layer.limit_up_count} / ${layer.sample_count}` : '—'}</td>
               </tr>
             })}</tbody>
           </table>

@@ -128,12 +128,16 @@ def load_yesterday_seal(data_dir, day: date) -> dict[str, dict] | None:
     if not path.exists():
         return None
     try:
-        frame = pl.read_parquet(path).filter(pl.col("type") == "u")
+        # u 与 ub 都取: 猫爪 type 是收盘竞价前状态, 尾盘回封的首板被标为 ub (反馈样本按收盘封住选出,
+        # 用到的 ub 行一定是回封)。同一股 u 行优先 (排在前, 下方按首次出现去重)。
+        frame = (pl.read_parquet(path).filter(pl.col("type").is_in(["u", "ub"]))
+                 .sort(pl.col("type") != "u", maintain_order=True))
     except (OSError, pl.exceptions.PolarsError):
         logger.warning("昨日涨停池归档读取失败 (%s)", day)
         return None
-    ratio = (frame.filter(pl.col("amount") > 0).select((pl.col("fd_amount") / pl.col("amount")).median()).item()
-             if not frame.is_empty() else None)
+    sealed = frame.filter(pl.col("type") == "u")
+    ratio = (sealed.filter(pl.col("amount") > 0).select((pl.col("fd_amount") / pl.col("amount")).median()).item()
+             if not sealed.is_empty() else None)
     fd_ok = ratio is not None and ratio >= _FD_RATIO_MIN
     out: dict[str, dict] = {}
     for row in frame.iter_rows(named=True):
@@ -319,8 +323,12 @@ class FirstBoardFeedback:
         self._pool = [{**row, "board": "main" if row["symbol"].startswith(("60", "00")) else "growth"}
                       for row in pool.to_dicts()]
         self._sample_date, self._excluded = sample_date, excluded
-        # 昨日封板质量 (可选展示): 归档缺失时为 None, 不影响反馈主体
-        self._seal = load_yesterday_seal(self.repo.store.data_dir, sample_date)
+        # 昨日封板质量 (可选展示): 归档缺失或读取异常时为 None, 不影响反馈主体
+        try:
+            self._seal = load_yesterday_seal(self.repo.store.data_dir, sample_date)
+        except Exception:  # noqa: BLE001 - optional observation must not stop the feedback
+            logger.warning("昨日封板信息不可用 (%s)", sample_date, exc_info=True)
+            self._seal = None
         self._non_one_price_limits, self._opening_excluded = non_one_price_limits, opening_excluded
         self._key, self._prepared_at = key, time.monotonic()
 

@@ -297,3 +297,15 @@ it('shows a dash for unknown reopen status and blanked seal amount', async () =>
   expect(row.textContent).toContain('10:20')
   expect(row.textContent).not.toContain('0.00亿')
 })
+
+it('layer promotions read as count over sample and stay unknown until every limit state is confirmed', async () => {
+  const data = withSeal()
+  data.layers!.all.late = { ...data.layers!.all.late, limit_up_count: 0, limit_known_count: 5 }
+  await render(data)
+  await click('展开分布')
+  await click('查看明细')
+  const rows = [...host.querySelectorAll('[aria-label="按昨日封板质量分层"] tbody tr')]
+  expect(rows[0].lastElementChild?.textContent).toBe('1 / 18')
+  expect(rows[1].lastElementChild?.textContent).toBe('—')
+  expect(rows[1].lastElementChild?.getAttribute('title')).toContain('待确认')
+})

@@ -153,11 +153,36 @@ def test_opened_unknown_before_2020(tmp_path):
     assert load_yesterday_seal(tmp_path, day)["600000.SH"]["opened"] is None
 
 
-def test_broken_board_rows_in_archive_are_ignored(service):
-    # 只取当日 type=u 的记录; ub (盘中炸板) 不应提供首封信息覆盖 u
+def test_u_row_wins_over_ub_row(service):
+    # 同一股同时有 u 与 ub 记录时以 u 为准, 无论在文件中的先后
     svc, data_dir = service
-    rows = _seal_rows()
-    rows.append({"symbol": "600000.SH", "type": "ub", "first_time": "14:59:00", "last_time": "14:59:00",
-                 "open_times": 3, "fd_amount": None})
+    rows = [{"symbol": "600000.SH", "type": "ub", "first_time": "14:59:00", "last_time": "14:59:00",
+             "open_times": 3, "fd_amount": None}, *_seal_rows()]
     _pool(data_dir, rows)
     assert _rows(svc.evaluate(_quotes(), DAY, now=NOW, live=True))["600000.SH"]["seal"]["first_time"] == "09:31:00"
+
+
+def test_tail_resealed_first_board_tagged_ub_gets_seal(service):
+    # 终审实测: 猫爪 type 是收盘竞价前状态, 尾盘回封的首板被标为 ub (近 60 日 19 只);
+    # 反馈样本按收盘封住选出, 这些股也应拿到封板信息, 且一定开过板
+    svc, data_dir = service
+    rows = _seal_rows()
+    rows[3] = {"symbol": "300002.SZ", "type": "ub", "first_time": "10:30:00", "last_time": "14:58:00",
+               "open_times": 2, "fd_amount": 2e7}
+    _pool(data_dir, rows)
+    result = svc.evaluate(_quotes(), DAY, now=NOW, live=True)
+    seal = _rows(result)["300002.SZ"]["seal"]
+    assert seal["first_time"] == "10:30:00" and seal["opened"] is True
+    assert result["seal_source"]["matched"] == 4
+
+
+def test_optional_seal_failure_does_not_take_down_feedback(service, monkeypatch):
+    # 封板信息是可选展示: 读取出现意外异常时只置空, 反馈主体照常
+    import app.services.first_board_feedback as fbf
+
+    svc, data_dir = service
+    _pool(data_dir, _seal_rows())
+    monkeypatch.setattr(fbf, "load_yesterday_seal", lambda *_: (_ for _ in ()).throw(TypeError("bad")))
+    result = svc.evaluate(_quotes(), DAY, now=NOW, live=True)
+    assert result["status"] in ("ready", "partial")
+    assert result["layers"] is None and all(r["seal"] is None for r in result["rows"])
