@@ -1,6 +1,7 @@
 """Bounded institutional disclosure evidence, separate from price behavior inference.
 
-Reuses the existing optional dragon_tiger service and its cache/provider routing.
+Reuses the dragon_tiger service (routed capability with a fallback chain) and its cache;
+``source`` names the provider that actually supplied the org board.
 The source has no publication timestamp: fetched_at records this observation only,
 and must never be used to backdate what a historical plan could have known.
 """
@@ -122,6 +123,9 @@ def fetch_institutional_disclosures(data_dir: Path, *, now: datetime, target: da
         return fail("no_data", "机构披露读取失败,本次未取得可用证据")
     if not isinstance(payload, dict):
         return fail("invalid_data", "机构披露响应格式无效")
+    # 龙虎榜经兜底链取数: 标注这份数据的实际来源 (旧缓存无来源字段, 只可能来自 fuyao)
+    actual_source = payload.get("source") if isinstance(payload.get("source"), str) else "fuyao"
+    result["source"] = f"{actual_source}/dragon_tiger/org"
     source_state = payload.get("state")
     if source_state == "source_unavailable":
         return fail("source_unavailable", "机构披露来源不可用,请在数据源配置中检查")

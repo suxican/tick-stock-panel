@@ -40,7 +40,7 @@ def get_dragon_tiger(
     request: Request,
     date: str | None = Query(default=None, description="复盘目标日 YYYY-MM-DD, 缺省取最近已发布交易日"),
 ):
-    """龙虎榜三榜 (全部/机构/游资)。fuyao 专有, 未配置时 state=source_unavailable。
+    """龙虎榜三榜 (全部/机构/游资), 经能力路由与兜底链取数; 没有可用数据源时 state=source_unavailable。
 
     非交易日/当日未发布由服务层自动回退到上一交易日 (state=fallback_prev)。
     """

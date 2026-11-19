@@ -118,6 +118,19 @@ def test_optional_disclosure_source_states_are_explicit(tmp_path, monkeypatch, s
     assert result["rows"] == [] and result["available_at"] is None
 
 
+@pytest.mark.parametrize("source,expected", [("meoz", "meoz/dragon_tiger/org"), (None, "fuyao/dragon_tiger/org")])
+def test_disclosure_source_follows_actual_dragon_tiger_source(tmp_path, monkeypatch, source, expected):
+    payload = {"state": "ok", "trade_date": "2026-10-08", "all": {"trade_date": "2026-10-08"},
+               "org": {"trade_date": "2026-10-08", "stock_items": [
+                   {"thscode": "600000.SH", "range_days": 1, "org_net_value": 1e7}]}}
+    if source:
+        payload["source"] = source
+    monkeypatch.setattr("app.services.market_game_disclosures.dragon_tiger.get_dragon_tiger",
+                        lambda *_: payload)
+    result = fetch_institutional_disclosures(tmp_path, now=NOW, target=date(2026, 10, 8))
+    assert result["source"] == expected
+
+
 def test_disclosures_keep_subboard_date_zero_and_unknown_rate_unit(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.market_game_disclosures.dragon_tiger.get_dragon_tiger", lambda *_: {
         "state": "ok", "trade_date": "2026-10-09", "all": {"trade_date": "2026-10-09"},
