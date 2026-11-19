@@ -856,6 +856,10 @@ class MeozProvider:
             })
         return pl.DataFrame(out, schema=LIMIT_EVENT_SCHEMA)
 
+    def ws_ticket(self, body: dict) -> dict:
+        """实时订阅票据 (异动订阅 WebSocket); 返回的 url 含票据, 调用方不得记录。"""
+        return self._get_client().ws_ticket(body)
+
     # ---- 当前快照留档 (非路由数据集) ----
     def get_archive_rows(self, dataset: str, day: date) -> list[dict]:
         """只提供当前快照或当日数据的接口 → 扁平行 (保留猫爪原字段名与单位)。

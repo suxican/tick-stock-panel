@@ -127,6 +127,32 @@ class MeozClient:
             time.sleep(min(max(delay, 0.5), _MAX_RETRY_AFTER_S))
         return self._parse(apiname, resp)
 
+    def ws_ticket(self, body: dict) -> dict:
+        """取实时订阅 WebSocket 票据: 返回含 url (已带票据, 视同密钥, 不得落日志) 的 data。"""
+        payload = {"apikey": self._api_key, **body}
+        last: Exception | None = None
+        for base in self._urls["live"]:
+            self._throttle()
+            try:
+                resp = self._http.post(base.rsplit("/api", 1)[0] + "/api/v2/realtime/ws-ticket", json=payload)
+            except httpx.TransportError as e:
+                last = e
+                continue
+            try:
+                data = resp.json()
+            except ValueError:
+                data = None
+            code = data.get("code") if isinstance(data, dict) else None
+            message = _short(data.get("message")) if isinstance(data, dict) else ""
+            if resp.status_code in _AUTH_CODES or code in _AUTH_CODES:
+                raise MeozAuthError(f"ws-ticket 拒绝访问 ({code or resp.status_code}): {message}",
+                                    code=code or resp.status_code)
+            if resp.status_code != 200 or code != _OK or not isinstance(data.get("data"), dict)                     or not data["data"].get("url"):
+                raise MeozError(f"ws-ticket HTTP {resp.status_code} code={code}: {message}",
+                                code=code or resp.status_code)
+            return data["data"]
+        raise MeozError(f"网络请求失败: {type(last).__name__}")
+
     @staticmethod
     def _parse(apiname: str, resp: httpx.Response) -> list[dict]:
         try:
