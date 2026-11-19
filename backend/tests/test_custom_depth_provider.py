@@ -4,9 +4,33 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call
 
+import pytest
+
+from app.data_providers import routing_health
 from app.services import depth_service as depth_module
 from app.services.depth_service import DepthService
 from app.tickflow.capabilities import Cap, CapabilityLimits, CapabilitySet
+
+
+@pytest.fixture(autouse=True)
+def _single_source_chain(monkeypatch):
+    """本文件验证单源取数契约: 兜底链只含主源 (兜底见 test_depth_fallback.py)。
+
+    主源与「是否声明 depth5」沿用各用例对 preferences / provider_has_dataset 的打桩。
+    """
+    from app.data_providers import custom as custom_sources
+    from app.services import preferences
+
+    routing_health.reset()
+    monkeypatch.setattr(routing_health, "_primary", lambda cap_id: preferences.get_depth5_data_provider())
+    monkeypatch.setattr(routing_health, "_fallbacks", lambda cap_id: [])
+    monkeypatch.setattr(
+        routing_health, "_candidate_names",
+        lambda cap_id: {name for name in [preferences.get_depth5_data_provider()]
+                        if name == "tickflow" or custom_sources.provider_has_dataset(name, "depth5")},
+    )
+    yield
+    routing_health.reset()
 
 
 def _service(*, batch: int = 2, rpm: int = 30) -> DepthService:
@@ -95,7 +119,7 @@ def test_custom_depth_failure_isolated_per_batch(monkeypatch):
     monkeypatch.setattr(depth_module, "sleep_between_batches", MagicMock())
 
     assert _service()._call_depth_batch(["A", "B", "C"]) == {
-        "C": {"ask_volumes": [0]},
+        "C": {"ask_volumes": [0], "source": "custom_depth"},
     }
     assert provider.get_depth_batch.call_count == 2
 

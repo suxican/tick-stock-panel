@@ -74,8 +74,9 @@ class DepthService:
         self._app_state = None         # 延迟注入(FastAPI app.state)
 
         # 内存缓存: {symbol: SealedEntry}
-        # SealedEntry = {sealed_up, sealed_down, ask1_vol, bid1_vol, status, fetched_ts}
+        # SealedEntry = {sealed_up, sealed_down, ask1_vol, bid1_vol, status, fetched_ts, source}
         self._sealed_cache: dict[str, dict] = {}
+        self._sealed_source: str | None = None    # 最近一轮 sealed 数据的实际来源 (兜底链)
         self._sealed_ready = False
         self._sealed_date: date | None = None     # sealed 数据对应的交易日(可能是昨天,如休市)
         self._sealed_fetched_ts: float = 0.0   # 上次拉取的 perf_counter
@@ -137,6 +138,7 @@ class DepthService:
                     "bid1_vol": row.get("bid1_vol"),
                     "status": row.get("status"),
                     "fetched_ts": row.get("fetched_at"),
+                    "source": row.get("source"),  # 旧文件无此列 → None (未知来源)
                 }
             with self._lock:
                 self._sealed_cache = cache
@@ -295,6 +297,7 @@ class DepthService:
                 "bid1_vol": bid1,
                 "status": "limit_down" if sym in down_set and sym not in up_set else "limit_up",
                 "fetched_ts": fetched,
+                "source": d.get("source"),
             }
             new_cache[sym] = entry
 
@@ -302,6 +305,8 @@ class DepthService:
             self._sealed_cache = new_cache
             self._sealed_ready = True
             self._sealed_date = enriched_date  # 记录数据对应的交易日(可能是昨天,如休市)
+            # 一轮只来自一个源 (_call_depth_batch 保证), 取任一条目的来源即可
+            self._sealed_source = next((e["source"] for e in new_cache.values() if e.get("source")), None)
             self._sealed_fetched_ts = now_perf
             self._sealed_fetched_at = now_wall
 
@@ -322,35 +327,52 @@ class DepthService:
         return self._call_depth_batch(list(dict.fromkeys(symbols)))
 
     def _call_depth_batch(self, symbols: list[str]) -> dict:
-        """按独立五档路由取数; 所有 provider 共用分片限速且失败不跨源回退。"""
-        from app.services import preferences
+        """按五档兜底链取数: 一轮结果只来自一个源, 每个条目带 source。
 
-        provider_name = preferences.get_depth5_data_provider()
-        if provider_name == "tickflow":
-            from app.data_providers.registry import get_provider
+        链上第一个可用源取完整轮; 整轮失败 (所有批次异常, 或请求非空却拿到 0 只 ——
+        tdxquant 凭据失效时会吞掉批次异常返回空) 时同轮换下一个源重跑;
+        部分批次失败保留已拿到的数据并计一次失败, 不换源 (避免轮内混源)。
+        所有源共用分片限速与请求节流。
+        """
+        from app.data_providers import routing_health
+        from app.data_providers.errors import ProviderDataError
 
-            provider = get_provider("tickflow")
-        else:
-            from app.data_providers import custom as custom_sources
-
-            try:
-                if not custom_sources.provider_has_dataset(provider_name, "depth5"):
-                    logger.warning("depth provider %s 未声明 depth5, 跳过本轮", provider_name)
-                    return {}
-                provider = custom_sources.get_provider(provider_name)
-            except Exception as e:
-                logger.warning("depth provider %s 解析失败, 跳过本轮: %s", provider_name, e)
+        tried: set[str] = set()
+        while True:
+            source = routing_health.pick_source("depth5", exclude=tried)
+            if source is None:
+                if not tried:
+                    logger.warning("depth5 无可用源 (未配置或全部熔断), 跳过本轮")
                 return {}
+            tried.add(source)
+            try:
+                fetch_depth = getattr(routing_health.resolve_provider(source), "get_depth_batch", None)
+            except LookupError:
+                fetch_depth = None
+            if not callable(fetch_depth):
+                routing_health.release("depth5", source)
+                logger.warning("depth provider %s 未加载或未实现 get_depth_batch, 尝试下一个源", source)
+                continue
 
-        fetch_depth = getattr(provider, "get_depth_batch", None)
-        if not callable(fetch_depth):
-            logger.warning("depth provider %s 未实现 get_depth_batch, 跳过本轮", provider_name)
-            return {}
+            result, failed, total, last_error = self._fetch_round(source, fetch_depth, symbols)
+            if total and (failed == total or not result):
+                routing_health.record("depth5", source, last_error or ProviderDataError("empty round"))
+                logger.warning("depth provider %s 整轮无数据 (%d/%d 批失败), 尝试下一个源", source, failed, total)
+                continue
+            routing_health.record("depth5", source, ProviderDataError("partial round") if failed else None)
+            for entry in result.values():
+                if isinstance(entry, dict):
+                    entry["source"] = source
+            return result
 
+    def _fetch_round(self, provider_name: str, fetch_depth, symbols: list[str]):
+        """用单个源按分片限速取完整轮 → (结果, 失败批数, 总批数, 最后一个异常)。"""
         capset = self._get_capset()
         limit = resolve_limit(capset, Cap.DEPTH5_BATCH, default_batch=100, default_rpm=30)
 
         result: dict = {}
+        failed = 0
+        last_error: Exception | None = None
         chunks = chunked(symbols, limit.batch)
         for i, chunk in enumerate(chunks):
             sleep_between_batches(i, limit.rpm, default_interval=2.0)
@@ -365,12 +387,15 @@ class DepthService:
                 if isinstance(data, dict):
                     result.update(data)
                 else:
+                    failed += 1
                     logger.warning(
                         "depth provider %s 第 %d 批返回非 dict, 已跳过",
                         provider_name,
                         i + 1,
                     )
             except Exception as e:  # noqa: BLE001
+                failed += 1
+                last_error = e
                 logger.warning(
                     "depth provider %s 第 %d 批失败(%d 只): %s",
                     provider_name,
@@ -379,7 +404,7 @@ class DepthService:
                     e,
                 )
                 # 单批失败不影响其他批
-        return result
+        return result, failed, len(chunks), last_error
 
     def finalize(self) -> None:
         """盘后定版: 拉一次 + 落盘。"""
@@ -408,6 +433,7 @@ class DepthService:
                 "bid1_vol": e.get("bid1_vol"),
                 "status": e.get("status"),
                 "fetched_at": e.get("fetched_ts"),
+                "source": e.get("source"),
             })
         # 显式 schema: sealed_up/sealed_down 是 bool 与 None 混合, 不指定 schema
         # polars 会按首行推断类型, 后续遇到不一致 (bool vs null) 报
@@ -420,6 +446,7 @@ class DepthService:
             "bid1_vol": pl.Int64,
             "status": pl.Utf8,
             "fetched_at": pl.Float64,
+            "source": pl.Utf8,
         })
         ds = today.isoformat()
         out = self._repo.store.data_dir / "depth5" / f"date={ds}" / "part.parquet"
