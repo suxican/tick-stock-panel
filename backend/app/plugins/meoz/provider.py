@@ -90,7 +90,9 @@ _INDEX_FIELDS = "tradedate,symbol,name,open,high,low,close,pre_close,change,pct_
 _MINUTE_FIELDS = "tradedate,symbol,trademin,time,open,high,low,close,vol,amount"
 _ADJ_FIELDS = "tradedate,symbol,code,adj_factor"
 _DAILY_API = {"stock": "daily", "etf": "etf_daily"}
-_MINUTE_API = {"stock": "minute", "etf": "etf_minute"}
+# 指数分钟 index_minute: 2026-11-18 全天核对, 上证/深成/创业板分钟量额合计与本地指数日线完全相等,
+# 成交量与本地指数口径一致 (手), 可按同一分钟契约提供。
+_MINUTE_API = {"stock": "minute", "etf": "etf_minute", "index": "index_minute"}
 
 _DAILY_SCHEMA = {
     "symbol": pl.String, "date": pl.Date,
@@ -689,7 +691,7 @@ class MeozProvider:
         freq: str = "1m",
         on_chunk_done: Callable[[int, int], None] | None = None,
     ) -> Iterator[pl.DataFrame]:
-        """1 分钟K: 按交易日 × 24 只请求全日序列, 再按窗口过滤。指数分钟成交量单位未确认, 不提供。"""
+        """1 分钟K: 按交易日 × 24 只请求全日序列, 再按窗口过滤 (股票、ETF、指数同一契约)。"""
         apiname = _MINUTE_API.get(asset_type)
         now = cn_now().replace(tzinfo=None)
         end = _beijing_naive(end_time) or now

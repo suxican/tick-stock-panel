@@ -432,6 +432,23 @@ def test_minute_history_and_live_service_split_with_grid(monkeypatch):
     assert today["datetime"].max() <= datetime(2026, 11, 11, 10, 5, 20)
 
 
+def test_index_minute_uses_index_api_with_same_contract(monkeypatch):
+    # 指数分钟 index_minute: 历史日量为字符串 (实测), 量额与本地指数日线同口径, 透传
+    def handler(apiname, params, fields, service):
+        assert apiname == "index_minute" and params["symbols"] == "000001,399001"
+        rows = []
+        for code in ("000001.SH", "399001.SZ"):
+            rows += _minute_rows(code, params["tradedate"], ["0930", "0931"])
+        return [{**r, "vol": str(r["vol"])} for r in rows]
+
+    provider, fake = _provider(monkeypatch, handler)
+    frame = provider.get_minute(["000001.SH", "399001.SZ"], datetime(2026, 11, 10, 9, 25, tzinfo=CN_TZ), _NOW,
+                                asset_type="index")
+    assert {c[3] for c in fake.calls if c[0] == "index_minute"} == {"history", "live"}
+    assert sorted(frame["symbol"].unique().to_list()) == ["000001.SH", "399001.SZ"]
+    assert frame["volume"].null_count() == 0 and frame.height == 8
+
+
 def test_live_minute_uses_bucket_label_not_last_tick_time(monkeypatch):
     # 实测 (2026-11-12): 日内服务 time 为桶内最后一笔时刻, trademin 才是收盘桶
     rows = [
@@ -459,7 +476,7 @@ def test_minute_chunks_24_symbols_per_request(monkeypatch):
 
 def test_minute_unsupported_inputs_and_failure(monkeypatch):
     provider, _ = _provider(monkeypatch, lambda *a: pytest.fail("不应请求"))
-    for kwargs in ({"freq": "5m"}, {"asset_type": "index"}):
+    for kwargs in ({"freq": "5m"}, {"asset_type": "bond"}):
         progress: list[tuple[int, int]] = []
         frames = list(provider.iter_minute(
             ["600519.SH"], None, None,
