@@ -107,7 +107,60 @@ def empty_feedback(message: str = "等待昨日首板样本与行情", *, status
             "observed_at": None, "quote_mode": "snapshot", "membership_note": MEMBERSHIP_NOTE,
             "history_excluded_count": 0, "opening_distribution": None,
             "groups": {key: _summary([]) for key in ("all", "main", "growth")},
-            "rows": [], "sectors": []}
+            "rows": [], "sectors": [], "layers": None, "seal_source": None}
+
+
+# ---- 昨日封板质量 (本地涨停池归档, 口径与 services.seal_quality 一致) ----
+SEAL_EARLY_CUTOFF = "10:00:00"   # 早封: 昨日首封 <= 10:00
+_FD_RATIO_MIN = 0.005            # 封单额/成交额日中位低于此值视为上游口径异常 (实测 2020-05~2023-11)
+REOPEN_FROM = date(2020, 1, 2)   # 上游开板次数自此日起才有真实值
+
+
+def load_yesterday_seal(data_dir, day: date) -> dict[str, dict] | None:
+    """昨日涨停池 (type=u) → {symbol: {first_time, opened, fd_amount}}; 无归档分区返回 None。
+
+    opened: open_times>0; open_times 缺失时按首封 != 末封判断; 两者都无法判断为 None。
+    fd_amount: 当日封单额/成交额中位 < 0.5% (上游口径异常) 时整日为 None。
+    """
+    from app.services.market_reference import path_of
+
+    path = path_of(data_dir, "limit_events", day)
+    if not path.exists():
+        return None
+    try:
+        frame = pl.read_parquet(path).filter(pl.col("type") == "u")
+    except (OSError, pl.exceptions.PolarsError):
+        logger.warning("昨日涨停池归档读取失败 (%s)", day)
+        return None
+    ratio = (frame.filter(pl.col("amount") > 0).select((pl.col("fd_amount") / pl.col("amount")).median()).item()
+             if not frame.is_empty() else None)
+    fd_ok = ratio is not None and ratio >= _FD_RATIO_MIN
+    out: dict[str, dict] = {}
+    for row in frame.iter_rows(named=True):
+        symbol = str(row.get("symbol") or "").upper()
+        if not symbol or symbol in out:
+            continue
+        opens, first, last = row.get("open_times"), row.get("first_time"), row.get("last_time")
+        if day < REOPEN_FROM:  # 上游开板次数在此前为字段缺失, 无法判断
+            opened = None
+        else:
+            opened = (opens > 0) if opens is not None else (first != last if first and last else None)
+        out[symbol] = {"first_time": first, "opened": opened,
+                       "fd_amount": row.get("fd_amount") if fd_ok else None}
+    return out
+
+
+def _seal_layers(rows: list[dict]) -> dict:
+    """按昨日封板质量分层的今日表现 (只含有封板信息的股)。"""
+    def pick(cond) -> list[dict]:
+        return [r for r in rows if r.get("seal") and cond(r["seal"])]
+
+    return {
+        "early": _summary(pick(lambda s: s["first_time"] is not None and s["first_time"] <= SEAL_EARLY_CUTOFF)),
+        "late": _summary(pick(lambda s: s["first_time"] is not None and s["first_time"] > SEAL_EARLY_CUTOFF)),
+        "unopened": _summary(pick(lambda s: s["opened"] is False)),
+        "reopened": _summary(pick(lambda s: s["opened"] is True)),
+    }
 
 
 def expire_feedback(result: dict, *, now: datetime, max_quote_age_seconds: float = 30) -> None:
@@ -141,6 +194,7 @@ class FirstBoardFeedback:
         self._opening_excluded = 0
         self._sample_date: date | None = None
         self._excluded = 0
+        self._seal: dict[str, dict] | None = None
         self._sessions: list[date] = []
         self._session_day: date | None = None
         self._session_checked = 0.0
@@ -265,6 +319,8 @@ class FirstBoardFeedback:
         self._pool = [{**row, "board": "main" if row["symbol"].startswith(("60", "00")) else "growth"}
                       for row in pool.to_dicts()]
         self._sample_date, self._excluded = sample_date, excluded
+        # 昨日封板质量 (可选展示): 归档缺失时为 None, 不影响反馈主体
+        self._seal = load_yesterday_seal(self.repo.store.data_dir, sample_date)
         self._non_one_price_limits, self._opening_excluded = non_one_price_limits, opening_excluded
         self._key, self._prepared_at = key, time.monotonic()
 
@@ -402,6 +458,7 @@ class FirstBoardFeedback:
             rows.append({**member, **{key: quote.get(key) for key in (
                 "price", "change_pct", "open_premium", "open_change", "at_limit",
             )}, "quote_time": quote_time, "status": status, "auction": auction_rows.get(member["symbol"]),
+                "seal": (self._seal or {}).get(member["symbol"].upper()),
                 "reason": {"valid": None, "missing": "缺少对应交易日行情", "stale": "行情已过期或时间缺失",
                            "invalid": "行情重复、价格或时间无效"}[status]})
         summaries = {key: _summary(rows if key == "all" else [r for r in rows if r["board"] == key])
@@ -419,6 +476,11 @@ class FirstBoardFeedback:
             message += "；部分样本行情缺失或过期，保留完整样本分母"
         result.update(status="partial" if partial else "ready", message=message,
                       groups=summaries, rows=rows, sectors=self._sectors(rows, quotes))
+        if self._seal is not None:
+            result["layers"] = {key: _seal_layers(rows if key == "all" else [r for r in rows if r["board"] == key])
+                                for key in ("all", "main", "growth")}
+            result["seal_source"] = {"date": str(self._sample_date),
+                                     "matched": sum(1 for r in rows if r["seal"]), "sample": len(rows)}
         if self._membership.reason:
             result["membership_note"] += " " + self._membership.reason
         return result
