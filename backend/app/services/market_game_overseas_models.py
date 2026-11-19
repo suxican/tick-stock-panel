@@ -49,3 +49,6 @@ class OverseasContext(Contract):
     risk_state: Literal["caution", "support", "mixed", "neutral", "unknown"]
     affected_sectors: list[str]
     limitations: list[str]
+    # 兜底链: 实际来源不是所选主源时为 True (旧报告无此字段, 按 False 读取)
+    degraded: bool = False
+    fallback_reason: str | None = None

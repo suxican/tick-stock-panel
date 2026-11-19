@@ -1,4 +1,4 @@
-"""Read-only overseas index display using the selected overseas provider."""
+"""Read-only overseas index display via the overseas fallback chain (one source per request)."""
 from __future__ import annotations
 
 import logging
@@ -6,7 +6,7 @@ import math
 from collections import Counter
 from datetime import date
 
-from app.data_providers import custom
+from app.data_providers import routing_health
 from app.services import preferences
 from app.services.index_const import OVERSEAS_INDEX_SYMBOLS
 from app.services.shared_work import SharedWork
@@ -16,23 +16,32 @@ _work = SharedWork("http.kline", max_pending=12, max_entries=32)
 
 
 def _read(method: str, *args) -> dict:
-    source = preferences.get_overseas_data_provider()
-    try:
-        if not custom.provider_has_dataset(source, "overseas"):
-            return {"source": source, "rows": [], "reason": "所选数据源未提供海外行情"}
-        provider = custom.get_provider(source)
-        fetch = getattr(provider, method, None)
-        if not callable(fetch):
-            return {"source": source, "rows": [], "reason": "所选海外数据源未提供此项指数数据"}
-        # The bound method separates reloaded provider instances even under the same name.
-        ttl = 60 if method == "get_overseas_index_quotes" else 300
-        rows = _work.run((source, fetch, *args), lambda: fetch(*args), ttl_s=ttl)
-        if not isinstance(rows, list):
-            raise ValueError("海外指数数据格式无效")
-        return {"source": source, "rows": rows}
-    except Exception:  # noqa: BLE001 - isolate optional providers and limit bursts on failure
-        logger.warning("海外指数请求失败 (%s/%s)", source, method)
-        return {"source": source, "rows": [], "reason": "海外数据源暂不可用，请稍后重试"}
+    """沿外围行情兜底链请求一次; 结果只来自一个源 (source 为实际来源)。
+
+    空 list 是有效结果 (休市日), 不触发换源; 异常和非 list 才算失败。
+    """
+    ttl = 60 if method == "get_overseas_index_quotes" else 300
+
+    def invoke(source, call):
+        # 缓存键含源名与绑定方法: 换源不命中旧源缓存, 插件重载后的新实例也不命中旧缓存
+        return _work.run((source, getattr(routing_health.resolve_provider(source), method), *args),
+                         call, ttl_s=ttl)
+
+    primary = preferences.get_overseas_data_provider()
+    result = routing_health.call_with_fallback(
+        "overseas", method, *args, validate=lambda rows: isinstance(rows, list), invoke=invoke)
+    out = {"source": result.source or primary, "rows": result.data if result.source else [],
+           "degraded": result.degraded, "fallback_reason": result.reason}
+    if result.source is None:
+        outcomes = {outcome for _, outcome in result.attempts}
+        if not result.attempts:
+            out["reason"] = "所选数据源未提供海外行情"
+        elif outcomes == {"unresolved"}:
+            out["reason"] = "所选海外数据源未提供此项指数数据"
+        else:
+            logger.warning("海外指数请求失败 (%s): %s", method, result.attempts)
+            out["reason"] = "海外数据源暂不可用，请稍后重试"
+    return out
 
 
 def _finite(value) -> bool:

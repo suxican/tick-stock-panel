@@ -65,6 +65,20 @@ def test_foreign_index_minute_does_not_call_domestic_data_sources():
     assert response.json()["source"] == "unsupported"
 
 
+def _single_overseas_source(monkeypatch, name, provider, *, declared):
+    """外围行情链只含所选源 (兜底见 test_overseas_fallback.py)。"""
+    from app.data_providers import custom as custom_sources
+    from app.data_providers import routing_health
+
+    routing_health.reset()
+    overseas_indices._work.clear()
+    monkeypatch.setattr(overseas_indices.preferences, "get_overseas_data_provider", lambda: name)
+    monkeypatch.setattr(routing_health, "_primary", lambda cap_id: name)
+    monkeypatch.setattr(routing_health, "_fallbacks", lambda cap_id: [])
+    monkeypatch.setattr(routing_health, "_candidate_names", lambda cap_id: {name} if declared else set())
+    monkeypatch.setattr(custom_sources, "get_provider", lambda _: provider)
+
+
 def test_overseas_routes_use_selected_provider_and_market_dates(monkeypatch):
     day = "2026-11-04"
     provider = Mock()
@@ -76,9 +90,7 @@ def test_overseas_routes_use_selected_provider_and_market_dates(monkeypatch):
     provider.get_overseas_index_daily.return_value = [
         {"symbol": "^N225", "date": day, "open": 100, "low": 99, "high": 102, "close": 101.5}
     ]
-    monkeypatch.setattr(overseas_indices.preferences, "get_overseas_data_provider", lambda: "example")
-    monkeypatch.setattr(overseas_indices.custom, "provider_has_dataset", lambda s, d: (s, d) == ("example", "overseas"))
-    monkeypatch.setattr(overseas_indices.custom, "get_provider", lambda _: provider)
+    _single_overseas_source(monkeypatch, "example", provider, declared=True)
     client = TestClient(_app())
     for _ in range(2):
         result = client.get("/api/index/overseas-quotes").json()
@@ -94,8 +106,7 @@ def test_overseas_routes_use_selected_provider_and_market_dates(monkeypatch):
 
 @pytest.mark.parametrize("provider", [None, object(), Mock(get_overseas_index_quotes=Mock(side_effect=TimeoutError))])
 def test_overseas_missing_capability_method_or_connection_is_isolated(monkeypatch, provider):
-    monkeypatch.setattr(overseas_indices.custom, "provider_has_dataset", lambda *_: provider is not None)
-    monkeypatch.setattr(overseas_indices.custom, "get_provider", lambda _: provider)
+    _single_overseas_source(monkeypatch, "example", provider, declared=provider is not None)
     result = TestClient(_app()).get("/api/index/overseas-quotes").json()
     assert result["rows"] == []
     assert result["reason"]

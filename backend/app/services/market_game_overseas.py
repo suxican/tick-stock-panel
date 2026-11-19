@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from app.data_providers import custom
+from app.data_providers import routing_health
 from app.market_time import CN_TZ
 from app.services import preferences
 from app.services.market_game_overseas_models import OverseasContext, OverseasQuote
@@ -32,22 +32,35 @@ _LIMITATIONS = [
 
 
 def collect_overseas_quotes() -> dict:
-    """Acquire only the selected declared capability; never try another source."""
+    """沿外围行情兜底链取一次报价; 结果只来自一个源, source 为实际来源。
+
+    主源失败时由兜底源提供, 并以 degraded / fallback_reason 标注 (页面显示「X（兜底）」)。
+    """
     source = "yahoo_overseas"
     try:
         source = preferences.get_overseas_data_provider()
-        if not custom.provider_has_dataset(source, "overseas"):
-            return {"source": source, "fetched_at": None, "quotes": [], "reason": "所选数据源未提供外围行情能力"}
-        provider = custom.get_provider(source)
-        acquire = getattr(provider, "get_overseas_quotes", None)
-        if not callable(acquire):
-            return {"source": source, "fetched_at": None, "quotes": [], "reason": "所选数据源缺少外围行情接口"}
-        result = acquire()
-        if not isinstance(result, dict) or not isinstance(result.get("quotes"), list):
-            return {"source": source, "fetched_at": None, "quotes": [], "reason": "外围数据源返回格式无法核验"}
-        return {"source": source, "fetched_at": result.get("fetched_at"), "quotes": deepcopy(result["quotes"])}
+        result = routing_health.call_with_fallback(
+            "overseas", "get_overseas_quotes",
+            validate=lambda r: isinstance(r, dict) and isinstance(r.get("quotes"), list),
+        )
     except Exception:  # noqa: BLE001 - isolate optional provider failures
-        return {"source": source, "fetched_at": None, "quotes": [], "reason": "外围数据源暂不可用, 未替换其他来源"}
+        return {"source": source, "fetched_at": None, "quotes": [], "degraded": False,
+                "fallback_reason": None, "reason": "外围数据源暂不可用"}
+    if result.source is None:
+        outcomes = {outcome for _, outcome in result.attempts}
+        if not result.attempts:
+            reason = "所选数据源未提供外围行情能力"
+        elif outcomes == {"unresolved"}:
+            reason = "所选数据源缺少外围行情接口"
+        elif outcomes == {"data"}:
+            reason = "外围数据源返回格式无法核验"
+        else:
+            reason = "外围数据源暂不可用"
+        return {"source": source, "fetched_at": None, "quotes": [], "degraded": result.degraded,
+                "fallback_reason": result.reason, "reason": reason}
+    return {"source": result.source, "fetched_at": result.data.get("fetched_at"),
+            "quotes": deepcopy(result.data["quotes"]), "degraded": result.degraded,
+            "fallback_reason": result.reason}
 
 
 def _instant(value) -> datetime:
@@ -192,7 +205,11 @@ def build_overseas_context(raw: dict | None, *, cutoff: datetime,
     cutoff = cutoff.astimezone(CN_TZ)
     raw = raw if isinstance(raw, dict) else {}
     source = raw.get("source") if isinstance(raw.get("source"), str) and raw["source"] else "unavailable"
+    degraded = raw.get("degraded") is True
+    fallback_reason = raw.get("fallback_reason") if degraded and isinstance(raw.get("fallback_reason"), str) else None
     limitations = list(_LIMITATIONS)
+    if degraded and source != "unavailable":
+        limitations.append(f"外围行情由兜底来源 {source} 提供" + (f"：{fallback_reason}" if fallback_reason else "。"))
     fetched, quotes = None, []
     if historical:
         reason = "历史首次可得时间未核验, 不用本次取得的外围行情回填历史判断"
@@ -243,4 +260,5 @@ def build_overseas_context(raw: dict | None, *, cutoff: datetime,
         "summary": f"{label}; {ready}/4项行情可作参考, 各市场时间独立标注。",
         "psychology_link": _psychology_link(psychology, risk), "risk_state": risk,
         "affected_sectors": affected, "limitations": limitations,
+        "degraded": degraded, "fallback_reason": fallback_reason,
     }).model_dump(mode="json")
