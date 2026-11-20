@@ -220,6 +220,9 @@ def _bar_end(bar: dict) -> datetime:
     return as_cn(bar.get("end", bar.get("datetime")))
 
 
+MINUTE_AVG_TOLERANCE = .01  # 单根分钟均价偏出 K 线区间的相对容差 (价格的 1%)
+
+
 def _minute_ends(day: date, until: datetime) -> list[datetime]:
     values = []
     for hour, minute, count in [(9, 31, 120), (13, 1, 117)]:
@@ -292,9 +295,19 @@ def _quality(bars, quote, env, position, account, now, cfg) -> list[str]:
         if (bar["volume_shares"] == 0) != (bar["amount"] == 0):
             reasons.append("分钟成交量额不一致")
             break
-        if bar["volume_shares"] and not bar["low"] - .01 <= bar["amount"] / bar["volume_shares"] <= bar["high"] + .01:
+        # 单根: 均价偏出 K 线区间不超过 max(0.01 元, 价格的 1%)。快照差分的分钟量额会在相邻分钟间
+        # 串量 (2026-11-20 猫爪实测最多 0.55%); 手/股、元/千元等单位错误是 100 倍以上, 仍能识别。
+        tolerance = max(.01, bar["close"] * MINUTE_AVG_TOLERANCE)
+        if bar["volume_shares"] and not bar["low"] - tolerance <= bar["amount"] / bar["volume_shares"] <= bar["high"] + tolerance:
             reasons.append("分钟成交量额单位或价格口径不一致")
             break
+    else:
+        # 全天: 串量在整体上抵消, 全天均价须严格落在全天高低价之间 (±0.01 元), 守住整体口径。
+        volume = sum(bar["volume_shares"] for bar in bars)
+        if volume and not (min(bar["low"] for bar in bars) - .01
+                           <= sum(bar["amount"] for bar in bars) / volume
+                           <= max(bar["high"] for bar in bars) + .01):
+            reasons.append("分钟成交量额单位或价格口径不一致")
     return list(dict.fromkeys(reasons))
 
 
@@ -367,7 +380,10 @@ def evaluate_candidate(bars: list[dict], quote: dict, environment: dict, positio
               "account_version": account.get("version"), "position_version": position.get("version"),
               "market": {**{key: value.isoformat() if isinstance(value, (date, datetime)) else value for key, value in quote.items()},
                          "calculated_at": now.isoformat()}, "source_mode": account.get("mode", "manual"),
-              "probability": None, "required_cash": 0, "risk_estimate": 0}
+              "probability": None, "required_cash": 0, "risk_estimate": 0,
+              # 本轮板块环境用的是哪个板块 (手工设置或自动关联), 便于复核
+              "sector": {"id": environment.get("sector_id"), "name": environment.get("sector_name"),
+                         "basis": environment.get("sector_basis")}}
     identity = f"{account.get('id')}|{position.get('symbol')}|{direction}|{now.isoformat()}|{version}"
     result["id"] = "pt_" + hashlib.sha256(identity.encode()).hexdigest()[:24]
     try:

@@ -52,6 +52,9 @@ def _target_key(kind: str, source_id: str, field: str, value: str, level: int | 
     return f"{kind}:{digest}"
 
 
+AUTO_INDUSTRY_MIN_MEMBERS = 10  # 自动关联二级行业的最少成分股数, 不足退到一级行业
+
+
 class SectorMonitorService:
     """缓存板块成员关系, 并按启用规则构建轻量实时快照。"""
 
@@ -94,6 +97,32 @@ class SectorMonitorService:
             {**deepcopy(target), "members": sorted(members_by_key[target["key"]])}
             for kind in ("industry", "concept") for target in catalog[kind]
         ]
+
+    def members_for(self, keys: list[str]) -> set[str]:
+        """指定板块的成分股代码合集 (未知板块忽略), 供少量板块按代码取行情。"""
+        self._ensure_catalog()
+        _, _, members_by_key = self._view
+        return {symbol for key in keys for symbol in members_by_key.get(key, ())}
+
+    def auto_industry(self, symbol: str) -> dict | None:
+        """个股的自动关联行业: 优先所属二级行业, 成分股不足 AUTO_INDUSTRY_MIN_MEMBERS 时退到一级。
+
+        二级行业同业更接近, 相对强弱更准; 太小时覆盖率与板块涨跌不稳定。概念板块
+        一股多属, 不自动关联。同级多个来源按来源与键排序取第一个, 结果可复现。
+        """
+        self._ensure_catalog()
+        catalog, _, members_by_key = self._view
+        hits = [t for t in catalog.get("industry", [])
+                if t.get("available", True) and symbol in members_by_key.get(t["key"], ())]
+
+        def pick(level: int, min_members: int = 1) -> dict | None:
+            matched = sorted((t for t in hits if t.get("level") == level
+                              and len(members_by_key[t["key"]]) >= min_members),
+                             key=lambda t: (str(t.get("source_id") or ""), t["key"]))
+            return matched[0] if matched else None
+
+        chosen = pick(2, AUTO_INDUSTRY_MIN_MEMBERS) or pick(1)
+        return {"key": chosen["key"], "name": chosen.get("name"), "level": chosen.get("level")} if chosen else None
 
     def missing_target_keys(self, targets: list[dict]) -> list[str]:
         self._ensure_catalog()

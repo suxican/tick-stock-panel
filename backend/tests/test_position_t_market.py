@@ -320,7 +320,7 @@ def test_collect_uses_directly_fetched_position_quotes(tmp_path, monkeypatch):
     direct = {**cached["600000.SH"], "last_price": 10.02, "source": "direct"}
     adapter.quotes.fetch_symbol_records = Mock(return_value={"600000.SH": direct})
     quote = adapter.collect([pos], accounts, now)[("a", "600000.SH")]["quote"]
-    adapter.quotes.fetch_symbol_records.assert_called_once_with(["600000.SH"])
+    assert adapter.quotes.fetch_symbol_records.call_args_list[0].args == (["600000.SH"],)
     assert quote["price"] == 10.02 and quote["source"] == "direct"
     assert quote["data_errors"] == []
 
@@ -360,3 +360,166 @@ def test_fetch_symbol_records_uses_plugin_without_touching_shared_cache(monkeypa
     assert service.fetch_symbol_records(["600000.SH"]) == {}
     monkeypatch.setattr(preferences, "get_realtime_data_provider", lambda: "tickflow")
     assert service.fetch_symbol_records(["600000.SH"]) == {}  # 无按代码接口的源沿用共享快照
+
+
+def test_collect_checks_freshness_after_fetching_data(tmp_path, monkeypatch):
+    """拉取持仓报价与盘口需要数秒; 时效须以取完数据后的时刻判断, 晚于轮次开始的数据不算异常。"""
+    adapter, pos, accounts, _fetch, now = _market_context(tmp_path, monkeypatch)
+    later = (now + timedelta(seconds=3)).timestamp() * 1000
+    cached = adapter.quotes.get_market_records()
+    adapter.quotes.fetch_symbol_records = Mock(return_value={"600000.SH": {**cached["600000.SH"], "timestamp": later}})
+    adapter.depth.get_order_books = Mock(return_value={"600000.SH": {
+        "timestamp": later, "bid_prices": [9.99], "ask_prices": [10.01]}})
+    quote = adapter.collect([pos], accounts, now, clock=lambda: now + timedelta(seconds=4))[("a", "600000.SH")]["quote"]
+    assert quote["data_errors"] == []
+    assert quote["computed_at"] == (now + timedelta(seconds=4)).isoformat()
+    stale = adapter.collect([pos], accounts, now)[("a", "600000.SH")]["quote"]  # 不传时钟时按轮次开始判断
+    assert any("盘口时间" in x for x in stale["data_errors"])
+
+
+def test_collect_fetches_sector_members_and_benchmark_directly(tmp_path, monkeypatch):
+    """全市场快照约 15 秒一轮, 大盘与板块环境的成员和基准指数同样须按代码直接取最新。"""
+    adapter, pos, accounts, _fetch, now = _market_context(tmp_path, monkeypatch)
+    later = (now + timedelta(seconds=2)).timestamp() * 1000
+    stale = (now - timedelta(seconds=15)).timestamp() * 1000
+    cached = adapter.quotes.get_market_records()
+    base = {**cached["600000.SH"], "timestamp": stale}
+    adapter.quotes.get_market_records = lambda: {"600000.SH": base, "600001.SH": {**base, "symbol": "600001.SH"},
+                                                 "000001.SH": {**base, "symbol": "000001.SH"}}
+
+    def direct(symbols, asset_type="stock"):
+        return {s: {**base, "symbol": s, "timestamp": later} for s in symbols}
+
+    adapter.quotes.fetch_symbol_records = Mock(side_effect=direct)
+    adapter.sectors.members_for = Mock(return_value={"600001.SH"})
+    seen = {}
+
+    def build(stock_df, index_df, targets, windows, *, now):
+        seen.update(stocks=set(stock_df["symbol"]), indices=set(index_df["symbol"]), now=now,
+                    targets={t["key"] for t in targets})
+        return {}
+
+    adapter.sectors.build_snapshots = build
+    adapter.collect([pos], accounts, now, clock=lambda: now + timedelta(seconds=3))
+    assert {tuple(c.args[0]) for c in adapter.sectors.members_for.call_args_list} == {("industry:test",)}
+    calls = adapter.quotes.fetch_symbol_records.call_args_list
+    assert calls[0].args == (["600000.SH", "600001.SH"],)
+    assert calls[1].args == (["000001.SH"],) and calls[1].kwargs == {"asset_type": "index"}
+    # 晚于轮次开始的直接取数参与聚合 (以取完数据的时刻判断), 共享快照里的旧报价不参与
+    assert seen["stocks"] == {"600000.SH", "600001.SH", "000001.SH"}
+    assert seen["targets"] == {"index:000001.SH", "industry:test"}
+    assert seen["now"] == (now + timedelta(seconds=3)).timestamp()
+
+
+def test_fetch_symbol_records_index_path(monkeypatch):
+    from app.data_providers import custom as custom_sources
+    from app.services import preferences
+    from app.services.quote_service import QuoteService
+
+    provider = SimpleNamespace(get_realtime_indices=Mock(return_value=[{"symbol": "000001.SH", "timestamp": 1000}]))
+    monkeypatch.setattr(preferences, "get_realtime_data_provider", lambda: "plugin_x")
+    monkeypatch.setattr(custom_sources, "provider_has_dataset", lambda name, ds: True)
+    monkeypatch.setattr(custom_sources, "get_provider", lambda name: provider)
+    out = QuoteService().fetch_symbol_records(["000001.SH"], asset_type="index")
+    provider.get_realtime_indices.assert_called_once_with(["000001.SH"])
+    assert out["000001.SH"]["source"] == "plugin_x"
+
+
+def test_sector_members_for_known_keys_only(tmp_path):
+    from app.services.sector_monitor import SectorMonitorService
+
+    service = SectorMonitorService(SimpleNamespace(store=SimpleNamespace(data_dir=tmp_path)))
+    service._ensure_catalog = lambda: None
+    service._view = ({}, {}, {"industry:a": {"600000.SH"}, "industry:b": {"600001.SH", "600000.SH"}})
+    assert service.members_for(["industry:a", "industry:b", "unknown"]) == {"600000.SH", "600001.SH"}
+
+
+def _sector_service(tmp_path, industries):
+    from app.services.sector_monitor import SectorMonitorService
+
+    service = SectorMonitorService(SimpleNamespace(store=SimpleNamespace(data_dir=tmp_path)))
+    service._ensure_catalog = lambda: None
+    targets = [{"key": key, "name": name, "kind": "industry", "level": level, "source_id": "ext_hy_ths",
+                **({"available": False} if name.endswith("停用") else {})}
+               for key, name, level, _members in industries]
+    service._view = ({"industry": targets, "concept": []}, {t["key"]: t for t in targets},
+                     {key: set(members) for key, _n, _l, members in industries})
+    return service
+
+
+def _members(n, include="688388.SH"):
+    return [include, *[f"6000{i:02d}.SH" for i in range(n - 1)]]
+
+
+def test_auto_industry_prefers_level_two(tmp_path):
+    service = _sector_service(tmp_path, [("industry:l1", "电池", 1, _members(107)),
+                                         ("industry:l2", "电池 / 锂电池", 2, _members(32))])
+    assert service.auto_industry("688388.SH") == {"key": "industry:l2", "name": "电池 / 锂电池", "level": 2}
+
+
+def test_auto_industry_falls_back_to_level_one_when_level_two_too_small(tmp_path):
+    service = _sector_service(tmp_path, [("industry:l1", "电池", 1, _members(107)),
+                                         ("industry:l2", "电池 / 小众", 2, _members(9))])
+    assert service.auto_industry("688388.SH")["key"] == "industry:l1"
+
+
+def test_auto_industry_skips_unavailable_and_unknown(tmp_path):
+    service = _sector_service(tmp_path, [("industry:l2", "电池 / 停用", 2, _members(32))])
+    assert service.auto_industry("688388.SH") is None
+    assert service.auto_industry("000001.SZ") is None
+
+
+def test_collect_auto_associates_industry_when_sector_unset(tmp_path, monkeypatch):
+    adapter, pos, accounts, _fetch, now = _market_context(tmp_path, monkeypatch)
+    pos = {**pos, "sector_id": ""}
+    adapter.sectors.auto_industry = Mock(return_value={"key": "industry:auto", "name": "元件 / 印制电路板", "level": 2})
+    seen = {}
+    adapter.sectors.build_snapshots = lambda s, i, targets, w, *, now: seen.update(targets={t["key"] for t in targets}) or {
+        "industry:auto": {"valid": True, "window_changes": {5: .002}, "coverage_ratio": 1}}
+    env = adapter.collect([pos], accounts, now)[("a", "600000.SH")]["environment"]
+    assert "industry:auto" in seen["targets"]
+    assert (env["sector_id"], env["sector_basis"], env["sector_name"]) == ("industry:auto", "auto", "元件 / 印制电路板")
+    assert env["sector_return_5m"] == .002
+
+
+def test_collect_manual_sector_wins_over_auto(tmp_path, monkeypatch):
+    adapter, pos, accounts, _fetch, now = _market_context(tmp_path, monkeypatch)
+    adapter.sectors.auto_industry = Mock(return_value={"key": "industry:auto", "name": "x", "level": 2})
+    env = adapter.collect([pos], accounts, now)[("a", "600000.SH")]["environment"]
+    assert (env["sector_id"], env["sector_basis"]) == ("industry:test", "manual")
+    adapter.sectors.auto_industry.assert_not_called()
+
+
+def test_collect_without_any_sector_reports_none(tmp_path, monkeypatch):
+    adapter, pos, accounts, _fetch, now = _market_context(tmp_path, monkeypatch)
+    adapter.sectors.auto_industry = Mock(return_value=None)
+    env = adapter.collect([{**pos, "sector_id": None}], accounts, now)[("a", "600000.SH")]["environment"]
+    assert env["sector_id"] is None and env["sector_basis"] is None and env["sector_return_5m"] is None
+
+
+def test_sector_time_uses_only_sector_members_not_whole_market(tmp_path, monkeypatch):
+    """板块行情时间只看该板块参与计算的成分股; 全市场其他股票的旧报价不能拖累板块。"""
+    adapter, pos, accounts, _fetch, now = _market_context(tmp_path, monkeypatch)
+    cached = adapter.quotes.get_market_records()
+    member_ms = (now - timedelta(seconds=2)).timestamp() * 1000
+    other_ms = (now - timedelta(seconds=9)).timestamp() * 1000
+    adapter.quotes.get_market_records = lambda: {
+        **cached, "600000.SH": {**cached["600000.SH"], "timestamp": member_ms},
+        "600009.SH": {**cached["600000.SH"], "symbol": "600009.SH", "timestamp": other_ms}}
+    adapter.sectors.members_for = Mock(side_effect=lambda keys: {"600000.SH"} if keys == ["industry:test"] else set())
+    env = adapter.collect([pos], accounts, now)[("a", "600000.SH")]["environment"]
+    assert env["sector_ts"] == datetime.fromtimestamp(member_ms / 1000, CN_TZ).isoformat()
+
+
+def test_sector_time_is_median_of_members_so_one_illiquid_stock_does_not_stale_it(tmp_path, monkeypatch):
+    """成交清淡的成分股最近成交时间可能停在数十秒前 (实测最旧 30-45 秒, 中位 2-3 秒);
+    板块行情时间取参与聚合成分股的中位市场时间, 代表板块整体新鲜度。"""
+    adapter, pos, accounts, _fetch, now = _market_context(tmp_path, monkeypatch)
+    cached = adapter.quotes.get_market_records()
+    ages = {"600000.SH": 1, "600001.SH": 2, "600002.SH": 9}
+    adapter.quotes.get_market_records = lambda: {
+        **cached, **{s: {**cached["600000.SH"], "symbol": s, "timestamp": (now - timedelta(seconds=a)).timestamp() * 1000}
+                     for s, a in ages.items()}}
+    adapter.sectors.members_for = Mock(return_value=set(ages))
+    env = adapter.collect([pos], accounts, now)[("a", "600000.SH")]["environment"]
+    assert env["sector_ts"] == (now - timedelta(seconds=2)).isoformat()

@@ -19,7 +19,7 @@ class Market:
                      "quote": quote, "environment": env}
         self.now, self.fail = now, False
 
-    def collect(self, positions, accounts, now):
+    def collect(self, positions, accounts, now, clock=None):
         if self.fail:
             raise OSError("upstream unavailable")
         # 模拟provider已标准化JSON契约，不向用户运行目录写数据。

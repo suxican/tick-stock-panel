@@ -192,7 +192,7 @@ class PositionTService:
             outputs, errors = {}, []
             if positions:
                 try:
-                    outputs = self.market.collect(positions, accounts, now)
+                    outputs = self.market.collect(positions, accounts, now, clock=lambda: as_cn(self.clock()))
                 except Exception:
                     logger.exception("持仓行情数据暂不可用")
                     errors = ["行情适配失败，暂停判断并等待下一轮恢复"]

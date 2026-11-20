@@ -162,6 +162,12 @@ it('builds a plan only on explicit action, retaining account and position versio
   expect(done).toHaveBeenCalledTimes(1)
   expect(mocks.execution).not.toHaveBeenCalled()
 })
+it('shows which sector the environment used, including auto association', async () => {
+  await render(<Opportunity signal={{ ...signal, sector: { id: 'industry:x', name: '元件 / 印制电路板', basis: 'auto' } }} position={position} unavailable={false} onCreated={vi.fn()} />)
+  expect(host.textContent).toContain('元件 / 印制电路板（自动关联所属行业）')
+  await render(<Opportunity signal={signal} position={position} unavailable={false} onCreated={vi.fn()} />)
+  expect(host.textContent).toContain('未关联，板块环境缺失')
+})
 it('expires old opportunities and rejects unknown expiry', async () => {
   await render(<Opportunity signal={{ ...signal, expires_at: '2020-01-01T00:00:00+08:00' }} unavailable={false} onCreated={vi.fn()} />)
   expect(host.textContent).toContain('已过期')

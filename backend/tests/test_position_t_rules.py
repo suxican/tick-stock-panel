@@ -72,6 +72,46 @@ def test_candidates_use_completed_minute_and_explicit_evidence(direction):
     assert again["net_min"] == result["net_min"]
 
 
+def test_signal_records_which_sector_was_used():
+    bars, quote, env, position, account, now, config = sample_context("buy_sell")
+    env = {**env, "sector_id": "industry:auto", "sector_basis": "auto", "sector_name": "元件 / 印制电路板"}
+    result = evaluate_candidate(bars, quote, env, position, account, now, "buy_sell", config)
+    assert result["sector"] == {"id": "industry:auto", "name": "元件 / 印制电路板", "basis": "auto"}
+    paused = evaluate_candidate([], quote, env, position, account, now, "buy_sell", config)
+    assert paused["state"] == "paused" and paused["sector"]["basis"] == "auto"  # 暂停时同样可见
+
+
+MINUTE_UNIT_REASON = "分钟成交量额单位或价格口径不一致"
+
+
+def test_minute_boundary_leakage_within_one_percent_is_tolerated():
+    """快照差分的分钟量额会在相邻分钟间串量 (实测单根均价偏出 K 线区间最多 0.55%), 不应整天暂停。"""
+    bars, quote, env, position, account, now, config = sample_context("buy_sell")
+    bars[20] = {**bars[20], "amount": bars[20]["amount"] + bars[20]["volume_shares"] * bars[20]["close"] * .006}
+    bars[21] = {**bars[21], "amount": bars[21]["amount"] - bars[21]["volume_shares"] * bars[21]["close"] * .006}
+    result = evaluate_candidate(bars, quote, env, position, account, now, "buy_sell", config)
+    assert MINUTE_UNIT_REASON not in result["reasons"]
+    assert result["state"] == "triggered"
+
+
+@pytest.mark.parametrize("factor", [100, 0.01, 1000])
+def test_minute_unit_errors_still_pause(factor):
+    """手/股 (100 倍)、元/千元 (1000 倍) 等单位错误远超 1%, 仍然暂停。"""
+    bars, quote, env, position, account, now, config = sample_context("buy_sell")
+    bars[10] = {**bars[10], "amount": bars[10]["amount"] * factor}
+    result = evaluate_candidate(bars, quote, env, position, account, now, "buy_sell", config)
+    assert result["state"] == "paused" and MINUTE_UNIT_REASON in result["reasons"]
+
+
+def test_whole_day_vwap_outside_day_range_pauses():
+    """每根都在 1% 容差内, 但全天均价落在全天高低价之外 (整体口径偏差), 仍然暂停。"""
+    bars, quote, env, position, account, now, config = sample_context("buy_sell")
+    bars = [{**bar, "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0,
+             "amount": bar["volume_shares"] * 10.09} for bar in bars]  # 单根偏出 0.9%, 全天均价 10.09 > 10.01
+    result = evaluate_candidate(bars, quote, env, position, account, now, "buy_sell", config)
+    assert result["state"] == "paused" and MINUTE_UNIT_REASON in result["reasons"]
+
+
 @pytest.mark.parametrize("direction,price", [
     ("buy_sell", 9.60), ("buy_sell", 9.78), ("buy_sell", 9.80),
     ("sell_buy", 10.40), ("sell_buy", 10.22), ("sell_buy", 10.20),

@@ -2190,6 +2190,8 @@ export interface PositionTSignal {
   created_at: string; expires_at: string; strategy_version: string
   account_version: number; position_version: number; market: Record<string, unknown>
   source_mode: string
+  /** 本轮板块环境所用板块: manual=持仓手工设置, auto=自动关联所属行业 */
+  sector?: { id: string | null; name: string | null; basis: 'manual' | 'auto' | null }
 }
 export interface PositionTSignalHistoryEvent {
   signal: PositionTSignal; previous_state: string | null; recorded_at: string

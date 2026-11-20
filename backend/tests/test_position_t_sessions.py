@@ -105,8 +105,8 @@ def test_lunch_resume_does_not_revive_old_opportunity(service):
 def test_collect_crossing_lunch_discards_result_and_does_not_archive(service, monkeypatch):
     service.market.now = as_cn("2026-10-16T11:29:59+08:00")
     original = service.market.collect
-    def collect(*args):
-        result = original(*args)
+    def collect(*args, **kwargs):
+        result = original(*args, **kwargs)
         service.market.now += timedelta(seconds=1)
         return result
     service.market.collect = collect

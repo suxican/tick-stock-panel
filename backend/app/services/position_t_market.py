@@ -178,8 +178,12 @@ class PositionTMarket:
                 "unit": {"price": "CNY", "volume": "shares", "amount": "CNY"},
                 "minute_received_at": self._minute_received, "data_errors": errors, **self._history(symbol, now.date())}
 
-    def collect(self, positions, accounts, now):
-        """每轮一批；分钟正常每分钟一次，缺最新完整分钟时宽限后最多补拉一次。"""
+    def collect(self, positions, accounts, now, clock=None):
+        """每轮一批；分钟正常每分钟一次，缺最新完整分钟时宽限后最多补拉一次。
+
+        clock 给出取完数据后的时刻，用于报价与盘口时效判断：拉取需要数秒，
+        晚于轮次开始 now 的数据不能被当作时间异常。未传时按 now 判断。
+        """
         now = as_cn(now)
         if self.trading_day(now.date()) is not True or not continuous_session(now):
             return {}
@@ -202,17 +206,33 @@ class PositionTMarket:
         symbols = list(dict.fromkeys(p["symbol"] for p in positions))
         selected = symbols[:int(support["max_symbols"])] if support["available"] else []
         records = self.quotes.get_market_records()
-        # 全市场快照到手时可能已晚数秒; 持仓按代码直接取最新报价覆盖 (源不支持时沿用快照)
+        # 关联板块: 持仓手工设置优先; 未设置时自动关联所属二级行业 (过小退一级), 不写回持仓
+        auto = getattr(self.sectors, "auto_industry", None)
+        sector_of = {}
+        for p in positions:
+            if p.get("sector_id"):
+                sector_of[(p["account_id"], p["symbol"])] = (p["sector_id"], "manual", None)
+            elif callable(auto) and (hit := auto(p["symbol"])):
+                sector_of[(p["account_id"], p["symbol"])] = (hit["key"], "auto", hit.get("name"))
+        sector_keys = sorted({key for key, _basis, _name in sector_of.values()})
+        benchmarks = sorted({p["benchmark_symbol"] for p in positions if p.get("benchmark_symbol")})
+        # 全市场快照到手时可能已晚 5-15 秒; 持仓、所设板块成分股与基准指数按代码直接取最新
+        # 报价覆盖, 使 10 秒时效对大盘与板块环境同样可达 (源不支持时沿用快照, 不跨源回退)
         direct = getattr(self.quotes, "fetch_symbol_records", None)
         if trading and enabled and symbols and callable(direct):
-            records = {**records, **direct(symbols)}
-        # 成分股只有真实市场时间新鲜才参与聚合，不用接收时间替代。
-        fresh = [r for r in records.values() if (s := market_time_ms(r.get("timestamp"))) and 0 <= (now - s).total_seconds() <= 10]
-        targets = [{"key": key} for key in {*(f"index:{p['benchmark_symbol']}" for p in positions), *(p["sector_id"] for p in positions if p.get("sector_id"))}]
+            members = getattr(self.sectors, "members_for", None)
+            wanted = sorted({*symbols, *(members(sector_keys) if callable(members) and sector_keys else ())})
+            records = {**records, **direct(wanted)}
+            if benchmarks:
+                records = {**records, **direct(benchmarks, asset_type="index")}
+        fetched = as_cn(clock()) if clock is not None else now
+        # 成分股只有真实市场时间新鲜才参与聚合，不用接收时间替代；以取完数据的时刻判断。
+        fresh = [r for r in records.values() if (s := market_time_ms(r.get("timestamp"))) and 0 <= (fetched - s).total_seconds() <= 10]
+        targets = [{"key": key} for key in {*(f"index:{b}" for b in benchmarks), *sector_keys}]
         columns = ["symbol", "change_pct", "last_price", "prev_close"]
         stock_rows = [{k: r.get(k) for k in columns} for r in fresh]
         index_rows = [{**r, "change_pct": r["change_pct"] * 100 if r.get("change_pct") is not None else None} for r in stock_rows]
-        snapshots = self.sectors.build_snapshots(pl.DataFrame(stock_rows), pl.DataFrame(index_rows), targets, {5}, now=now.timestamp()) if trading and enabled else {}
+        snapshots = self.sectors.build_snapshots(pl.DataFrame(stock_rows), pl.DataFrame(index_rows), targets, {5}, now=fetched.timestamp()) if trading and enabled else {}
         books = self.depth.get_order_books(selected) if trading and enabled and selected else {}
         minute_slot = (now - timedelta(seconds=3)).replace(second=0, microsecond=0).isoformat()
         key = (minute_slot, tuple(selected), preferences.get_minute_data_provider())
@@ -238,11 +258,23 @@ class PositionTMarket:
             for row in frame.to_dicts():
                 self._minutes.setdefault(row["symbol"], []).append(row)
             self._minute_received = datetime.now(CN_TZ).isoformat()
+        checked = as_cn(clock()) if clock is not None else now
         result = {}
         worst_ts = min((market_time_ms(r["timestamp"]) for r in fresh), default=None)
+        # 板块行情时间 = 该板块参与聚合成分股市场时间的中位数: 代表板块整体新鲜度, 成交清淡个股的
+        # 旧成交时间 (实测可达 30-45 秒) 不拖累整板; 覆盖率 80% 门槛另行约束。全市场其他报价不参与
+        members_of = getattr(self.sectors, "members_for", None)
+        fresh_by_symbol = {r.get("symbol"): r["timestamp"] for r in fresh}
+        sector_times = {}
+        for key in sector_keys:
+            if callable(members_of):
+                stamps = [fresh_by_symbol[s] for s in members_of([key]) if s in fresh_by_symbol]
+                sector_times[key] = market_time_ms(median(stamps)) if stamps else None
+            else:
+                sector_times[key] = worst_ts
         for pos in positions:
             cfg = accounts[pos["account_id"]]["config"]
-            quote = self._quote(pos, records.get(pos["symbol"], {}), books.get(pos["symbol"], {}), now, cfg)
+            quote = self._quote(pos, records.get(pos["symbol"], {}), books.get(pos["symbol"], {}), checked, cfg)
             if not enabled:
                 quote["data_errors"].append("全局实时行情未启用或已暂停")
             if pos["symbol"] not in selected:
@@ -250,14 +282,17 @@ class PositionTMarket:
             if cfg.get("minute_timestamp_semantics") not in {"start", "end"}:
                 quote["data_errors"].append("分钟时间标记语义待按数据源确认")
             market = snapshots.get(f"index:{pos['benchmark_symbol']}", {})
-            sector = snapshots.get(pos.get("sector_id"), {})
+            sector_id, sector_basis, sector_name = sector_of.get((pos["account_id"], pos["symbol"]), (None, None, None))
+            sector = snapshots.get(sector_id, {}) if sector_id else {}
             idx_stamp = market_time_ms(records.get(pos["benchmark_symbol"], {}).get("timestamp"))
+            sector_stamp = sector_times.get(sector_id) if sector_id else None
             env = {"market_return_5m": market.get("window_changes", {}).get(5),
                    "sector_return_5m": sector.get("window_changes", {}).get(5), "coverage": sector.get("coverage_ratio", 0),
                    "market_ts": idx_stamp.isoformat() if idx_stamp and market.get("valid") else None,
-                   "sector_ts": worst_ts.isoformat() if worst_ts and sector.get("valid") else None,
+                   "sector_ts": sector_stamp.isoformat() if sector_stamp and sector.get("valid") else None,
                    "window_metric": "daily_return_difference",
-                   "benchmark_symbol": pos["benchmark_symbol"], "sector_id": pos.get("sector_id")}
+                   "benchmark_symbol": pos["benchmark_symbol"], "sector_id": sector_id,
+                   "sector_basis": sector_basis, "sector_name": sector_name or sector.get("name")}
             bars = normalize_bars(self._minutes.get(pos["symbol"], []), now, cfg.get("minute_timestamp_semantics")) if enabled and trading else []
             result[(pos["account_id"], pos["symbol"])] = {"bars": bars, "quote": quote, "environment": env}
         return result
