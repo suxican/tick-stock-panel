@@ -268,6 +268,7 @@ export const QK = {
   regimeCoverage:       ['regime-coverage'] as const,
   regimePhases:         (start?: string, end?: string) => ['regime-phases', start ?? '', end ?? ''] as const,
   regimeSealQuality:    (start?: string, end?: string) => ['regime-seal-quality', start ?? '', end ?? ''] as const,
+  regimeAuctionSentiment: (start?: string, end?: string) => ['regime-auction-sentiment', start ?? '', end ?? ''] as const,
   regimeMainline:       (kind: string, start?: string, end?: string) => ['regime-mainline', kind, start ?? '', end ?? ''] as const,
   regimeConclusion:     ['regime-conclusion'] as const,
   envMatrixPlan:        ['env-matrix-plan'] as const,

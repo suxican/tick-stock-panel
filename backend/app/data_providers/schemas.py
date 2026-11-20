@@ -39,6 +39,13 @@ SUSPENSION_SCHEMA = {
     "date": pl.Date, "symbol": pl.String, "timing": pl.String, "source": pl.String,
 }
 
+# 集合竞价 (09:25 定版): 竞价成交价 (原价, 元)、竞价涨幅 (小数制)、竞价成交额 (元)、成交量与
+# 竞价结束时未匹配量 (股, 上游 um_vol, 口径未证实, 实测远小于涨停封单, 不用于推算)。只列有竞价成交的股票
+AUCTION_SCHEMA = {
+    "date": pl.Date, "symbol": pl.String, "price": pl.Float64, "change_pct": pl.Float64,
+    "amount": pl.Float64, "volume": pl.Float64, "unmatched_volume": pl.Float64, "source": pl.String,
+}
+
 LIMIT_EVENT_SCHEMA = {
     "date": pl.Date, "symbol": pl.String, "name": pl.String,
     # u=涨停 d=跌停 ub=涨停炸板 db=跌停炸板; 为收盘集合竞价前的状态, 尾盘回封以收盘价复核

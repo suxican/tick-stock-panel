@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from app.custom import market_reference as ext
 from app.data_providers.schemas import (
+    AUCTION_SCHEMA,
     LIMIT_EVENT_SCHEMA,
     PRICE_LIMIT_SCHEMA,
     ST_STATUS_SCHEMA,
@@ -263,8 +264,10 @@ def test_jobs_register_preopen_and_after_close(app_env):
         calls = app_env.app.state.scheduler.add_job.call_args_list
         plans = {c.kwargs["id"]: (c.kwargs["args"][1], c.kwargs["hour"], c.kwargs["minute"]) for c in calls}
     assert plans["market_reference_preopen"] == (("price_limits", "st_status", "suspensions"), 9, "5,20")
-    assert plans["market_reference_close"] == (("price_limits", "st_status", "limit_events", "suspensions"), "15,20", 45)
-    assert app_env.app.state.scheduler.remove_job.call_count == 2
+    assert plans["market_reference_close"] == (("price_limits", "st_status", "limit_events", "suspensions", "auction"),
+                                               "15,20", 45)
+    assert plans["market_reference_auction"] == (("auction",), 9, 27)  # 竞价 09:25 定版后同步
+    assert app_env.app.state.scheduler.remove_job.call_count == 3
 
 
 @pytest.mark.parametrize("trading, calls", [(True, 2), (False, 0), (None, 0)])
@@ -276,9 +279,9 @@ def test_sync_job_only_on_confirmed_trading_day(app_env, monkeypatch, trading, c
 
 def test_sync_job_continues_after_one_dataset_fails(app_env):
     app_env.sync.side_effect = [svc.ReferenceUnavailableError("x"), RuntimeError("boom"), {"state": "saved"},
-                                {"state": "saved"}]
+                                {"state": "saved"}, {"state": "saved"}]
     ext._sync_today(app_env.data_dir, tuple(svc.DATASETS))
-    assert app_env.sync.call_count == len(svc.DATASETS) == 4
+    assert app_env.sync.call_count == len(svc.DATASETS) == 5
 
 
 def test_backfill_endpoint_errors(app_env, monkeypatch):
@@ -293,3 +296,24 @@ def test_backfill_endpoint_errors(app_env, monkeypatch):
         assert client.post("/api/market-reference/backfill", json={"dataset": "price_limits"}).status_code == 503
         start.side_effect = RuntimeError("已有回填在运行")
         assert client.post("/api/market-reference/backfill", json={"dataset": "price_limits"}).status_code == 409
+
+
+def test_auction_daily_maps_units_and_drops_untraded():
+    """daily_auc: 竞价涨幅百分数 → 小数制; 量为手 → 股; um_vol 为未匹配量 (手 → 股)。"""
+    provider, fake = _provider({"daily_auc": [
+        {"symbol": "000001", "tradedate": "20261118", "m_price": 12.0, "auc_pct_chg": 1.5, "auc_amt": 120000,
+         "auc_vol": 100, "um_vol": 20},
+        {"symbol": "600087", "tradedate": "20261118", "m_price": None, "auc_pct_chg": None, "auc_amt": 0,
+         "auc_vol": 0, "um_vol": 0},
+    ]})
+    frame = provider.get_auction_daily(DAY)
+    assert frame.schema == pl.Schema(AUCTION_SCHEMA)
+    assert frame.to_dicts() == [{"date": DAY, "symbol": "000001.SZ", "price": 12.0, "change_pct": pytest.approx(0.015),
+                                 "amount": 120000.0, "volume": 10000.0, "unmatched_volume": 2000.0, "source": "meoz"}]
+    assert ("daily_auc", {"tradedate": "20261118"}) in fake.calls
+
+
+def test_auction_daily_rejects_stale_rows():
+    provider, _ = _provider({"daily_auc": [{"symbol": "000001", "tradedate": "20261117", "m_price": 1.0}]})
+    with pytest.raises(MeozError, match="尚未更新"):
+        provider.get_auction_daily(DAY)

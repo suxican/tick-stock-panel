@@ -19,6 +19,7 @@ import polars as pl
 from app.data_providers import custom as custom_sources
 from app.data_providers.capabilities import resolve_capability_sources
 from app.data_providers.schemas import (
+    AUCTION_SCHEMA,
     LIMIT_EVENT_SCHEMA,
     PRICE_LIMIT_SCHEMA,
     ST_STATUS_SCHEMA,
@@ -47,6 +48,8 @@ DATASETS: dict[str, Spec] = {
     "st_status": Spec("get_st_status", ST_STATUS_SCHEMA, date(2021, 1, 4), time(9, 0)),
     "limit_events": Spec("get_limit_events", LIMIT_EVENT_SCHEMA, date(2017, 1, 3), time(15, 30)),
     "suspensions": Spec("get_suspensions", SUSPENSION_SCHEMA, date(2020, 1, 2), time(9, 0)),
+    # 集合竞价 09:25 定版; 情绪周期「竞价情绪」与回测使用 (猫爪 daily_auc 2019-01 起)
+    "auction": Spec("get_auction_daily", AUCTION_SCHEMA, date(2019, 1, 2), time(9, 26)),
 }
 
 _write_lock = threading.Lock()

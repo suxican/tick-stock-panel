@@ -1728,6 +1728,30 @@ export interface MarketGameModelEnvelope {
 }
 
 // ===== 龙虎榜 (fuyao 专有, 复盘页) =====
+/** 竞价情绪一日 (情绪周期新维度; 比率与涨幅为小数, 成交额为元; 无数据为 null) */
+export interface AuctionSentimentRow {
+  date: string
+  count: number                     // 有竞价成交的家数 (剔除 ST 与无涨跌幅新股)
+  high_open_ratio: number | null
+  low_open_ratio: number | null
+  median_pct: number | null
+  limit_up_open: number | null      // 竞价涨停家数 (2020 起)
+  limit_down_open: number | null
+  prev_sealed: number               // 上一交易日收盘封住且今天有竞价的家数
+  prev_mean_pct: number | null      // 昨涨停股今日竞价涨幅均值
+  prev_high_open_ratio: number | null
+  prev_weak_count: number           // 昨涨停股竞价 <= -3% 家数
+  amount: number | null             // 全市场竞价成交额 (元)
+  amount_ratio_5d: number | null    // 相对前 5 个交易日均值
+}
+
+export interface AuctionSentimentPayload {
+  rows: AuctionSentimentRow[]
+  /** 截至区间末的最新一日 + 近一年 (250 交易日) 分位 0-100; 样本不足为 null */
+  latest: (AuctionSentimentRow & { pct: Partial<Record<'high_open_ratio' | 'median_pct' | 'limit_up_open' | 'limit_down_open' | 'prev_mean_pct' | 'prev_high_open_ratio' | 'prev_weak_count' | 'amount_ratio_5d', number | null>> }) | null
+  first_date: string | null
+}
+
 /** 封板质量一日 (情绪周期新维度; 比率为小数, 封单额为元; 无数据为 null) */
 export interface SealQualityRow {
   date: string
@@ -3573,6 +3597,7 @@ export type ProviderField =
   | 'st_status_data_provider'
   | 'limit_events_data_provider'
   | 'suspensions_data_provider'
+  | 'auction_data_provider'
   | 'dragon_tiger_data_provider'
 
 /** 兜底链能力的兜底顺序偏好 (`<主源字段>_fallbacks`, 不含主源; [] = 关闭兜底) */
@@ -3839,6 +3864,7 @@ export interface Preferences {
   st_status_data_provider?: string
   limit_events_data_provider?: string
   suspensions_data_provider?: string
+  auction_data_provider?: string
   dragon_tiger_data_provider?: string
   data_source_job_timeout_s: number
   data_source_long_job_timeout_s: number
@@ -5230,6 +5256,13 @@ export const api = {
     if (end) params.set('end', end)
     const qs = params.toString()
     return request<SealQualityPayload>(`/api/regime/seal-quality${qs ? `?${qs}` : ''}`)
+  },
+  regimeAuctionSentiment: (start?: string, end?: string) => {
+    const params = new URLSearchParams()
+    if (start) params.set('start', start)
+    if (end) params.set('end', end)
+    const qs = params.toString()
+    return request<AuctionSentimentPayload>(`/api/regime/auction-sentiment${qs ? `?${qs}` : ''}`)
   },
   envMatrixPlan: () => request<{ plan: EnvMatrixPlan }>('/api/settings/preferences/env-matrix-plan'),
   envMatrixPlanUpdate: (plan: EnvMatrixPlan) =>

@@ -56,6 +56,7 @@ import polars as pl
 from app.data_providers.base import ProviderRequestError
 from app.data_providers.normalizer import normalize_daily
 from app.data_providers.schemas import (
+    AUCTION_SCHEMA,
     LIMIT_EVENT_SCHEMA,
     PRICE_LIMIT_SCHEMA,
     ST_STATUS_SCHEMA,
@@ -69,7 +70,7 @@ logger = logging.getLogger(__name__)
 
 _DATASETS = ("realtime", "depth5", "daily", "adj_factor", "minute", "full_minute",
              "price_limits", "st_status", "suspensions", "limit_events", "dragon_tiger", "earnings_events",
-             "theme_authenticity", "fund_flow", "margin_balance", "northbound_holding")
+             "theme_authenticity", "fund_flow", "margin_balance", "northbound_holding", "auction")
 
 API_KEY_ENV = "MEOZ_API_KEY"
 SECRETS_FIELD = "meoz_api_key"  # UI 配置的 Key 存 secrets.json, 优先级高于 .env
@@ -1161,6 +1162,28 @@ class MeozProvider:
                                "ratio": ratio / 100.0 if ratio is not None else None})
         points.sort(key=lambda item: item["date"])
         return points[-2:]
+
+    def get_auction_daily(self, day: date) -> pl.DataFrame:
+        """`daily_auc` (2019 起, 实时服务按 tradedate 查历史): 全市场集合竞价定版结果。
+
+        竞价涨幅百分数 → 小数制; auc_vol / um_vol 为手 → 股 (实测 量×100×价 = 成交额)。
+        无竞价成交 (停牌等, 成交价为空或 0) 的行不落盘。
+        """
+        rows, universe = self._reference_rows("daily_auc", {"tradedate": _ymd(day)}, day)
+        out = []
+        for row in rows:
+            symbol = _full_symbol(row.get("symbol"), universe)
+            price = _to_float(row.get("m_price"))
+            if symbol is None or price is None or price <= 0:
+                continue
+            pct, volume, unmatched = (_to_float(row.get(k)) for k in ("auc_pct_chg", "auc_vol", "um_vol"))
+            out.append({"date": day, "symbol": symbol, "price": price,
+                        "change_pct": pct / 100.0 if pct is not None else None,
+                        "amount": _to_float(row.get("auc_amt")),
+                        "volume": volume * 100 if volume is not None else None,
+                        "unmatched_volume": unmatched * 100 if unmatched is not None else None,
+                        "source": self.name})
+        return pl.DataFrame(out, schema=AUCTION_SCHEMA).unique("symbol", keep="first", maintain_order=True)
 
     def get_limit_events(self, day: date) -> pl.DataFrame:
         """`limit_pool` (2017 起): 涨跌停与炸板明细。pct_chg 百分数 → 小数制。"""

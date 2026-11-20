@@ -24,7 +24,7 @@ from app.services.trading_day import is_trading_day
 EXTENSION_ID = "market.reference"
 EXTENSION_API_VERSION = BACKEND_EXTENSION_API_VERSION
 logger = logging.getLogger(__name__)
-_JOB_IDS = ("market_reference_preopen", "market_reference_close")
+_JOB_IDS = ("market_reference_preopen", "market_reference_close", "market_reference_auction")
 
 
 def _sync_today(data_dir: Path, datasets: tuple[str, ...]) -> None:
@@ -54,6 +54,8 @@ async def _lifespan(app):
             (_JOB_IDS[0], ("price_limits", "st_status", "suspensions"), {"hour": 9, "minute": "5,20"}),
             # 盘后: 涨停池定版; 20:45 补同步首轮失败的数据集 (已有的不改写)
             (_JOB_IDS[1], tuple(DATASETS), {"hour": "15,20", "minute": 45}),
+            # 集合竞价 09:25 定版后同步 (竞价情绪当日即可展示); 失败由 15:45/20:45 补同步
+            (_JOB_IDS[2], ("auction",), {"hour": 9, "minute": 27}),
         )
         for job_id, datasets, when in jobs:
             try:

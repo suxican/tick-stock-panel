@@ -27,6 +27,7 @@ import { Modal } from '@/components/Modal'
 import { cn } from '@/lib/cn'
 import './Regime.css'
 import { SealQualityCard, useSealQuality } from './RegimeSealQuality'
+import { AuctionSentimentCard, useAuctionSentiment } from './RegimeAuctionSentiment'
 
 const STATE_ORDER: RegimeState[] = ['strong', 'lean_strong', 'range', 'lean_weak', 'weak']
 
@@ -210,6 +211,7 @@ export function Regime() {
   useEffect(() => { setSelDate(null) }, [histRange.start, histRange.end, histRange.limit])
   // 封板质量 (情绪周期新维度, 只展示): 卡片与时间轴当日快照共用同一查询
   const sealQuality = useSealQuality(detailStart, detailEnd)
+  const auctionSentiment = useAuctionSentiment(detailStart, detailEnd)
   const mainline = useQuery({
     queryKey: QK.regimeMainline(mainlineKind, detailStart, detailEnd),
     queryFn: () => api.regimeMainline(detailStart, detailEnd, 10, mainlineKind),
@@ -249,6 +251,10 @@ export function Regime() {
   const selSeal = useMemo(
     () => (selDate ? sealQuality.data?.rows.find(r => r.date === selDate) ?? null : null),
     [sealQuality.data, selDate],
+  )
+  const selAuction = useMemo(
+    () => (selDate ? auctionSentiment.data?.rows.find(r => r.date === selDate) ?? null : null),
+    [auctionSentiment.data, selDate],
   )
   const selMainlines = useMemo(() => {
     if (!selDate) return []
@@ -879,6 +885,7 @@ export function Regime() {
                   <span>炸板 <b className="text-foreground">{selSeal.break_rate != null ? (selSeal.break_rate * 100).toFixed(0) + '%' : '—'}</b></span>
                   <span>早盘封 <b className="text-foreground">{selSeal.early_share != null ? (selSeal.early_share * 100).toFixed(0) + '%' : '—'}</b></span>
                 </>}
+                {selAuction && <span>昨涨停竞价 <b className="text-foreground">{selAuction.prev_mean_pct != null ? (selAuction.prev_mean_pct >= 0 ? '+' : '') + (selAuction.prev_mean_pct * 100).toFixed(1) + '%' : '—'}</b></span>}
               </span>
               <span className="flex flex-wrap items-center gap-1">
                 {selMainlines.length > 0 ? selMainlines.map(m => (
@@ -915,6 +922,7 @@ export function Regime() {
 
       {/* ── 封板质量 (情绪周期新维度, 只展示不参与阶段判定) ── */}
       {hasPhaseData && rows.length > 0 && <SealQualityCard start={detailStart} end={detailEnd} />}
+      {hasPhaseData && rows.length > 0 && <AuctionSentimentCard start={detailStart} end={detailEnd} />}
 
       {/* ── 阶段 × 主线 (什么阶段走什么主升) ── */}
       {segments.length > 0 && (

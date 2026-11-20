@@ -27,6 +27,7 @@ DEFAULT_CURRENT = {
     "st_status_data_provider": "meoz",
     "limit_events_data_provider": "meoz",
     "suspensions_data_provider": "meoz",
+    "auction_data_provider": "meoz",
     "dragon_tiger_data_provider": "fuyao",
 }
 
@@ -41,7 +42,7 @@ def _by_id(matrix: dict) -> dict[str, dict]:
 
 
 # 盘后同步的交易所参考数据: TickFlow 不提供, 默认猫爪
-REFERENCE_CAPS = {"price_limits", "st_status", "limit_events", "suspensions"}
+REFERENCE_CAPS = {"price_limits", "st_status", "limit_events", "suspensions", "auction"}
 
 
 def test_registry_covers_all_routing_fields():
@@ -52,7 +53,7 @@ def test_registry_covers_all_routing_fields():
     assert len(set(routable)) == len(routable)
     assert {c["id"] for c in CAPABILITY_REGISTRY} == {
         "realtime", "daily", "minute", "full_minute", "depth5", "adj_factor", "financial", "overseas", "ths_index",
-        "price_limits", "st_status", "limit_events", "suspensions", "dragon_tiger",
+        "price_limits", "st_status", "limit_events", "suspensions", "auction", "dragon_tiger",
     }
     full_minute = next(c for c in CAPABILITY_REGISTRY if c["id"] == "full_minute")
     assert full_minute["field"] == "full_minute_data_provider"
@@ -80,7 +81,7 @@ def test_matrix_without_third_party_sources(monkeypatch):
     _fake_sources(monkeypatch, [])
     matrix = build_capability_matrix(dict(DEFAULT_CURRENT), tickflow_tier="expert")
     assert matrix["tickflow_tier"] == "expert"
-    assert len(matrix["capabilities"]) == 14
+    assert len(matrix["capabilities"]) == 15
     for cap in matrix["capabilities"]:
         if cap["id"] in {"overseas", "ths_index", "dragon_tiger", *REFERENCE_CAPS}:
             assert cap["candidates"] == []
@@ -324,6 +325,7 @@ def test_api_endpoint_injects_all_routing_preferences(monkeypatch):
         "st_status_data_provider": "st-src",
         "limit_events_data_provider": "le-src",
         "suspensions_data_provider": "sp-src",
+        "auction_data_provider": "au-src",
         "dragon_tiger_data_provider": "dt-src",
     }
     getter_names = {
@@ -340,6 +342,7 @@ def test_api_endpoint_injects_all_routing_preferences(monkeypatch):
         "st_status_data_provider": "get_st_status_data_provider",
         "limit_events_data_provider": "get_limit_events_data_provider",
         "suspensions_data_provider": "get_suspensions_data_provider",
+        "auction_data_provider": "get_auction_data_provider",
         "dragon_tiger_data_provider": "get_dragon_tiger_data_provider",
     }
     for field, getter in getter_names.items():

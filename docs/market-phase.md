@@ -32,6 +32,7 @@
 - `promo_rate` 晋级率：昨日连板池今日继续封板的比例。昨日连板数用 `consec.shift(1).over("symbol")` 按个股前一日连接（跨批次边界也正确，`_compute_batch` 在 warmup 截断前计算）；池不足 10 家记 `null`（小样本噪声），不填 0。
 - `ladder_completeness` 梯队完整度：2..height 档位中非空档位占比；height < 3 时为 `null`。
 - 高度（`max_consecutive`）与封板率（`seal_rate`）沿用 regime 已有列。
+- 【市场环境】页另有「封板质量」与「竞价情绪」两张卡片（`GET /api/regime/seal-quality`、`GET /api/regime/auction-sentiment`），只展示，不参与阶段判定。竞价情绪：昨日收盘封住的股今天竞价涨幅均值与 ≤-3% 家数（赚钱效应）、全市场高开占比、竞价涨停/跌停家数（2020 起）、竞价成交额相对前 5 日；剔除 ST 与无涨跌幅新股，数据自 2019 年起（集合竞价按日归档）。设计见 `docs/superpowers/specs/2026-11-20-auction-sentiment-design.md`。
 
 涨停判定所用的涨跌停价与 ST 涨跌幅，优先采用按日落盘的交易所数据（`data/market_reference/`：涨跌停价 2020 年起、ST 名单 2021 年起），没有落盘的交易日回退本地规则推算。剔除风险警示股时逐日取最权威的口径：有当日 ST 名单（2021 年起）按名单；否则有交易所涨跌停价（2020 年）时按价格反推，主板类股票当日涨跌幅只有 5% 即视为风险警示；两者都没有（2020 年前）沿用当前维表名单。按日数据补齐或更新后需全量重算 enriched 与 regime 才会生效。
 

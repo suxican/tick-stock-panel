@@ -543,6 +543,10 @@ def get_limit_events_data_provider() -> str:
 def get_suspensions_data_provider() -> str:
     return _declared_provider("suspensions_data_provider", "suspensions", "meoz")
 
+
+def get_auction_data_provider() -> str:
+    return _declared_provider("auction_data_provider", "auction", "meoz")
+
 def get_pipeline_pull_a_share() -> bool:
     """是否拉取 A 股日K。默认 True。"""
     return load().get("pipeline_pull_a_share", True)

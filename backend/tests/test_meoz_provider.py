@@ -626,7 +626,7 @@ def test_datasets_declaration_and_unsupported_test_dataset(monkeypatch):
     assert set(provider.config.datasets) == {"realtime", "depth5", "daily", "adj_factor", "minute",
                                              "full_minute", "price_limits", "st_status", "suspensions", "limit_events",
                                              "dragon_tiger", "earnings_events", "theme_authenticity",
-                                             "fund_flow", "margin_balance", "northbound_holding"}
+                                             "fund_flow", "margin_balance", "northbound_holding", "auction"}
     assert "financial" not in provider.config.datasets
     out = provider.test_dataset("financial")
     assert out["rows"] == 0 and "未接入" in out["error"]
@@ -685,7 +685,7 @@ def test_loader_manifest_declares_plugin():
     datasets = manifest["datasets"] if isinstance(manifest, dict) else manifest.datasets
     assert set(datasets) == {"realtime", "depth5", "daily", "adj_factor", "minute", "full_minute",
                              "price_limits", "st_status", "suspensions", "limit_events", "dragon_tiger", "earnings_events", "theme_authenticity",
-                                             "fund_flow", "margin_balance", "northbound_holding"}
+                                             "fund_flow", "margin_balance", "northbound_holding", "auction"}
 
 
 # ---- depth5: 猫头鹰 tick 五档 ----

@@ -7,7 +7,7 @@ display_name: "猫爪数据"
 runtime: none
 entry: app.plugins.meoz.provider:MeozProvider
 check: app.plugins.meoz.provider:availability
-datasets: [realtime, depth5, daily, adj_factor, minute, full_minute, price_limits, st_status, suspensions, limit_events, dragon_tiger, earnings_events, theme_authenticity, fund_flow, margin_balance, northbound_holding]
+datasets: [realtime, depth5, daily, adj_factor, minute, full_minute, price_limits, st_status, suspensions, limit_events, dragon_tiger, earnings_events, theme_authenticity, fund_flow, margin_balance, northbound_holding, auction]
 api_key_env: MEOZ_API_KEY   # 声明后设置页提供 Key 输入框(先探后存, secrets.json 优先)
 key_manage_url: "https://meoz.cn/console"
 key_manage_label: "获取 Key / 查看用量"

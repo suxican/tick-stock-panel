@@ -142,6 +142,14 @@ CAPABILITY_REGISTRY: list[dict] = [
         "tf_tier": None,
     },
     {
+        "id": "auction",
+        "label": "集合竞价",
+        "desc": "按日的集合竞价定版结果（竞价价、涨幅、成交额、未匹配量）",
+        "field": "auction_data_provider",
+        "default": "meoz",
+        "tf_tier": None,
+    },
+    {
         "id": "dragon_tiger",
         "label": "龙虎榜",
         "desc": "上榜个股、机构与游资席位",
@@ -342,6 +350,7 @@ def _current_routing() -> dict[str, str]:
         "st_status_data_provider": preferences.get_st_status_data_provider(),
         "limit_events_data_provider": preferences.get_limit_events_data_provider(),
         "suspensions_data_provider": preferences.get_suspensions_data_provider(),
+        "auction_data_provider": preferences.get_auction_data_provider(),
         "dragon_tiger_data_provider": preferences.get_dragon_tiger_data_provider(),
     }
 

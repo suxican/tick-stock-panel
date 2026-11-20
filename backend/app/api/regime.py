@@ -193,6 +193,17 @@ def regime_seal_quality(request: Request, start: date | None = None, end: date |
     return seal_quality.seal_quality_payload(_data_dir(request), start, end)
 
 
+@router.get("/auction-sentiment")
+def regime_auction_sentiment(request: Request, start: date | None = None, end: date | None = None):
+    """竞价情绪 (高开占比 / 昨涨停竞价表现 / 竞价涨跌停家数 / 竞价成交额): 区间每日行 + 最新一日及近一年分位。
+
+    只读本地集合竞价归档与日线, 不改情绪周期阶段规则。竞价涨跌停家数 2020 起才有。
+    """
+    from app.services import auction_sentiment
+
+    return auction_sentiment.auction_sentiment_payload(_data_dir(request), start, end)
+
+
 @router.get("/conclusion")
 def regime_conclusion(request: Request):
     """最新交易日的环境结论: 当天格子、用户预设、叠加市场闸门后的上限与该格历史证据。"""
