@@ -59,6 +59,94 @@ def test_beijing_theoretical_limits_stay_inside_the_band(tmp_path):
     assert quote["limit_down_price"] == 19.27
 
 
+REF_NOW = datetime(2026, 10, 16, 10, 20, tzinfo=CN_TZ)
+LIMITS = {"600000.SH": {"limit_up": 10.95, "limit_down": 8.96, "no_limit": False}}
+
+
+def _ref_quote(tmp_path, monkeypatch, reference, *, raw=None, book=None, listing="1999-11-10"):
+    """day_reference 打桩后的单只报价: 上一交易日收盘 9.955, 本地理论价 10.95/8.96。"""
+    from app.services import market_reference
+
+    monkeypatch.setattr(market_reference, "day_reference",
+                        lambda day: {"price_limits": None, "st": None, "suspensions": None, **reference})
+    repo = SimpleNamespace(store=SimpleNamespace(data_dir=tmp_path),
+        get_daily=lambda *a, **kw: pl.DataFrame({"date": ["2026-10-15"], "volume": [2400]}),
+        resolve_asset_type=lambda s: "stock")
+    market = PositionTMarket(repo, None, None, None)
+    market._instruments = {"600000.SH": {"symbol": "600000.SH", "name": "测试", "listing_date": listing}}
+    stamp = REF_NOW.timestamp() * 1000
+    raw = {"source": "fixture", "last_price": 10, "prev_close": 9.955, "timestamp": stamp, "received_ts": stamp,
+           **(raw or {})}
+    book = {"bid_prices": [9.99], "ask_prices": [10.01], "timestamp": stamp, **(book or {})}
+    return market._quote({"symbol": "600000.SH", "board": "main"}, raw, book, REF_NOW, DEFAULT_CONFIG)
+
+
+def test_exchange_daily_limits_used_when_quote_lacks(tmp_path, monkeypatch):
+    limits = {"600000.SH": {"limit_up": 10.5, "limit_down": 9.4, "no_limit": False}}  # 除权日交易所价
+    quote = _ref_quote(tmp_path, monkeypatch, {"price_limits": limits})
+    assert (quote["limit_up_price"], quote["limit_down_price"]) == (10.5, 9.4)
+    assert quote["price_limit_source"] == "exchange_daily"
+    assert not any("理论价" in x for x in quote["data_errors"])
+
+
+def test_quote_limits_take_precedence_over_exchange_daily(tmp_path, monkeypatch):
+    quote = _ref_quote(tmp_path, monkeypatch, {"price_limits": LIMITS},
+                       raw={"limit_up_price": 10.9, "limit_down_price": 9.0})
+    assert (quote["limit_up_price"], quote["price_limit_source"]) == (10.9, "quote")
+
+
+def test_exchange_no_limit_blocks(tmp_path, monkeypatch):
+    limits = {"600000.SH": {"limit_up": None, "limit_down": None, "no_limit": True}}
+    quote = _ref_quote(tmp_path, monkeypatch, {"price_limits": limits})
+    assert any("无涨跌幅限制" in x for x in quote["data_errors"])
+
+
+def test_theoretical_limits_without_reference_stay_observation_only(tmp_path, monkeypatch):
+    quote = _ref_quote(tmp_path, monkeypatch, {})
+    assert quote["price_limit_source"] == "theoretical"
+    assert any("理论价仅作观察" in x for x in quote["data_errors"])
+
+
+def test_daily_status_trading_when_not_suspended(tmp_path, monkeypatch):
+    quote = _ref_quote(tmp_path, monkeypatch, {"price_limits": LIMITS, "suspensions": {"000002.SZ": None}})
+    assert (quote["trade_status"], quote["trade_status_basis"]) == ("trading", "daily")
+    assert quote["data_errors"] == []
+
+
+def test_daily_status_suspended_when_listed(tmp_path, monkeypatch):
+    quote = _ref_quote(tmp_path, monkeypatch, {"price_limits": LIMITS, "suspensions": {"600000.SH": "09:30-10:30"}})
+    assert (quote["trade_status"], quote["trade_status_basis"]) == ("suspended", "daily")
+    assert any("停牌名单" in x for x in quote["data_errors"])
+
+
+def test_status_unknown_without_suspension_table(tmp_path, monkeypatch):
+    quote = _ref_quote(tmp_path, monkeypatch, {"price_limits": LIMITS})
+    assert (quote["trade_status"], quote["trade_status_basis"]) == ("unknown", "none")
+    assert any("交易状态" in x for x in quote["data_errors"])
+
+
+def test_status_unknown_without_listing_date(tmp_path, monkeypatch):
+    quote = _ref_quote(tmp_path, monkeypatch, {"price_limits": LIMITS, "suspensions": {}}, listing=None)
+    assert quote["trade_status"] == "unknown"
+
+
+def test_explicit_source_status_is_intraday(tmp_path, monkeypatch):
+    quote = _ref_quote(tmp_path, monkeypatch, {"suspensions": {}}, raw={"trade_status": "suspended"})
+    assert (quote["trade_status"], quote["trade_status_basis"]) == ("suspended", "intraday")
+
+
+def test_both_sides_empty_flags_suspected_halt(tmp_path, monkeypatch):
+    quote = _ref_quote(tmp_path, monkeypatch, {"price_limits": LIMITS, "suspensions": {}},
+                       book={"bid_prices": [0], "ask_prices": []})
+    assert any("疑似盘中停牌" in x for x in quote["data_errors"])
+
+
+def test_one_side_empty_no_halt_flag(tmp_path, monkeypatch):
+    quote = _ref_quote(tmp_path, monkeypatch, {"price_limits": LIMITS, "suspensions": {}},
+                       book={"bid_prices": [10.95], "ask_prices": [0]})  # 封涨停
+    assert not any("疑似盘中停牌" in x for x in quote["data_errors"])
+
+
 def _market_context(tmp_path, monkeypatch):
     now = datetime(2026, 10, 16, 10, 20, 5, tzinfo=CN_TZ)
     stamp = now.timestamp() * 1000

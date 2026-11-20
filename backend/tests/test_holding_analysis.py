@@ -451,3 +451,56 @@ def test_evidence_states_unknown_values_without_manufacturing_explanations(tmp_p
     assert "持仓天数未知" in text and "MA20未知" in text
     assert "支撑未知" in text and "同口径涨跌对比未知" in text
     assert "高于MA20" not in text and "低于MA20" not in text
+
+
+# ---- 风险状态 (ST / 停牌, 来自按日交易所参考数据) ----
+
+def _reference(monkeypatch, tables, seen=None):
+    from app.services import market_reference
+
+    def fake(day):
+        if seen is not None:
+            seen.append(day)
+        return {"price_limits": None, "st": None, "suspensions": None, **tables}
+
+    monkeypatch.setattr(market_reference, "day_reference", fake)
+
+
+def test_risk_status_hits_st_and_suspension(monkeypatch):
+    from app.services.holding_analysis import risk_status
+
+    _reference(monkeypatch, {"st": {SYMBOL: "*ST"}, "suspensions": {SYMBOL: None}})
+    status = risk_status(SYMBOL, date(2026, 11, 5))
+    assert [(i["id"], i["detail"]) for i in status["items"]] == [("st", "*ST"), ("suspended", "全天")]
+    assert status["as_of"] == "2026-11-05" and status["fingerprint"]
+    _reference(monkeypatch, {"st": {}, "suspensions": {}})
+    clean = risk_status(SYMBOL, date(2026, 11, 5))
+    assert clean["items"] == [] and clean["fingerprint"] != status["fingerprint"]
+
+
+def test_risk_status_unknown_when_tables_missing(monkeypatch):
+    from app.services.holding_analysis import risk_status
+
+    _reference(monkeypatch, {})
+    status = risk_status(SYMBOL, date(2026, 11, 5))
+    assert [i["id"] for i in status["items"]] == ["st_unknown", "suspension_unknown"]
+    assert [i["id"] for i in risk_status(SYMBOL, None)["items"]] == ["st_unknown", "suspension_unknown"]
+
+
+def test_risk_status_uses_latest_session_on_weekend():
+    from app.services.holding_analysis import risk_day
+
+    saturday = datetime(2026, 11, 7, 10, tzinfo=CN_TZ)
+    assert risk_day(saturday) == date(2026, 11, 6)
+    assert risk_day(NOW) == NOW.date()
+
+
+def test_risk_does_not_change_ready(tmp_path, monkeypatch):
+    repo = Repo(tmp_path)
+    save_lot(repo)
+    seen = []
+    _reference(monkeypatch, {"st": {SYMBOL: "ST"}, "suspensions": {}}, seen)
+    row = analyze(repo)["rows"][0]
+    assert [i["id"] for i in row["risk_status"]["items"]] == ["st"]
+    assert row["plan"]["can_adopt"] is True
+    assert seen == [NOW.date()]  # 一次分析只读一次当日参考数据

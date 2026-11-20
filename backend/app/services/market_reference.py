@@ -1,4 +1,4 @@
-"""交易所参考数据 (涨跌停价 / ST 名单 / 涨停池) 的按日同步、历史回填与状态。
+"""交易所参考数据 (涨跌停价 / ST 名单 / 停牌名单 / 涨停池) 的按日同步、历史回填与状态。
 
 每个能力按能力路由矩阵取生效源, 一个交易日一张表:
 data/market_reference/v1/<dataset>/date=<YYYY-MM-DD>.parquet, 列为 data_providers.schemas
@@ -18,7 +18,12 @@ import polars as pl
 
 from app.data_providers import custom as custom_sources
 from app.data_providers.capabilities import resolve_capability_sources
-from app.data_providers.schemas import LIMIT_EVENT_SCHEMA, PRICE_LIMIT_SCHEMA, ST_STATUS_SCHEMA
+from app.data_providers.schemas import (
+    LIMIT_EVENT_SCHEMA,
+    PRICE_LIMIT_SCHEMA,
+    ST_STATUS_SCHEMA,
+    SUSPENSION_SCHEMA,
+)
 from app.market_time import cn_now
 from app.price_limits import polars_price_limit_pct
 from app.services.fs_utils import atomic_write_parquet
@@ -41,6 +46,7 @@ DATASETS: dict[str, Spec] = {
     "price_limits": Spec("get_price_limits", PRICE_LIMIT_SCHEMA, date(2020, 1, 2), time(9, 0)),
     "st_status": Spec("get_st_status", ST_STATUS_SCHEMA, date(2021, 1, 4), time(9, 0)),
     "limit_events": Spec("get_limit_events", LIMIT_EVENT_SCHEMA, date(2017, 1, 3), time(15, 30)),
+    "suspensions": Spec("get_suspensions", SUSPENSION_SCHEMA, date(2020, 1, 2), time(9, 0)),
 }
 
 _write_lock = threading.Lock()
@@ -275,6 +281,54 @@ def st_reference(symbols: list[str], start: date, end: date) -> tuple[list[date]
         logger.warning("ST 名单读取失败, 回退名称推断", exc_info=True)
         return None
     return sorted(files), pairs
+
+
+# ---- 读取 (供持仓做T / 持仓分析按日查单只股票) ----
+_DAY_TABLES = {"price_limits": "price_limits", "st": "st_status", "suspensions": "suspensions"}
+_day_cache: dict = {}
+_day_cache_lock = threading.Lock()
+
+
+def _day_table(key: str, frame: pl.DataFrame) -> dict:
+    if key == "price_limits":
+        return {r["symbol"]: {"limit_up": r["limit_up"], "limit_down": r["limit_down"], "no_limit": r["no_limit"]}
+                for r in frame.iter_rows(named=True)}
+    if key == "st":
+        return {r["symbol"]: r["st_type"] for r in frame.iter_rows(named=True)}
+    return {r["symbol"]: r["timing"] for r in frame.iter_rows(named=True)}
+
+
+def day_reference(day: date) -> dict:
+    """某交易日已落盘的涨跌停价 / ST / 停牌名单, 按代码索引。
+
+    某表当日未落盘 (或读取未启用、读取失败) 时该项为 None —— 表示"未知", 不是"没有"。
+    按 (日期, 文件 mtime) 缓存, 盘中补同步写入新文件后自动重读。
+    """
+    out: dict = {key: None for key in _DAY_TABLES}
+    if _reader_root is None:
+        return out
+    paths = {key: path_of(_reader_root, dataset, day) for key, dataset in _DAY_TABLES.items()}
+    stamp = []
+    for key, path in paths.items():
+        try:
+            stamp.append((key, path.stat().st_mtime_ns))
+        except OSError:
+            stamp.append((key, None))
+    cache_key = (str(_reader_root), day, tuple(stamp))
+    with _day_cache_lock:
+        if cache_key in _day_cache:
+            return dict(_day_cache[cache_key])
+    for key, mtime in stamp:
+        if mtime is None:
+            continue
+        try:
+            out[key] = _day_table(key, pl.read_parquet(paths[key]))
+        except (OSError, pl.exceptions.PolarsError):
+            logger.warning("%s %s 读取失败, 视为未知", _DAY_TABLES[key], day, exc_info=True)
+    with _day_cache_lock:
+        _day_cache.clear()  # 只保留最近一份, 盘中通常只查当日
+        _day_cache[cache_key] = out
+    return dict(out)
 
 
 def _inferred_risk_warning(symbols: list[str], start: date, end: date) -> pl.DataFrame | None:

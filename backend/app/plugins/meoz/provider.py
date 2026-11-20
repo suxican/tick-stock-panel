@@ -54,7 +54,12 @@ import polars as pl
 
 from app.data_providers.base import ProviderRequestError
 from app.data_providers.normalizer import normalize_daily
-from app.data_providers.schemas import LIMIT_EVENT_SCHEMA, PRICE_LIMIT_SCHEMA, ST_STATUS_SCHEMA
+from app.data_providers.schemas import (
+    LIMIT_EVENT_SCHEMA,
+    PRICE_LIMIT_SCHEMA,
+    ST_STATUS_SCHEMA,
+    SUSPENSION_SCHEMA,
+)
 from app.market_time import CN_TZ, cn_now
 from app.plugins.meoz import client as meoz_client
 from app.plugins.meoz.client import MeozAuthError, MeozClient, MeozError, MeozTruncatedError
@@ -894,6 +899,17 @@ class MeozProvider:
                 "source": self.name}
                for row in rows if (symbol := _full_symbol(row.get("symbol"), universe)) is not None]
         return pl.DataFrame(out, schema=ST_STATUS_SCHEMA).unique("symbol", keep="first")
+
+    def get_suspensions(self, day: date) -> pl.DataFrame:
+        """`suspend` (约 2020 起): 当日停牌名单。单用 tradedate 会被截断, 须用起止日期。
+
+        只保留停牌行 (S); 复牌行 (R) 当日可交易。suspend_timing 为空 = 全天停牌。
+        """
+        rows, universe = self._reference_rows("suspend", {"startdate": _ymd(day), "enddate": _ymd(day)}, day)
+        out = [{"date": day, "symbol": symbol, "timing": row.get("suspend_timing") or None, "source": self.name}
+               for row in rows if str(row.get("suspend_type") or "").upper() == "S"
+               and (symbol := _full_symbol(row.get("symbol"), universe)) is not None]
+        return pl.DataFrame(out, schema=SUSPENSION_SCHEMA).unique("symbol", keep="first", maintain_order=True)
 
     def get_limit_events(self, day: date) -> pl.DataFrame:
         """`limit_pool` (2017 起): 涨跌停与炸板明细。pct_chg 百分数 → 小数制。"""

@@ -49,8 +49,9 @@ async def _lifespan(app):
     if scheduler is not None:
         data_dir = app.state.repo.store.data_dir
         jobs = (
-            # 盘前: 当日涨跌停价与 ST 名单 (盘中涨跌停判定、持仓做T要用)
-            (_JOB_IDS[0], ("price_limits", "st_status"), {"hour": 9, "minute": 5}),
+            # 盘前: 当日涨跌停价、ST 与停牌名单 (盘中涨跌停判定、持仓做T与持仓分析要用);
+            # 09:20 补同步首轮失败的数据集 (已有的跳过)
+            (_JOB_IDS[0], ("price_limits", "st_status", "suspensions"), {"hour": 9, "minute": "5,20"}),
             # 盘后: 涨停池定版; 20:45 补同步首轮失败的数据集 (已有的不改写)
             (_JOB_IDS[1], tuple(DATASETS), {"hour": "15,20", "minute": 45}),
         )

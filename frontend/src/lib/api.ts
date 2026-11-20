@@ -2344,6 +2344,19 @@ export interface HoldingAnalysisRow {
   warnings: string[]
   constraints: { sellable_qty: number | null; active_t_plan: boolean; can_size: boolean }
   plan: { summary: string; priority: 'risk' | 'protect' | 'observe'; scenarios: HoldingAnalysisScenario[]; expires_on: string | null; can_adopt: boolean }
+  /** 按日 ST / 停牌名单的风险事实; *_unknown 表示名单不可用 (旧报告可能缺失) */
+  risk_status?: HoldingAnalysisRiskStatus
+}
+export interface HoldingAnalysisRiskItem {
+  id: 'st' | 'suspended' | 'st_unknown' | 'suspension_unknown'
+  label: string
+  detail: string
+  source: string | null
+}
+export interface HoldingAnalysisRiskStatus {
+  items: HoldingAnalysisRiskItem[]
+  as_of: string | null
+  fingerprint: string
 }
 export interface HoldingAnalysisReport {
   id: string
@@ -2376,6 +2389,8 @@ export interface HoldingAnalysisSavedPlan {
   row: HoldingAnalysisRow
   input_version: string
   needs_review: boolean
+  review_reasons?: string[]
+  acknowledged_risks?: string[]
   alert_rule_ids: string[]
   alert_bindings?: Record<string, 'pending' | 'active'>
 }
@@ -3497,6 +3512,7 @@ export type ProviderField =
   | 'price_limits_data_provider'
   | 'st_status_data_provider'
   | 'limit_events_data_provider'
+  | 'suspensions_data_provider'
   | 'dragon_tiger_data_provider'
 
 /** 兜底链能力的兜底顺序偏好 (`<主源字段>_fallbacks`, 不含主源; [] = 关闭兜底) */
@@ -3762,6 +3778,7 @@ export interface Preferences {
   price_limits_data_provider?: string
   st_status_data_provider?: string
   limit_events_data_provider?: string
+  suspensions_data_provider?: string
   dragon_tiger_data_provider?: string
   data_source_job_timeout_s: number
   data_source_long_job_timeout_s: number
@@ -6498,7 +6515,7 @@ export const api = {
     request<HoldingAnalysisInterpretation>(`/api/holding-analysis/reports/${encodeURIComponent(reportId)}/interpret`, { method: 'POST', timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, quiet: true }),
   holdingAnalysisProfileSave: (key: string, body: { source: HoldingAnalysisSource; account_id: string; expected_version: number; profile: HoldingAnalysisProfile }) =>
     request<{ profile: HoldingAnalysisProfile; version: number }>(`/api/holding-analysis/profiles/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify(body), quiet: true }),
-  holdingAnalysisAdopt: (body: { report_id: string; row_key: string; expected_input_version: string }) =>
+  holdingAnalysisAdopt: (body: { report_id: string; row_key: string; expected_input_version: string; acknowledged_risks: string[] }) =>
     request<{ plan: HoldingAnalysisSavedPlan }>('/api/holding-analysis/plans', { method: 'POST', body: JSON.stringify(body), quiet: true }),
   holdingAnalysisInvalidate: (id: string, body: { expected_version: number; status: 'invalidated' }) =>
     request<{ plan: HoldingAnalysisSavedPlan }>(`/api/holding-analysis/plans/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body), quiet: true }),

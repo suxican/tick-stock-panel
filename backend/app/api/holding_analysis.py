@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.api.monitor_rules import _sync_engine
 from app.market_time import cn_now
+from app.services import holding_analysis as analysis
 from app.services.holding_analysis import analyze_holdings, read_inputs
 from app.services.holding_analysis_store import HoldingAnalysisStore, ResearchError
 from app.services.holding_interpretation import interpret_report
@@ -58,6 +59,8 @@ class AdoptBody(Body):
     report_id: str = Field(min_length=1, max_length=100)
     row_key: str = Field(min_length=1, max_length=100)
     expected_input_version: str = Field(min_length=1, max_length=128)
+    # 用户逐条确认已知悉的风险 ID; 须覆盖服务端重新计算的全部当前风险
+    acknowledged_risks: list[str] = Field(default_factory=list, max_length=10)
 
 
 class InvalidateBody(Body):
@@ -163,9 +166,15 @@ def overview(request: Request, source: Literal["lots", "position_t"] = "lots", a
     if report:
         report["needs_review"] = bool(_review_reasons(request, store, report, current=current))
     plans = _call(store.list_plans, source, account_id)
+    risks = {}
     for plan in plans:
         # The frozen row remains visible even when its source was removed.
         reasons = _review_reasons(request, store, plan, current=current)
+        symbol = plan["row"].get("symbol")
+        if symbol not in risks:
+            risks[symbol] = _current_risk(symbol)
+        if _risk_changed(plan["row"], risks[symbol]):
+            reasons.append(RISK_CHANGED)
         expires = plan.get("expires_on")
         if not expires or expires < cn_now().date().isoformat():
             reasons.append("计划已到期")
@@ -222,13 +231,38 @@ async def interpret(report_id: str, request: Request):
     return {"report_id": report_id, "generated_at": cn_now().isoformat(), "interpretation": result}
 
 
+RISK_CHANGED = "风险状态已变化，请重新分析"
+
+
+def _current_risk(symbol):
+    try:
+        return analysis.current_risk(symbol)
+    except Exception:  # noqa: BLE001 -- 风险来源异常按"不可用"处理, 由调用方判为已变化
+        logger.warning("持仓研究风险状态读取失败", exc_info=True)
+        return None
+
+
+def _risk_changed(row, current):
+    return analysis.risk_changed(row, current)
+
+
 @router.post("/plans")
 def adopt(request: Request, body: AdoptBody):
     with _write_lock:
         store = _store(request)
         report = _call(store.get_report, body.report_id)
         _assert_current(request, store, report)
-        return {"plan": _call(store.adopt_plan, body.report_id, body.row_key, body.expected_input_version)}
+        row = next((r for r in report.get("rows", []) if r.get("key") == body.row_key), None)
+        if row is not None:
+            # 服务端按当前名单重新核对, 避免用户确认的是旧风险
+            current = _current_risk(row.get("symbol"))
+            if _risk_changed(row, current):
+                raise HTTPException(409, RISK_CHANGED)
+            pending = {item["id"] for item in current["items"]} - set(body.acknowledged_risks)
+            if pending:
+                raise HTTPException(409, "请先确认全部风险后再采纳")
+        return {"plan": _call(store.adopt_plan, body.report_id, body.row_key, body.expected_input_version,
+                              body.acknowledged_risks)}
 
 
 @router.patch("/plans/{plan_id}")

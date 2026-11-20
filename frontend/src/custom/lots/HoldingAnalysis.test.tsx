@@ -30,6 +30,7 @@ const row: HoldingAnalysisRow = {
     { key: 'bull', title: '转强情景', action: '复核持有条件', conditions: ['板块恢复'], price_trigger: { op: '>=', value: 10 }, invalidation: '不能站稳压力位' },
     { key: 'bear', title: '转弱情景', action: '复核减仓条件', conditions: ['个股跌破支撑'], price_trigger: { op: '<=', value: 9 }, invalidation: '重新站回支撑' },
   ] },
+  risk_status: { as_of: '2026-11-05', fingerprint: 'clean', items: [] },
 }
 const report: HoldingAnalysisReport = { id: 'report-a', profile_version: '1', source: 'lots', account_id: '', accounts: [], input_version: 'input-1', generated_at: '2026-11-05T10:01:00+08:00', as_of_date: '2026-11-05', rows: [row], warnings: [] }
 const savedPlan: HoldingAnalysisSavedPlan = { id: 'plan-a', version: 1, status: 'adopted', created_at: '2026-11-05T10:02:00+08:00', expires_on: '2099-12-31', report_id: report.id, row, input_version: 'input-1', needs_review: false, alert_rule_ids: [] }
@@ -87,7 +88,7 @@ it('generates on explicit action and keeps new-position and deep-loss labels tog
 
 it('adopts a frozen report row without creating an execution or T plan', async () => {
   await render(); await click('生成分析'); await click('采纳研究计划')
-  expect(mocks.adopt).toHaveBeenCalledWith({ report_id: 'report-a', row_key: row.key, expected_input_version: 'input-1' })
+  expect(mocks.adopt).toHaveBeenCalledWith({ report_id: 'report-a', row_key: row.key, expected_input_version: 'input-1', acknowledged_risks: [] })
   expect(host.textContent).toContain('研究计划已采纳')
 })
 
@@ -308,4 +309,45 @@ it('renders AI text as text and rejects a response attributed to a different rep
   await click('重新解读依据')
   expect(host.textContent).toContain('解读结果与当前报告不一致')
   expect(host.textContent).toContain('转弱情景')
+})
+
+const riskyRow: HoldingAnalysisRow = { ...row, risk_status: { as_of: '2026-11-05', fingerprint: 'fp', items: [
+  { id: 'st', label: '风险警示', detail: '*ST', source: 'exchange_daily' },
+  { id: 'suspension_unknown', label: '停牌名单不可用', detail: '无法确认当日是否停牌', source: null },
+] } }
+
+it('shows risk badge and requires all acknowledgements before adopting', async () => {
+  mocks.analyze.mockResolvedValue({ ...report, rows: [riskyRow] })
+  await render(); await click('生成分析')
+  expect(host.textContent).toContain('风险 1')
+  await click('采纳研究计划')
+  expect(mocks.adopt).not.toHaveBeenCalled()
+  const confirm = () => [...host.querySelectorAll('button')].find(item => item.textContent?.trim() === '确认采纳')!
+  expect(confirm().disabled).toBe(true)
+  const boxes = [...host.querySelectorAll<HTMLInputElement>('input[type="checkbox"][aria-label^="已知悉"]')]
+  expect(boxes).toHaveLength(2)
+  await act(async () => boxes[0].click()); await settle()
+  expect(confirm().disabled).toBe(true)
+  await act(async () => boxes[1].click()); await settle()
+  await click('确认采纳')
+  expect(mocks.adopt).toHaveBeenCalledWith({ report_id: 'report-a', row_key: row.key, expected_input_version: 'input-1', acknowledged_risks: ['st', 'suspension_unknown'] })
+})
+
+it('labels unknown-only risk sources without counting them as hits', async () => {
+  mocks.analyze.mockResolvedValue({ ...report, rows: [{ ...row, risk_status: { as_of: null, fingerprint: 'u', items: [{ id: 'st_unknown', label: 'ST 名单不可用', detail: '', source: null }] } }] })
+  await render(); await click('生成分析')
+  expect(host.textContent).toContain('风险未知')
+  expect(host.textContent).not.toContain('风险 1')
+})
+
+it('adopts directly when no risks', async () => {
+  mocks.analyze.mockResolvedValue({ ...report, rows: [{ ...row, risk_status: { as_of: '2026-11-05', fingerprint: 'c', items: [] } }] })
+  await render(); await click('生成分析'); await click('采纳研究计划')
+  expect(mocks.adopt).toHaveBeenCalledWith({ report_id: 'report-a', row_key: row.key, expected_input_version: 'input-1', acknowledged_risks: [] })
+})
+
+it('warns on a saved plan whose risk status changed after adoption', async () => {
+  mocks.overview.mockResolvedValue(overview({ plans: [{ ...savedPlan, needs_review: true, review_reasons: ['风险状态已变化，请重新分析'] }] }))
+  await render()
+  expect(host.textContent).toContain('风险状态已变化')
 })

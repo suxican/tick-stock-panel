@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Bell, RefreshCw } from 'lucide-react'
-import { api, type HoldingAnalysisOverview, type HoldingAnalysisProfile, type HoldingAnalysisReport, type HoldingAnalysisRow, type HoldingAnalysisSavedPlan, type HoldingAnalysisSource } from '@/lib/api'
+import { api, type HoldingAnalysisOverview, type HoldingAnalysisProfile, type HoldingAnalysisReport, type HoldingAnalysisRiskStatus, type HoldingAnalysisRow, type HoldingAnalysisSavedPlan, type HoldingAnalysisSource } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { fmtPct, fmtPrice } from '@/lib/format'
 import { cn } from '@/lib/cn'
@@ -13,6 +13,9 @@ const trendLabels = { up: '趋势向上', range: '区间震荡', down: '趋势�
 const strengthLabels = { stronger: '强于板块', inline: '与板块相近', weaker: '弱于板块', unknown: '相对强弱未知' }
 const price = (value: number | null) => value == null || !Number.isFinite(value) ? '未知' : fmtPrice(value)
 const percent = (value: number | null) => value == null || !Number.isFinite(value) ? '未知' : fmtPct(value)
+const riskUnknown = (id: string) => id.endsWith('_unknown')
+// 旧报告缺少风险字段时视为来源不可用, 由服务端核对后要求重新分析
+const riskItems = (status?: HoldingAnalysisRiskStatus) => status?.items ?? [{ id: 'st_unknown' as const, label: '风险状态未知', detail: '该分析未记录风险状态，请重新生成分析', source: null }]
 const defaultProfile = (opened_on: string | null): HoldingAnalysisProfile => ({ opened_on, horizon: 'short', thesis: '', invalidation: '', max_loss_pct: null, deep_loss_pct: 15, new_position_days: 3, max_holding_days: 5, primary_sector_id: '' })
 
 export function HoldingAnalysis() {
@@ -57,7 +60,7 @@ function HoldingWorkspace({ source, accountId, data, today, unavailable }: { sou
     onError: () => setRequiresRefresh(true),
   })
   const adopt = useMutation({
-    mutationFn: (rowKey: string) => api.holdingAnalysisAdopt({ report_id: report!.id, row_key: rowKey, expected_input_version: report!.input_version }),
+    mutationFn: ({ rowKey, risks }: { rowKey: string; risks: string[] }) => api.holdingAnalysisAdopt({ report_id: report!.id, row_key: rowKey, expected_input_version: report!.input_version, acknowledged_risks: risks }),
     onSuccess: () => { setNotice('研究计划已采纳，可在下方查看和绑定价格提醒。'); void refresh() },
   })
   const currentReport = report && report.source === source && (report.account_id ?? '') === accountId ? report : null
@@ -90,7 +93,7 @@ function HoldingWorkspace({ source, accountId, data, today, unavailable }: { sou
         <InterpretationPanel key={currentReport.id} report={currentReport} disabled={stale || analyze.isPending} />
         {stale && <Notice>输入或研究设置已改变，或本次刷新未成功。以下保留上次分析，请重新生成后采纳。</Notice>}
         {!!currentReport.warnings.length && <Notice>{currentReport.warnings.join('；')}</Notice>}
-        {!currentReport.rows.length ? <Empty title="本次没有可分析结果">请检查持仓来源与数据覆盖，完善设置后重新生成。</Empty> : <div className="divide-y divide-border rounded-lg border border-border">{currentReport.rows.map(row => <AnalysisRow key={row.key} row={row} expired={!!row.plan.expires_on && row.plan.expires_on < today} onEdit={() => { setEditing(row.key); positionNodes.current[row.key]?.scrollIntoView?.({ block: 'start' }) }} onAdopt={() => adopt.mutate(row.key)} adoptDisabled={stale || analyze.isPending || adopt.isPending || !row.plan.can_adopt || (!!row.plan.expires_on && row.plan.expires_on < today)} />)}</div>}
+        {!currentReport.rows.length ? <Empty title="本次没有可分析结果">请检查持仓来源与数据覆盖，完善设置后重新生成。</Empty> : <div className="divide-y divide-border rounded-lg border border-border">{currentReport.rows.map(row => <AnalysisRow key={row.key} row={row} expired={!!row.plan.expires_on && row.plan.expires_on < today} onEdit={() => { setEditing(row.key); positionNodes.current[row.key]?.scrollIntoView?.({ block: 'start' }) }} onAdopt={risks => adopt.mutate({ rowKey: row.key, risks })} adoptDisabled={stale || analyze.isPending || adopt.isPending || !row.plan.can_adopt || (!!row.plan.expires_on && row.plan.expires_on < today)} />)}</div>}
       </div>}
     </>}
     <div className="space-y-3">
@@ -126,10 +129,35 @@ function InterpretationPanel({ report, disabled }: { report: HoldingAnalysisRepo
   </div>
 }
 
-function AnalysisRow({ row, expired, adoptDisabled, onAdopt, onEdit }: { row: HoldingAnalysisRow; expired: boolean; adoptDisabled: boolean; onAdopt: () => void; onEdit: () => void }) {
+function RiskBadge({ status }: { status?: HoldingAnalysisRiskStatus }) {
+  const items = riskItems(status)
+  const hits = items.filter(item => !riskUnknown(item.id)).length
+  if (!items.length) return null
+  return <span className="rounded border border-danger/40 bg-danger/10 px-2 py-0.5 text-xs text-danger">{hits ? `风险 ${hits}` : '风险未知'}</span>
+}
+
+function RiskDetails({ status }: { status?: HoldingAnalysisRiskStatus }) {
+  const items = riskItems(status)
+  if (!items.length) return <div><h5 className="font-medium text-foreground">风险状态</h5><p className="mt-2 text-secondary">截至 {status?.as_of ?? '未知'} 未命中 ST、停牌名单。</p></div>
+  return <div><h5 className="font-medium text-foreground">风险状态</h5><p className="mt-1 text-secondary">截至 {status?.as_of ?? '未知'} · 来源：交易所按日名单（当前数据源）</p><ul className="mt-2 list-disc space-y-1 pl-4 leading-relaxed text-secondary">{items.map(item => <li key={item.id}><span className="text-foreground">{item.label}</span>{item.detail && `：${item.detail}`}</li>)}</ul></div>
+}
+
+function RiskConfirm({ status, onConfirm, onCancel, disabled }: { status?: HoldingAnalysisRiskStatus; onConfirm: (risks: string[]) => void; onCancel: () => void; disabled: boolean }) {
+  const items = riskItems(status)
+  const [checked, setChecked] = useState<string[]>([])
+  return <div role="group" aria-label="确认风险后采纳" className="space-y-2 rounded border border-danger/40 bg-danger/5 p-3 text-xs">
+    <p className="font-medium text-foreground">采纳前请逐条确认以下风险</p>
+    {items.map(item => <label key={item.id} className="flex items-start gap-2 text-foreground"><input type="checkbox" aria-label={`已知悉：${item.label}`} checked={checked.includes(item.id)} onChange={event => setChecked(previous => event.target.checked ? [...previous, item.id] : previous.filter(id => id !== item.id))} /><span>已知悉：{item.label}{item.detail && `（${item.detail}）`}</span></label>)}
+    <div className="flex flex-wrap gap-2"><button className={primaryClass} disabled={disabled || !items.every(item => checked.includes(item.id))} onClick={() => onConfirm(items.map(item => item.id))}>确认采纳</button><button className={buttonClass} onClick={onCancel}>取消</button></div>
+  </div>
+}
+
+function AnalysisRow({ row, expired, adoptDisabled, onAdopt, onEdit }: { row: HoldingAnalysisRow; expired: boolean; adoptDisabled: boolean; onAdopt: (risks: string[]) => void; onEdit: () => void }) {
+  const [confirming, setConfirming] = useState(false)
+  const risks = riskItems(row.risk_status)
   return <article className="min-w-0 space-y-3 p-3 sm:p-4">
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div className="min-w-0"><h4 className="break-words text-sm font-semibold text-foreground">{row.name || row.symbol} <span className="font-mono text-xs font-normal text-secondary">{row.symbol}</span></h4><div className="mt-2 flex flex-wrap gap-1.5">{[ageLabels[row.age_state], pnlLabels[row.pnl_state], trendLabels[row.trend], strengthLabels[row.relative_strength]].map(label => <span key={label} className="rounded border border-border bg-elevated px-2 py-0.5 text-xs text-foreground">{label}</span>)}</div></div>
+      <div className="min-w-0"><h4 className="break-words text-sm font-semibold text-foreground">{row.name || row.symbol} <span className="font-mono text-xs font-normal text-secondary">{row.symbol}</span></h4><div className="mt-2 flex flex-wrap gap-1.5">{[ageLabels[row.age_state], pnlLabels[row.pnl_state], trendLabels[row.trend], strengthLabels[row.relative_strength]].map(label => <span key={label} className="rounded border border-border bg-elevated px-2 py-0.5 text-xs text-foreground">{label}</span>)}<RiskBadge status={row.risk_status} /></div></div>
       <div className="text-xs text-secondary"><span className="block">参考成本价差</span><span className="mt-1 block font-mono text-sm text-foreground">{percent(row.pnl_ratio)}</span></div>
     </div>
     <p className="text-xs leading-relaxed text-foreground">{row.plan.summary}</p>
@@ -137,7 +165,8 @@ function AnalysisRow({ row, expired, adoptDisabled, onAdopt, onEdit }: { row: Ho
     {!!row.warnings.length && <Notice>{row.warnings.join('；')}</Notice>}
     {expired && <Notice>研究计划已过期，请重新生成分析后采纳。</Notice>}
     {!row.plan.can_adopt && <p className="text-xs leading-relaxed text-secondary">暂不能采纳。请核对上方数据缺口，并完善建仓日、参考成本与研究失效条件后重新分析。</p>}
-    <div className="flex flex-wrap gap-2"><button className={primaryClass} disabled={adoptDisabled} onClick={onAdopt}>采纳研究计划</button><button className={buttonClass} onClick={onEdit}>完善研究设置</button></div>
+    <div className="flex flex-wrap gap-2"><button className={primaryClass} disabled={adoptDisabled} onClick={() => risks.length ? setConfirming(true) : onAdopt([])}>采纳研究计划</button><button className={buttonClass} onClick={onEdit}>完善研究设置</button></div>
+    {confirming && <RiskConfirm status={row.risk_status} disabled={adoptDisabled} onCancel={() => setConfirming(false)} onConfirm={ids => { setConfirming(false); onAdopt(ids) }} />}
     <details className="group text-xs"><summary className="cursor-pointer rounded py-1 text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">查看行情、板块与三种情景</summary><div className="mt-4 space-y-5"><AnalysisEvidence row={row} /><Scenarios row={row} /></div></details>
   </article>
 }
@@ -145,6 +174,7 @@ function AnalysisRow({ row, expired, adoptDisabled, onAdopt, onEdit }: { row: Ho
 function AnalysisEvidence({ row }: { row: HoldingAnalysisRow }) {
   const sourceName = row.price.source === 'quote' ? '行情快照' : row.price.source === 'daily' ? '日线参考' : '来源未知'
   return <>
+    <RiskDetails status={row.risk_status} />
     <div><h5 className="font-medium text-foreground">本次研究设置</h5><div className="mt-2 space-y-2 leading-relaxed text-secondary"><p>操作周期 {row.profile.horizon === 'short' ? '短线' : '波段'} · 预计最长 {row.profile.max_holding_days} 个交易日 · 最大亏损阈值 {row.profile.max_loss_pct == null ? '未设定' : `${row.profile.max_loss_pct}%`}</p><p className="whitespace-pre-wrap break-words">买入理由：{row.profile.thesis || '未填写'}</p><p className="whitespace-pre-wrap break-words">研究失效条件：{row.profile.invalidation || '未填写'}</p></div></div>
     <div><h5 className="font-medium text-foreground">价格与技术依据</h5><p className="mt-2 leading-relaxed text-secondary">参考价 {price(row.price.value)} · 行情日期 {row.price.date ?? '未知'} · {sourceName}{!row.price.fresh && '（非新鲜盘中报价）'} · 市场时间 {formatTime(row.price.market_at)}</p><dl className="mt-2 grid grid-cols-2 gap-x-5 gap-y-2 sm:grid-cols-4">{[['支撑', row.technicals.support], ['压力', row.technicals.resistance], ['20日均线', row.technicals.ma20], ['60日均线', row.technicals.ma60]].map(([label, value]) => <div key={String(label)} className="flex justify-between gap-2 border-b border-border/60 py-2"><dt className="text-secondary">{label}</dt><dd className="font-mono text-foreground">{price(value as number | null)}</dd></div>)}</dl></div>
     <div><h5 className="font-medium text-foreground">关联板块与覆盖</h5>{!row.sectors.length ? <p className="mt-2 text-secondary">板块关联未知，无法判断相对强弱。</p> : <ul className="mt-2 divide-y divide-border/60">{row.sectors.map(sector => <li key={sector.key} className="space-y-1 py-2"><div className="flex flex-wrap justify-between gap-2"><span className="text-foreground">{sector.name || sector.key}</span><span className="font-mono text-foreground">{percent(sector.change_ratio)}</span></div><p className="break-words leading-relaxed text-secondary">有效成分 {sector.valid_count} / {sector.member_count} · 覆盖 {Number.isFinite(sector.coverage_ratio) ? `${(sector.coverage_ratio * 100).toFixed(1)}%` : '未知'} · {sector.valid ? '可用于本次比较' : '覆盖不足，不参与强弱判断'} · 来源 {sector.source_id || '未知'}</p></li>)}</ul>}</div>
@@ -200,6 +230,7 @@ function SavedPlan({ plan, today, needsReview, unavailable, onChanged }: { plan:
     <div className="flex flex-wrap items-start justify-between gap-2"><h4 className="break-words text-sm font-medium text-foreground">{plan.row.name || plan.row.symbol} <span className="font-mono text-xs text-secondary">{plan.row.symbol}</span></h4><span className="rounded border border-border px-2 py-0.5 text-xs text-secondary">{plan.status === 'invalidated' ? '已作废' : expired ? '已过期' : reviewRequired ? '输入改变，待复核' : '已采纳'}</span></div>
     <p className="text-xs leading-relaxed text-foreground">{plan.row.plan.summary}</p>
     <p className="text-xs text-secondary">采纳于 {formatTime(plan.created_at)} · 有效至 {plan.expires_on ?? '未知'} · 已绑定 {activeCount} 条价格提醒</p>
+    {plan.review_reasons?.some(reason => reason.startsWith('风险状态已变化')) && <Notice error>采纳后风险状态已变化，价格提醒已暂停。请重新分析后再采纳。</Notice>}
     {hasPending && <Notice>有提醒待重新绑定。请核对当前数据后，重新绑定对应的价格提醒。</Notice>}
     {hasUnverified && <Notice>有提醒状态待核验。旧记录不视为已启用，请重新读取计划并重新绑定。</Notice>}
     <details className="text-xs"><summary className="cursor-pointer rounded py-1 text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">查看采纳时的依据与情景</summary><div className="mt-3 space-y-5"><AnalysisEvidence row={plan.row} /><Scenarios row={plan.row} /></div></details>

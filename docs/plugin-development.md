@@ -385,15 +385,16 @@ Python 插件声明 `datasets: [ths_index]` 后需实现以下方法。通用 YA
 源不可用时显示原因。该指数接口仅提供日 K 与快照。参见
 [扶摇指数接口文档](https://fuyao.aicubes.cn/docs/api-reference/a-share-index/)。
 
-### 交易所参考数据集 `price_limits` / `st_status` / `limit_events`
+### 交易所参考数据集 `price_limits` / `st_status` / `suspensions` / `limit_events`
 
-三个能力各自独立路由（`price_limits_data_provider` / `st_status_data_provider` / `limit_events_data_provider`），默认 `meoz`，TickFlow 不提供。由 [market_reference.py](../backend/app/services/market_reference.py) 每个交易日按生效源同步一次整日表并落盘，生效源不可用时不同步，读取方回退本地推算。仅支持 Python 插件，声明对应数据集后实现：
+四个能力各自独立路由（`price_limits_data_provider` / `st_status_data_provider` / `suspensions_data_provider` / `limit_events_data_provider`），默认 `meoz`，TickFlow 不提供。由 [market_reference.py](../backend/app/services/market_reference.py) 每个交易日按生效源同步一次整日表并落盘，生效源不可用时不同步，读取方回退本地推算。仅支持 Python 插件，声明对应数据集后实现：
 
 - `get_price_limits(day: date) -> pl.DataFrame`：当日全市场交易所生效涨跌停价（原价，元），无涨跌幅限制的标的 `no_limit=True` 且价格为空。
 - `get_st_status(day: date) -> pl.DataFrame`：当日处于风险警示的股票名单，不在表内即非风险警示。
+- `get_suspensions(day: date) -> pl.DataFrame`：当日停牌名单（含部分时段停牌），`timing` 为空表示全天停牌、有值为停牌时段；不在表内即当日未停牌。
 - `get_limit_events(day: date) -> pl.DataFrame`：当日涨停、跌停、涨停炸板、跌停炸板明细，`change_pct` 为小数制，`fd_amount`、`amount` 为元，`first_time`/`last_time` 为北京时间 `HH:MM:SS`。
 
-列与类型须与 `app.data_providers.schemas` 中的 `PRICE_LIMIT_SCHEMA`、`ST_STATUS_SCHEMA`、`LIMIT_EVENT_SCHEMA` 完全一致；代码带交易所后缀且当日唯一，`date` 全部等于请求日。上游尚无当日数据时抛异常，不返回空表或其他日期的数据；不符合契约的结果整日不落盘。
+列与类型须与 `app.data_providers.schemas` 中的 `PRICE_LIMIT_SCHEMA`、`ST_STATUS_SCHEMA`、`SUSPENSION_SCHEMA`、`LIMIT_EVENT_SCHEMA` 完全一致；代码带交易所后缀且当日唯一，`date` 全部等于请求日。上游尚无当日数据时抛异常，不返回空表或其他日期的数据；不符合契约的结果整日不落盘。
 
 ### 海外观察数据集 `overseas`
 

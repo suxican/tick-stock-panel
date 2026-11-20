@@ -34,6 +34,11 @@ ST_STATUS_SCHEMA = {
     "date": pl.Date, "symbol": pl.String, "name": pl.String, "st_type": pl.String, "source": pl.String,
 }
 
+# 只列当日停牌 (含部分时段停牌) 的股票; timing 为空 = 全天停牌, 有值 = 停牌时段
+SUSPENSION_SCHEMA = {
+    "date": pl.Date, "symbol": pl.String, "timing": pl.String, "source": pl.String,
+}
+
 LIMIT_EVENT_SCHEMA = {
     "date": pl.Date, "symbol": pl.String, "name": pl.String,
     # u=涨停 d=跌停 ub=涨停炸板 db=跌停炸板; 为收盘集合竞价前的状态, 尾盘回封以收盘价复核

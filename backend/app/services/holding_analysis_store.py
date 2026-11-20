@@ -246,7 +246,8 @@ class HoldingAnalysisStore:
         with self._lock:
             return deepcopy(self._find(self._read(), "reports", identifier))
 
-    def adopt_plan(self, report_id: str, row_key: str, expected_input_version: str) -> dict:
+    def adopt_plan(self, report_id: str, row_key: str, expected_input_version: str,
+                   acknowledged_risks: list[str] | tuple = ()) -> dict:
         with self._lock:
             state = self._read()
             now = cn_now()
@@ -287,6 +288,8 @@ class HoldingAnalysisStore:
                 "profile_version": report["profile_version"], "profile_keys": profile_keys,
                 "source": report["source"], "account_id": report.get("account_id"),
                 "alert_rule_ids": [], "alert_bindings": {},
+                "acknowledged_risks": sorted(set(acknowledged_risks)),
+                "risks_acknowledged_at": now.isoformat(timespec="seconds") if acknowledged_risks else None,
             }
             state["plans"].insert(0, plan)
             self._write(state)

@@ -14,6 +14,7 @@ export const DEFAULT_ROUTING: Record<ProviderField, string> = {
   price_limits_data_provider: 'meoz',
   st_status_data_provider: 'meoz',
   limit_events_data_provider: 'meoz',
+  suspensions_data_provider: 'meoz',
   dragon_tiger_data_provider: 'fuyao',
 }
 

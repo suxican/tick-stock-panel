@@ -12,7 +12,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.custom import market_reference as ext
-from app.data_providers.schemas import LIMIT_EVENT_SCHEMA, PRICE_LIMIT_SCHEMA, ST_STATUS_SCHEMA
+from app.data_providers.schemas import (
+    LIMIT_EVENT_SCHEMA,
+    PRICE_LIMIT_SCHEMA,
+    ST_STATUS_SCHEMA,
+    SUSPENSION_SCHEMA,
+)
 from app.market_time import CN_TZ
 from app.plugins.meoz.client import MeozError
 from app.plugins.meoz.provider import MeozProvider
@@ -65,6 +70,54 @@ def test_st_status_queries_by_date_range():
     frame = provider.get_st_status(DAY)
     assert frame.schema == pl.Schema(ST_STATUS_SCHEMA) and frame.height == 1
     assert ("st", {"startdate": "20261118", "enddate": "20261118"}) in fake.calls
+
+
+def test_suspensions_keep_suspend_rows_only():
+    provider, fake = _provider({"suspend": [
+        {"symbol": "000001", "tradedate": "20261118", "suspend_type": "S", "suspend_timing": None},
+        {"symbol": "000001", "tradedate": "20261118", "suspend_type": "S", "suspend_timing": None},
+        {"symbol": "600087", "tradedate": "20261118", "suspend_type": "S", "suspend_timing": "09:30-10:30"},
+        {"symbol": "300001", "tradedate": "20261118", "suspend_type": "R", "suspend_timing": None},
+    ]})
+    frame = provider.get_suspensions(DAY)
+    assert frame.schema == pl.Schema(SUSPENSION_SCHEMA)
+    assert frame.sort("symbol").to_dicts() == [
+        {"date": DAY, "symbol": "000001.SZ", "timing": None, "source": "meoz"},
+        {"date": DAY, "symbol": "600087.SH", "timing": "09:30-10:30", "source": "meoz"},
+    ]
+    assert ("suspend", {"startdate": "20261118", "enddate": "20261118"}) in fake.calls
+
+
+def test_day_reference_none_when_missing(tmp_path):
+    svc.enable_reader(tmp_path)
+    try:
+        assert svc.day_reference(DAY) == {"price_limits": None, "st": None, "suspensions": None}
+    finally:
+        svc.enable_reader(None)
+    assert svc.day_reference(DAY) == {"price_limits": None, "st": None, "suspensions": None}
+
+
+def test_day_reference_reads_three_tables(tmp_path):
+    def write(dataset, rows, schema):
+        path = svc.path_of(tmp_path, dataset, DAY)
+        path.parent.mkdir(parents=True)
+        pl.DataFrame(rows, schema=schema).write_parquet(path)
+
+    write("price_limits", [{"date": DAY, "symbol": "000001.SZ", "limit_up": 11.0, "limit_down": 9.0,
+                            "no_limit": False, "source": "meoz"}], PRICE_LIMIT_SCHEMA)
+    write("st_status", [{"date": DAY, "symbol": "600087.SH", "name": "*ST甲", "st_type": "*ST",
+                         "source": "meoz"}], ST_STATUS_SCHEMA)
+    svc.enable_reader(tmp_path)
+    try:
+        ref = svc.day_reference(DAY)
+        assert ref["price_limits"] == {"000001.SZ": {"limit_up": 11.0, "limit_down": 9.0, "no_limit": False}}
+        assert ref["st"] == {"600087.SH": "*ST"}
+        assert ref["suspensions"] is None
+        write("suspensions", [{"date": DAY, "symbol": "000002.SZ", "timing": None, "source": "meoz"}],
+              SUSPENSION_SCHEMA)
+        assert svc.day_reference(DAY)["suspensions"] == {"000002.SZ": None}  # 新文件出现后缓存失效
+    finally:
+        svc.enable_reader(None)
 
 
 def test_limit_events_convert_percent_and_keep_timeline():
@@ -209,8 +262,8 @@ def test_jobs_register_preopen_and_after_close(app_env):
     with TestClient(app_env.app):
         calls = app_env.app.state.scheduler.add_job.call_args_list
         plans = {c.kwargs["id"]: (c.kwargs["args"][1], c.kwargs["hour"], c.kwargs["minute"]) for c in calls}
-    assert plans["market_reference_preopen"] == (("price_limits", "st_status"), 9, 5)
-    assert plans["market_reference_close"] == (("price_limits", "st_status", "limit_events"), "15,20", 45)
+    assert plans["market_reference_preopen"] == (("price_limits", "st_status", "suspensions"), 9, "5,20")
+    assert plans["market_reference_close"] == (("price_limits", "st_status", "limit_events", "suspensions"), "15,20", 45)
     assert app_env.app.state.scheduler.remove_job.call_count == 2
 
 
@@ -222,9 +275,10 @@ def test_sync_job_only_on_confirmed_trading_day(app_env, monkeypatch, trading, c
 
 
 def test_sync_job_continues_after_one_dataset_fails(app_env):
-    app_env.sync.side_effect = [svc.ReferenceUnavailableError("x"), RuntimeError("boom"), {"state": "saved"}]
+    app_env.sync.side_effect = [svc.ReferenceUnavailableError("x"), RuntimeError("boom"), {"state": "saved"},
+                                {"state": "saved"}]
     ext._sync_today(app_env.data_dir, tuple(svc.DATASETS))
-    assert app_env.sync.call_count == 3
+    assert app_env.sync.call_count == len(svc.DATASETS) == 4
 
 
 def test_backfill_endpoint_errors(app_env, monkeypatch):

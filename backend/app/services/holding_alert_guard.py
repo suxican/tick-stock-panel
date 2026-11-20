@@ -7,6 +7,7 @@ import threading
 from datetime import datetime
 
 from app.market_time import cn_now
+from app.services import holding_analysis as analysis
 from app.services.holding_analysis import read_inputs
 from app.services.holding_analysis_store import HoldingAnalysisStore
 from app.strategy import monitor_rules
@@ -40,6 +41,7 @@ class HoldingAlertGuard:
             now = self.clock()
             allowed = {}
             contexts = {}
+            risks = {}
             plans = [p for p in self.store.all_plans()
                      if p["status"] == "adopted" and p.get("alert_rule_ids")]
             if not plans or self.quotes is None:
@@ -58,6 +60,11 @@ class HoldingAlertGuard:
                     keys = [p["key"] for p in inputs["positions"]]
                     contexts[context] = (inputs["input_version"], self.store.profile_version(keys))
                 if contexts[context] != (plan["input_version"], plan["profile_version"]):
+                    continue
+                symbol = plan["row"]["symbol"]
+                if symbol not in risks:
+                    risks[symbol] = analysis.current_risk(symbol, now)
+                if analysis.risk_changed(plan["row"], risks[symbol]):
                     continue
                 quote = quotes.get(plan["row"]["symbol"], {})
                 stamp = quote.get("timestamp")

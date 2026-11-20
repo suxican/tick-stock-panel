@@ -8,6 +8,11 @@ from fastapi.testclient import TestClient
 
 from app.api import holding_analysis as api
 from app.market_time import cn_now
+from app.services import holding_analysis as analysis
+
+CLEAN_RISK = {"items": [], "as_of": "2026-11-19", "fingerprint": "clean"}
+ST_RISK = {"items": [{"id": "st", "label": "风险警示", "detail": "*ST", "source": "exchange_daily"}],
+           "as_of": "2026-11-19", "fingerprint": "st"}
 
 
 @pytest.fixture
@@ -19,15 +24,74 @@ def client(tmp_path, monkeypatch):
     inputs = {"source": "lots", "account_id": "", "accounts": [], "input_version": "v1",
               "positions": [{"key": "h_test", "symbol": "600000.SH"}], "warnings": []}
     monkeypatch.setattr(api, "read_inputs", lambda *_a, **_k: deepcopy(inputs))
+    risk = {"current": CLEAN_RISK}
+    monkeypatch.setattr(analysis, "current_risk", lambda _symbol, _now=None: deepcopy(risk["current"]))
     row = {"key": "h_test", "symbol": "600000.SH", "name": "测试股份", "asset_type": "stock",
-           "warnings": [], "price": {"fresh": True},
+           "warnings": [], "price": {"fresh": True}, "risk_status": deepcopy(CLEAN_RISK),
            "plan": {"can_adopt": True, "expires_on": cn_now().date().isoformat(),
                     "scenarios": [{"key": "bear", "title": "风险情景",
                                    "price_trigger": {"op": "<=", "value": 9.5}}]}}
     report = {**inputs, "rows": [row], "generated_at": cn_now().isoformat(),
               "as_of_date": cn_now().date().isoformat()}
     monkeypatch.setattr(api, "analyze_holdings", lambda *_a, **_k: deepcopy(report))
+    app.state.risk = risk  # 测试改写当前风险
     return TestClient(app), inputs, report
+
+
+def _risky_report(http, report):
+    report["rows"][0]["risk_status"] = deepcopy(ST_RISK)
+    http.app.state.risk["current"] = ST_RISK
+    return http.post("/api/holding-analysis/analyze", json={"source": "lots"}).json()
+
+
+def test_adopt_requires_ack_of_all_risks(client):
+    http, _inputs, report = client
+    saved = _risky_report(http, report)
+    body = {"report_id": saved["id"], "row_key": "h_test", "expected_input_version": "v1"}
+    missing = http.post("/api/holding-analysis/plans", json=body)
+    assert missing.status_code == 409 and "确认全部风险" in missing.json()["detail"]
+    assert http.post("/api/holding-analysis/plans", json={**body, "acknowledged_risks": ["other"]}).status_code == 409
+
+
+def test_adopt_saves_acknowledged_risks(client):
+    http, _inputs, report = client
+    saved = _risky_report(http, report)
+    adopted = http.post("/api/holding-analysis/plans", json={
+        "report_id": saved["id"], "row_key": "h_test", "expected_input_version": "v1",
+        "acknowledged_risks": ["st"]})
+    assert adopted.status_code == 200
+    plan = adopted.json()["plan"]
+    assert plan["acknowledged_risks"] == ["st"] and plan["risks_acknowledged_at"]
+    assert plan["row"]["risk_status"]["fingerprint"] == "st"
+
+
+def test_adopt_conflict_when_risk_changed(client):
+    http, _inputs, _report = client
+    saved = http.post("/api/holding-analysis/analyze", json={"source": "lots"}).json()
+    http.app.state.risk["current"] = ST_RISK  # 分析后新落盘的名单命中
+    changed = http.post("/api/holding-analysis/plans", json={
+        "report_id": saved["id"], "row_key": "h_test", "expected_input_version": "v1",
+        "acknowledged_risks": ["st"]})
+    assert changed.status_code == 409 and "风险状态已变化" in changed.json()["detail"]
+
+
+def test_adopt_legacy_report_without_risk_status_conflicts(client):
+    http, _inputs, report = client
+    report["rows"][0].pop("risk_status")
+    saved = http.post("/api/holding-analysis/analyze", json={"source": "lots"}).json()
+    assert http.post("/api/holding-analysis/plans", json={
+        "report_id": saved["id"], "row_key": "h_test", "expected_input_version": "v1"}).status_code == 409
+
+
+def test_overview_flags_risk_change(client):
+    http, _inputs, _report = client
+    saved = http.post("/api/holding-analysis/analyze", json={"source": "lots"}).json()
+    assert http.post("/api/holding-analysis/plans", json={
+        "report_id": saved["id"], "row_key": "h_test", "expected_input_version": "v1"}).status_code == 200
+    assert http.get("/api/holding-analysis/overview").json()["plans"][0]["review_reasons"] == []
+    http.app.state.risk["current"] = ST_RISK
+    plan = http.get("/api/holding-analysis/overview").json()["plans"][0]
+    assert "风险状态已变化，请重新分析" in plan["review_reasons"] and plan["needs_review"]
 
 
 def test_report_plan_and_profile_versions(client):

@@ -237,6 +237,54 @@ def read_inputs(repo, position_service, source, account_id=""):
             "positions": positions, "warnings": warnings, "exposure_verified": exposure_verified}
 
 
+def risk_day(now):
+    """风险名单所属交易日: 研究时点当天或之前最近一个交易日; 日历不可用时 None。"""
+    try:
+        days = load_market_calendar(BUNDLED_CALENDAR_PATH, start=now.date() - timedelta(days=20), end=now.date())
+    except (ValueError, OSError):
+        return None
+    return days[-1] if days else None
+
+
+def risk_status(symbol, day, reference=None):
+    """按日 ST / 停牌名单给出风险事实; 名单未落盘为"不可用", 不当作无风险。
+
+    只列事实, 不改变研究结论、情景或价位。reference 可传入同日已读取的结果以免重复读取。
+    """
+    if reference is None and day is not None:
+        from app.services import market_reference
+
+        reference = market_reference.day_reference(day)
+    reference = reference or {}
+    items = []
+    st, suspensions = reference.get("st"), reference.get("suspensions")
+    if st is None:
+        items.append({"id": "st_unknown", "label": "ST 名单不可用", "detail": "无法确认是否为风险警示股",
+                      "source": None})
+    elif symbol in st:
+        items.append({"id": "st", "label": "风险警示", "detail": st[symbol] or "ST", "source": "exchange_daily"})
+    if suspensions is None:
+        items.append({"id": "suspension_unknown", "label": "停牌名单不可用", "detail": "无法确认当日是否停牌",
+                      "source": None})
+    elif symbol in suspensions:
+        items.append({"id": "suspended", "label": "停牌", "detail": suspensions[symbol] or "全天",
+                      "source": "exchange_daily"})
+    as_of = day.isoformat() if day else None
+    return {"items": items, "as_of": as_of, "fingerprint": _hash([symbol, items])}
+
+
+def current_risk(symbol, now=None):
+    """采纳、概览与提醒复核用的当前风险状态 (与生成报告同一口径)。"""
+    return risk_status(symbol, risk_day(now or datetime.now(CN_TZ)))
+
+
+def risk_changed(row, current):
+    """计划/报告行冻结的风险状态与当前不一致 (含旧数据缺字段、当前不可读) 即视为已变化。"""
+    saved = row.get("risk_status") if isinstance(row, dict) else None
+    return (not isinstance(current, dict) or not isinstance(saved, dict)
+            or saved.get("fingerprint") != current.get("fingerprint"))
+
+
 def _profile(raw):
     value = deepcopy(raw or {})
     horizon = value.get("horizon") if value.get("horizon") in {"short", "swing"} else "short"
@@ -555,6 +603,12 @@ def analyze_holdings(repo, quote_service, sector_service, position_service, sour
     if reference and sector_symbols:
         daily.update(_history_map(repo, sector_symbols, reference, reference, warnings))
     sector_rows = _sector_rows(groups, quotes, daily, reference, now)
+    risk_on = risk_day(now)
+    risk_reference = None
+    if risk_on is not None:
+        from app.services import market_reference
+
+        risk_reference = market_reference.day_reference(risk_on)
     rows = []
     for position in inputs["positions"]:
         try:
@@ -569,6 +623,7 @@ def analyze_holdings(repo, quote_service, sector_service, position_service, sour
             row["plan"]["can_adopt"] = False
             for scenario in row["plan"]["scenarios"]:
                 scenario["price_trigger"] = None
+        row["risk_status"] = risk_status(row["symbol"], risk_on, risk_reference)
         rows.append(row)
     after = read_inputs(repo, position_service, source, account_id)
     if after["input_version"] != inputs["input_version"]:

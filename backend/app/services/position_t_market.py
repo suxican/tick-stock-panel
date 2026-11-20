@@ -123,25 +123,57 @@ class PositionTMarket:
         if isinstance(previous, (int, float)) and math.isfinite(previous) and previous > 0:
             ratio = price_limit_pct(symbol, now.date(), is_risk_warning=is_risk_warning_name(instrument.get("name")))
             upper, lower = limit_price(previous, ratio, up=True), limit_price(previous, ratio, up=False)
+        from app.services.market_reference import day_reference
+
+        # 盘前按日落盘的交易所参考数据; 某表缺失为 None (未知), 不能当作"没有"
+        reference = day_reference(now.date())
+        exchange = (reference.get("price_limits") or {}).get(symbol)
+        suspensions = reference.get("suspensions")
+
+        def valid_band(up, down):
+            return all(isinstance(v, (int, float)) and math.isfinite(v) and v > 0 for v in (up, down)) and up > down
+
         actual_up, actual_down = raw.get("limit_up_price"), raw.get("limit_down_price")
-        if all(isinstance(v, (int, float)) and math.isfinite(v) and v > 0 for v in (actual_up, actual_down)) and actual_up > actual_down:
-            upper, lower = actual_up, actual_down
-        elif raw.get("price_limit_rule") != "standard":
+        limit_source = "theoretical"
+        if valid_band(actual_up, actual_down):
+            upper, lower, limit_source = actual_up, actual_down, "quote"
+        elif exchange and exchange.get("no_limit") is True:
+            limit_source = "exchange_daily"
+            errors.append("当日无涨跌幅限制，首版暂停新建计划")
+        elif exchange and valid_band(exchange.get("limit_up"), exchange.get("limit_down")):
+            upper, lower, limit_source = exchange["limit_up"], exchange["limit_down"], "exchange_daily"
+        elif raw.get("price_limit_rule") == "standard":
+            limit_source = "quote_rule"
+        else:
             errors.append("当日涨跌停范围未获数据源确认；理论价仅作观察")
         if raw.get("no_price_limit") is True:
             errors.append("当日无涨跌幅限制，首版暂停新建计划")
         # 标准插件可提供明确 trading/suspended；未知状态不能从有价格或有量推断。
+        # 源未给出时用当日停牌名单作日级判断 (盘中临停另由盘口检查兜底)。
         status = raw.get("trade_status") or book.get("trade_status")
+        basis = "intraday"
         if status not in {"trading", "suspended", "delisted"}:
-            status = "unknown"
-            errors.append("数据源未提供可核验的证券交易状态")
+            status, basis = "unknown", "none"
+            if suspensions is not None and symbol in suspensions:
+                status, basis = "suspended", "daily"
+                errors.append("当日停牌名单含该股" + (f"（{suspensions[symbol]}）" if suspensions[symbol] else "（全天）"))
+            elif (suspensions is not None and instrument and listing is not None and listing <= now.date()
+                  and self.trading_day(now.date()) is True):
+                status, basis = "trading", "daily"
+            else:
+                errors.append("数据源未提供可核验的证券交易状态")
         def top(key):
             values = book.get(key) or []
             return values[0] if values else None
+        def empty(value):
+            return not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0
+        if book and empty(top("bid_prices")) and empty(top("ask_prices")):
+            errors.append("买卖一均为空，疑似盘中停牌")
         return {"source": raw.get("source"), "price": raw.get("last_price"), "previous_close": previous,
                 "market_ts": stamp.isoformat() if stamp else None, "received_ts": received.isoformat() if received else None,
                 "computed_at": now.isoformat(), "book_market_ts": book_stamp.isoformat() if book_stamp else None,
                 "bid": top("bid_prices"), "ask": top("ask_prices"), "trade_status": status,
+                "trade_status_basis": basis, "price_limit_source": limit_source,
                 "is_trading_day": self.trading_day(now.date()), "limit_up_price": upper, "limit_down_price": lower,
                 "unit": {"price": "CNY", "volume": "shares", "amount": "CNY"},
                 "minute_received_at": self._minute_received, "data_errors": errors, **self._history(symbol, now.date())}

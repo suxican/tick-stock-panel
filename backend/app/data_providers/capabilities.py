@@ -134,6 +134,14 @@ CAPABILITY_REGISTRY: list[dict] = [
         "tf_tier": None,
     },
     {
+        "id": "suspensions",
+        "label": "停牌",
+        "desc": "按日的停牌名单",
+        "field": "suspensions_data_provider",
+        "default": "meoz",
+        "tf_tier": None,
+    },
+    {
         "id": "dragon_tiger",
         "label": "龙虎榜",
         "desc": "上榜个股、机构与游资席位",
@@ -333,6 +341,7 @@ def _current_routing() -> dict[str, str]:
         "price_limits_data_provider": preferences.get_price_limits_data_provider(),
         "st_status_data_provider": preferences.get_st_status_data_provider(),
         "limit_events_data_provider": preferences.get_limit_events_data_provider(),
+        "suspensions_data_provider": preferences.get_suspensions_data_provider(),
         "dragon_tiger_data_provider": preferences.get_dragon_tiger_data_provider(),
     }
 

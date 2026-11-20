@@ -65,6 +65,7 @@ const DATASET_LABEL: Record<string, string> = {
   price_limits: '涨跌停价',
   st_status: '风险警示',
   limit_events: '涨停池',
+  suspensions: '停牌',
   dragon_tiger: '龙虎榜',
 }
 
@@ -672,6 +673,7 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
     price_limits: prefs.data?.price_limits_data_provider || 'meoz',
     st_status: prefs.data?.st_status_data_provider || 'meoz',
     limit_events: prefs.data?.limit_events_data_provider || 'meoz',
+    suspensions: prefs.data?.suspensions_data_provider || 'meoz',
   }
   const servingDatasets = (name: string) =>
     Object.entries(effProvider).filter(([, v]) => v === name).map(([k]) => k)

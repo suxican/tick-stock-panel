@@ -21,7 +21,7 @@ def test_guard_requires_fresh_quote_current_source_and_live_worker(tmp_path, mon
         "source": "lots", "account_id": "", "input_version": "v1",
         "profile_version": store.profile_version(keys), "generated_at": now.isoformat(),
         "as_of_date": now.date().isoformat(),
-        "rows": [{"key": keys[0], "symbol": "600000.SH", "price": {
+        "rows": [{"key": keys[0], "symbol": "600000.SH", "risk_status": {"items": [], "fingerprint": "clean"}, "price": {
             "date": now.date().isoformat(), "reference_date": (now - timedelta(days=1)).date().isoformat(), "reference_close": 10},
                   "plan": {"can_adopt": True, "expires_on": now.date().isoformat()}}],
     })
@@ -31,6 +31,8 @@ def test_guard_requires_fresh_quote_current_source_and_live_worker(tmp_path, mon
     monitor_rules.save_one(tmp_path, {"id": "ha_test", "enabled": True, "holding_plan_id": plan["id"]})
     inputs = {"input_version": "v1", "positions": [{"key": keys[0]}]}
     monkeypatch.setattr("app.services.holding_alert_guard.read_inputs", lambda *_a: inputs)
+    risk = {"fingerprint": "clean"}
+    monkeypatch.setattr("app.services.holding_analysis.current_risk", lambda _s, _now=None: {"items": [], **risk})
     clock = [now]
     quote = {"600000.SH": {"timestamp": int(now.timestamp() * 1000), "last_price": 10, "prev_close": 10}}
     guard = HoldingAlertGuard(SimpleNamespace(store=SimpleNamespace(data_dir=tmp_path)),
@@ -39,6 +41,12 @@ def test_guard_requires_fresh_quote_current_source_and_live_worker(tmp_path, mon
                               clock=lambda: clock[0])
     rule = {"id": "ha_test", "holding_plan_id": plan["id"]}
     assert not guard.allow(rule, now.timestamp())
+    guard.refresh()
+    assert guard.allow(rule, now.timestamp())
+    risk["fingerprint"] = "st"  # 采纳后风险状态变化: 提醒暂停
+    guard.refresh()
+    assert not guard.allow(rule, now.timestamp())
+    risk["fingerprint"] = "clean"
     guard.refresh()
     assert guard.allow(rule, now.timestamp())
     quote["600000.SH"]["prev_close"] = 9.5
