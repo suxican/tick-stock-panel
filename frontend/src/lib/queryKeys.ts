@@ -171,6 +171,7 @@ export const QK = {
   zzshareThemeIntraday: (plateCode: string, date: string) => ['zzshare-theme-intraday', plateCode, date] as const,
   zzshareHome:          (date: string, asOf?: string) => ['zzshare-home', date, asOf ?? 'latest'] as const,
   zzshareResearch:      (kind: string, date: string, code?: string, plateType?: 14 | 15 | 17) => ['zzshare-research', kind, date, code, plateType] as const,
+  zzshareReasonsSchedule: ['zzshare-reasons-schedule'] as const,
   extDataRows:          (id: string, date?: string, limit?: number, columns?: string) => ['ext-data-rows', id, date, limit, columns] as const,
   dimensionMembers:     (id: string, field: string, value: string, date?: string) => ['dimension-members', id, field, value, date] as const,
   dimensionIntraday:    (id: string, field: string, value: string, date?: string) => ['dimension-intraday', id, field, value, date] as const,

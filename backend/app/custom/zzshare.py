@@ -1,9 +1,11 @@
 """ZZShare 题材雷达与复盘数据入口。"""
 
 import logging
+import re
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -11,6 +13,7 @@ from pydantic import BaseModel, Field
 from app.api.ext_data import _refresh_views
 from app.extensions import BACKEND_EXTENSION_API_VERSION, BackendExtensionRegistrar
 from app.market_time import CN_TZ, cn_now, cn_today, in_continuous_session
+from app.services import preferences
 from app.services.dimension_intraday import member_intraday
 from app.services.trading_day import is_trading_day
 from app.services.zzshare_home import read_home
@@ -41,6 +44,9 @@ EXTENSION_ID = "zzshare.research"
 EXTENSION_API_VERSION = BACKEND_EXTENSION_API_VERSION
 logger = logging.getLogger(__name__)
 _CAPTURE_JOB = "zzshare_home_snapshot"
+_REASONS_JOB = "zzshare_limit_reasons_sync"
+_DEFAULT_REASONS_TIME = "17:30"
+_TIME_PATTERN = r"^([01]\d|2[0-3]):[0-5]\d$"
 _reader = shared_reader
 
 
@@ -51,6 +57,58 @@ def _capture_home(data_dir: Path) -> None:
         return
     if is_trading_day(now) is not False:
         read_home(data_dir, now.date())
+
+
+def get_reasons_schedule() -> dict:
+    data = preferences.load()
+    enabled = data.get("zzshare_reasons_schedule_enabled", False)
+    hhmm = data.get("zzshare_reasons_schedule_time", _DEFAULT_REASONS_TIME)
+    if not isinstance(hhmm, str) or not re.match(_TIME_PATTERN, hhmm):
+        hhmm = _DEFAULT_REASONS_TIME
+    last = data.get("zzshare_reasons_last_run")
+    return {
+        "enabled": enabled if isinstance(enabled, bool) else False,
+        "time": hhmm,
+        "last_run": last if isinstance(last, dict) else None,
+    }
+
+
+def _run_reasons_sync(app) -> None:
+    """定时任务: 交易日到点同步当日涨停归因, 结果记入偏好供前端展示。"""
+    now = cn_now()
+    if is_trading_day(now) is False:
+        return
+    record: dict = {"at": now.isoformat(timespec="seconds"), "date": now.date().isoformat()}
+    try:
+        result = sync_limit_reasons(app.state.repo.store.data_dir, now.date())
+        record["state"] = result["state"]
+        if result["state"] == "synced":
+            _refresh_views(SimpleNamespace(app=app))
+    except Exception as exc:  # 定时任务不能抛出; 失败原因留给前端展示
+        logger.warning("涨停归因定时同步失败: %s", exc)
+        record["state"] = "error"
+        record["message"] = str(exc)
+    preferences.save({"zzshare_reasons_last_run": record})
+
+
+def apply_reasons_schedule(app) -> str | None:
+    """按当前偏好重新注册 (或移除) 涨停归因定时任务, 返回下次执行时间。"""
+    scheduler = getattr(app.state, "scheduler", None)
+    if scheduler is None:
+        return None
+    if scheduler.get_job(_REASONS_JOB) is not None:
+        scheduler.remove_job(_REASONS_JOB)
+    config = get_reasons_schedule()
+    if not config["enabled"]:
+        return None
+    hour, minute = config["time"].split(":")
+    job = scheduler.add_job(
+        _run_reasons_sync, "cron", args=[app],
+        day_of_week="mon-fri", hour=int(hour), minute=int(minute), timezone="Asia/Shanghai",
+        id=_REASONS_JOB, replace_existing=True, coalesce=True, max_instances=1, misfire_grace_time=600,
+    )
+    nxt = getattr(job, "next_run_time", None)
+    return nxt.isoformat() if nxt else None
 
 
 @asynccontextmanager
@@ -67,11 +125,17 @@ async def _lifespan(app):
             registered = True
         except Exception:
             logger.exception("题材快照定时采集未能启动")
+        try:
+            apply_reasons_schedule(app)
+        except Exception:
+            logger.exception("涨停归因定时同步未能启动")
     try:
         yield
     finally:
         if registered and scheduler.get_job(_CAPTURE_JOB) is not None:
             scheduler.remove_job(_CAPTURE_JOB)
+        if scheduler is not None and scheduler.get_job(_REASONS_JOB) is not None:
+            scheduler.remove_job(_REASONS_JOB)
         stop_themes_sync()
 
 
@@ -101,6 +165,37 @@ def sync(request: Request, body: LimitReasonsSyncRequest) -> dict:
     if result["state"] == "synced":
         _refresh_views(request)
     return result
+
+
+class ReasonsScheduleRequest(BaseModel):
+    enabled: bool
+    time: str = Field(pattern=_TIME_PATTERN)
+
+
+def _reasons_schedule_payload(request: Request) -> dict:
+    scheduler = getattr(request.app.state, "scheduler", None)
+    job = scheduler.get_job(_REASONS_JOB) if scheduler is not None else None
+    nxt = getattr(job, "next_run_time", None) if job is not None else None
+    return {**get_reasons_schedule(), "next_run": nxt.isoformat() if nxt else None}
+
+
+@router.get("/limit-reasons/schedule")
+def reasons_schedule(request: Request) -> dict:
+    return _reasons_schedule_payload(request)
+
+
+@router.put("/limit-reasons/schedule")
+def set_reasons_schedule(request: Request, body: ReasonsScheduleRequest) -> dict:
+    preferences.save({
+        "zzshare_reasons_schedule_enabled": body.enabled,
+        "zzshare_reasons_schedule_time": body.time,
+    })
+    try:
+        apply_reasons_schedule(request.app)
+    except Exception as exc:
+        logger.exception("涨停归因定时任务注册失败")
+        raise HTTPException(500, "定时任务注册失败") from exc
+    return _reasons_schedule_payload(request)
 
 
 @router.get("/research/{kind}")

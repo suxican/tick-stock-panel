@@ -6,10 +6,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { ExtDataStatCard } from './ExtDataStatCard'
 import { QK } from '@/lib/queryKeys'
 import type { ExtDataConfig } from '@/lib/api'
+import { cnDateFromUtc } from '@/lib/format'
 
 const calls = vi.hoisted(() => ({
   syncZzshareLimitReasons: vi.fn(), extDataRows: vi.fn(), extDataPullRun: vi.fn(),
   extDataPullConfig: vi.fn(), extDataUpload: vi.fn(),
+  zzshareReasonsSchedule: vi.fn(), setZzshareReasonsSchedule: vi.fn(),
 }))
 vi.mock('@/lib/api', async importOriginal => ({
   ...await importOriginal<typeof import('@/lib/api')>(), api: calls,
@@ -31,6 +33,7 @@ beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [] })
   vi.resetAllMocks()
+  calls.zzshareReasonsSchedule.mockResolvedValue({ enabled: false, time: '17:30', next_run: null, last_run: null })
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -79,7 +82,6 @@ it('归因卡片可直接按交易日同步并查看，不走通用拉取', asyn
   await render()
   await click('同步 / 查看归因')
   expect(host.textContent).not.toContain('通用拉取面板')
-  expect(button('同步涨停归因').disabled).toBe(true)
   await selectDate(day)
   await click('同步涨停归因')
   expect(calls.syncZzshareLimitReasons).toHaveBeenCalledWith(day)
@@ -134,8 +136,21 @@ it('同步期间禁止重复提交和切日，重新打开面板重置日期', a
   await click('关闭')
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 250)) })
   await click('同步 / 查看归因')
-  expect(host.querySelector<HTMLInputElement>('input[type=date]')?.value).toBe('')
-  expect(button('同步涨停归因').disabled).toBe(true)
+  expect(host.querySelector<HTMLInputElement>('input[type=date]')?.value).toBe(cnDateFromUtc(new Date().toISOString()))
+})
+
+it('日期默认北京当日；可启用定时同步并保存时间', async () => {
+  calls.setZzshareReasonsSchedule.mockImplementation(async (enabled: boolean, time: string) =>
+    ({ enabled, time, next_run: '2026-11-23T18:00:00+08:00', last_run: null }))
+  await render()
+  await click('同步 / 查看归因')
+  const time = host.querySelector<HTMLInputElement>('input[type=time]')!
+  expect(time.value).toBe('17:30')
+  const box = host.querySelector<HTMLInputElement>('input[type=checkbox]')!
+  await act(async () => box.click())
+  await settle()
+  expect(calls.setZzshareReasonsSchedule).toHaveBeenLastCalledWith(true, '17:30')
+  expect(host.textContent).toContain('下次执行：2026-11-23 18:00')
 })
 
 it('普通扩展表保持通用拉取、推送和上传入口', async () => {

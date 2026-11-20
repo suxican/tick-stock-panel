@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { cnDateFromUtc } from '@/lib/format'
+import { cnDateFromUtc, cnDateTimeFromUtc } from '@/lib/format'
 import { QK } from '@/lib/queryKeys'
 import { zzshareReasonsOptions } from '@/lib/useZzshareReasons'
 import { SettingsModal } from '@/components/data/SettingsModal'
@@ -13,7 +13,7 @@ const buttonStyle = 'rounded-btn bg-accent/10 px-3 py-1.5 text-xs font-medium te
 export function ZzshareLimitReasonsPanel({ available = true }: { available?: boolean }) {
   const qc = useQueryClient()
   const today = cnDateFromUtc(new Date().toISOString())
-  const [date, setDate] = useState('')
+  const [date, setDate] = useState(today)
   const [viewDate, setViewDate] = useState<string | null>(null)
   const sync = useMutation({
     mutationFn: (tradeDate: string) => api.syncZzshareLimitReasons(tradeDate),
@@ -55,8 +55,53 @@ export function ZzshareLimitReasonsPanel({ available = true }: { available?: boo
         )}
       </p>}
       {sync.isError && <p role="alert" className="text-danger">{sync.error.message}</p>}
+      <ZzshareReasonsSchedulePanel />
       {viewDate && <ZzshareReasons date={viewDate} onClose={() => setViewDate(null)} />}
     </section>
+  )
+}
+
+const STATE_TEXT = { synced: '已同步', cached: '已有快照', no_data: '暂无数据', error: '失败' } as const
+
+function ZzshareReasonsSchedulePanel() {
+  const qc = useQueryClient()
+  const schedule = useQuery({ queryKey: QK.zzshareReasonsSchedule, queryFn: () => api.zzshareReasonsSchedule() })
+  const [time, setTime] = useState<string | null>(null)
+  const save = useMutation({
+    mutationFn: (v: { enabled: boolean; time: string }) => api.setZzshareReasonsSchedule(v.enabled, v.time),
+    onSuccess: (data) => { qc.setQueryData(QK.zzshareReasonsSchedule, data); setTime(null) },
+  })
+  const data = schedule.data
+  const shown = time ?? data?.time ?? '17:30'
+  const last = data?.last_run
+
+  return (
+    <div className="space-y-1.5 border-t border-border/50 pt-3">
+      <h4 className="font-medium text-foreground">定时同步</h4>
+      <p className="text-secondary">每个交易日到点自动同步当日涨停归因（北京时间），非交易日跳过。</p>
+      {schedule.isError ? <p role="alert" className="text-danger">{schedule.error.message}</p> : (
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 text-secondary">
+            <input type="checkbox" checked={data?.enabled ?? false} disabled={!data || save.isPending}
+              onChange={e => save.mutate({ enabled: e.target.checked, time: shown })} />
+            启用
+          </label>
+          <input type="time" aria-label="定时同步时间" value={shown} disabled={!data || save.isPending}
+            className="rounded-input border border-border bg-base px-2 py-1 text-foreground"
+            onChange={e => setTime(e.target.value)} />
+          <button type="button" className={buttonStyle}
+            disabled={!data || save.isPending || !shown || shown === data.time}
+            onClick={() => save.mutate({ enabled: data!.enabled, time: shown })}>
+            保存时间
+          </button>
+        </div>
+      )}
+      {data?.enabled && data.next_run && <p className="text-secondary">下次执行：{cnDateTimeFromUtc(data.next_run)}</p>}
+      {last && <p className="text-secondary">
+        上次执行：{last.at.replace('T', ' ').slice(0, 16)} · {last.date} · {STATE_TEXT[last.state]}{last.message ? `（${last.message}）` : ''}
+      </p>}
+      {save.isError && <p role="alert" className="text-danger">{save.error.message}</p>}
+    </div>
   )
 }
 

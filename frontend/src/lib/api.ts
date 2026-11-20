@@ -114,6 +114,13 @@ export type ZzshareResearchKind =
   | 'plates_list' | 'plates_rank' | 'market_sentiment' | 'sentiment_trend'
   | 'ths_hot_top' | 'lhb_list' | 'lhb_detail' | 'lhb_stock_history'
 
+export interface ZzshareReasonsSchedule {
+  enabled: boolean
+  time: string
+  next_run: string | null
+  last_run: { at: string; date: string; state: 'synced' | 'cached' | 'no_data' | 'error'; message?: string } | null
+}
+
 export interface ZzshareResearchResult {
   kind: ZzshareResearchKind
   date: string
@@ -4535,6 +4542,12 @@ export const api = {
       },
     ),
 
+  zzshareReasonsSchedule: () =>
+    request<ZzshareReasonsSchedule>('/api/zzshare/limit-reasons/schedule', { quiet: true }),
+  setZzshareReasonsSchedule: (enabled: boolean, time: string) =>
+    request<ZzshareReasonsSchedule>('/api/zzshare/limit-reasons/schedule', {
+      method: 'PUT', body: JSON.stringify({ enabled, time }), quiet: true,
+    }),
   /** 分时批量响应 gzip 压缩开关 (网络设置) — 逐请求即时生效 */
   updateMinuteBatchCompress: (enabled: boolean) =>
     request<Pick<Preferences, 'minute_batch_compress'>>('/api/settings/preferences/minute-batch-compress', {

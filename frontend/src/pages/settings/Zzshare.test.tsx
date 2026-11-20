@@ -11,6 +11,7 @@ import { ApiError } from '@/lib/api'
 const calls = vi.hoisted(() => ({
   dataSources: vi.fn(), capabilityMatrix: vi.fn(), updateDataProviders: vi.fn(),
   testDataSource: vi.fn(), syncZzshareLimitReasons: vi.fn(), extDataRows: vi.fn(),
+  zzshareReasonsSchedule: vi.fn(),
 }))
 vi.mock('@/lib/api', async importOriginal => ({
   ...await importOriginal<typeof import('@/lib/api')>(), api: calls,
@@ -32,6 +33,7 @@ let client: QueryClient
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   vi.resetAllMocks()
+  calls.zzshareReasonsSchedule.mockResolvedValue({ enabled: false, time: '17:30', next_run: null, last_run: null })
   calls.dataSources.mockResolvedValue({ builtin: [], custom: [], plugins: [{
     name: 'zzshare', display_name: '自在量化', datasets: ['daily'], available: true, runtime: 'none',
   }] })
@@ -89,8 +91,6 @@ it('通过已注册插件试拉股票日 K 并按选定日期同步，保留原�
   expect(calls.testDataSource).toHaveBeenCalledWith('zzshare', 'daily', ['600000.SH'])
   expect(host.textContent).toContain('10.82')
 
-  await click('同步涨停归因')
-  expect(calls.syncZzshareLimitReasons).not.toHaveBeenCalled()
   await selectDate('2025-09-30')
   await click('同步涨停归因')
   expect(calls.syncZzshareLimitReasons).toHaveBeenCalledWith('2025-09-30')
@@ -131,8 +131,6 @@ it('在卡片内按所选交易日查看完整归因，切日后不展示旧日�
   }))
   await render()
   await click('查看操作')
-  await click('查看涨停归因')
-  expect(calls.extDataRows).not.toHaveBeenCalled()
   await selectDate('2025-09-30')
   await click('查看涨停归因')
   expect(calls.extDataRows).toHaveBeenLastCalledWith('zzshare_limit_reasons', {
