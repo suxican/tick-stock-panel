@@ -563,7 +563,8 @@ def test_intraday_batch_skips_failed_group_and_stops_on_auth(monkeypatch):
 def test_datasets_declaration_and_unsupported_test_dataset(monkeypatch):
     provider, _ = _provider(monkeypatch, lambda *a: [])
     assert set(provider.config.datasets) == {"realtime", "depth5", "daily", "adj_factor", "minute",
-                                             "full_minute", "price_limits", "st_status", "limit_events"}
+                                             "full_minute", "price_limits", "st_status", "suspensions", "limit_events",
+                                             "dragon_tiger"}
     assert "financial" not in provider.config.datasets
     out = provider.test_dataset("financial")
     assert out["rows"] == 0 and "未接入" in out["error"]

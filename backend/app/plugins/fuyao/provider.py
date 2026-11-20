@@ -55,7 +55,7 @@ from app.plugins.fuyao.client import (
 logger = logging.getLogger(__name__)
 
 # 只声明真实提供的数据集; 其余数据集 provider_has_dataset 返回 False → 回退 tickflow
-_DATASETS = ("realtime", "daily", "adj_factor", "financial", "ths_index")
+_DATASETS = ("realtime", "daily", "adj_factor", "financial", "ths_index", "dragon_tiger")
 _THS_ALL_A_SYMBOL = "883421.TI"
 
 API_KEY_ENV = "FUYAO_API_KEY"

@@ -67,7 +67,7 @@ from app.plugins.meoz.client import MeozAuthError, MeozClient, MeozError, MeozTr
 logger = logging.getLogger(__name__)
 
 _DATASETS = ("realtime", "depth5", "daily", "adj_factor", "minute", "full_minute",
-             "price_limits", "st_status", "limit_events")
+             "price_limits", "st_status", "suspensions", "limit_events", "dragon_tiger")
 
 API_KEY_ENV = "MEOZ_API_KEY"
 SECRETS_FIELD = "meoz_api_key"  # UI 配置的 Key 存 secrets.json, 优先级高于 .env
