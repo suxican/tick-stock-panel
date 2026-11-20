@@ -62,7 +62,7 @@
 
 | 数据 | 标准契约及缺失行为 |
 | --- | --- |
-| 股票／指数快照 | `symbol,last_price,prev_close,change_pct,timestamp`；timestamp 为真实市场 Unix 毫秒。服务补独立 `received_ts` 和 source，不替换原市场时间。 |
+| 股票／指数快照 | `symbol,last_price,prev_close,change_pct,timestamp`；timestamp 为真实市场 Unix 毫秒。服务补独立 `received_ts` 和 source，不替换原市场时间。全市场快照到手时可能已晚数秒（猫爪 tick 实测 5–15 秒），因此每轮对持仓股按代码直接向当前实时源取最新报价（`QuoteService.fetch_symbol_records`，不写共享缓存）；源不支持按代码取数或取数失败时沿用共享快照，不跨源回退。 |
 | 证券状态 | 优先采用快照或盘口明确提供的 `trade_status=trading/suspended/delisted`（`trade_status_basis=intraday`）。源未提供时，用盘前落盘的当日停牌名单（`suspensions` 能力）做日级判断：在名单内（含部分时段停牌）为 suspended；不在名单内且证券目录、上市日期已确认、当天为交易日，判为 trading（`trade_status_basis=daily`，即“日级已确认，盘中未确认”，允许建计划）。名单未落盘为 unknown，暂停判断；不能因有价有量就推断可交易。连续竞价中买一、卖一同时为空时，提示“疑似盘中停牌”，暂停判断。 |
 | 当日价格范围 | 依次采用：快照的实际 `limit_up_price,limit_down_price`；盘前落盘的当日交易所涨跌停价（`price_limits` 能力，`price_limit_source=exchange_daily`）；数据源明确标识 `price_limit_rule=standard` 时复用已有日期化规则计算。都没有时，理论价只用于观察，暂停建计划。交易所价标记无涨跌幅限制、`no_price_limit=true` 及上市初期暂停建计划。 |
 | 盘口 | 现有 depth5 规范的 `bid_prices,ask_prices,timestamp`；无真实盘口时间／报价时暂停执行判断。盘口与成交快照时效都须匹配。 |

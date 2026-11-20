@@ -4,8 +4,9 @@
 各 service 无需改动即可路由到本 provider。
 
 实现数据集 (字段口径以 2026-11 核对的官方 OpenAPI 为准):
-  - realtime     股票: `daily` 最新交易日盘中快照 (全市场单请求);
-                 ETF 补拉: `etf_daily`; 指数补拉: `indexdaily` 最新快照。
+  - realtime     股票: 猫头鹰 `tick` 全市场快照 (不带代码单请求, 2026-11-20 实测 5580 只 4.4 秒),
+                 `time` 为逐股真实市场时间; tick 无昨收与名称, 由当日 `daily` 快照按日缓存补齐
+                 (`daily` 无时间字段, 不再作实时快照)。ETF 补拉: `etf_daily`; 指数补拉: `indexdaily`。
                  未用 `screening` —— 文档登记仅专业版/旗舰版可用。
   - daily        股票 `daily` / ETF `etf_daily` 原始日K。指数日K成交量单位未确认,
                  对 index 空手而归, 由上层回退原日K源。
@@ -199,6 +200,10 @@ _REASON_MAP = {"kpl": "reason_main_kpl", "jygs": "reason_main_jygs", "jygs_detai
 _REASON_FIELDS = "tradedate,symbol,type," + ",".join(_REASON_MAP.values())
 _AUCTION_FIELDS = "tradedate,symbol,auc_pct_chg,auc_amt,auc_vol_ratio,ztwme"
 _DEPTH_BATCH = 500  # tick 单次代码数 (实测 1000 只可用, 留余量)
+_TICK_QUOTE_BATCH = 1000  # 全市场 tick 被截断时的回退分批 (实测 1000 只/请求可用)
+_PREV_FIELDS = "tradedate,symbol,name,pre_close"
+_PREV_RETRY_S = 60  # 昨收表加载失败后的重试间隔
+_PREV_STALE_RETRY_S = 300  # 盘前 daily 仍是上一交易日时的重载间隔
 
 # ---- 龙虎榜 (longhubang_*) ----
 _HOT_MONEY_TTL_S = 86400.0  # 游资名单 (营业部简称) 进程内缓存
@@ -346,6 +351,41 @@ def _quote_record(row: dict, symbol: str, today: date, now_ms: int) -> dict:
     }
 
 
+def _tick_record(row: dict, symbol: str, prev: dict) -> dict:
+    """猫头鹰 tick 行 → 内部 realtime record。
+
+    timestamp 取逐股市场时间 `time` (毫秒); 缺失时为 None, 不用接收时间填补。
+    昨收只取同一交易日的 daily 快照值, 否则为 None (涨跌幅仍来自 tick 的 pct_chg)。
+    """
+    stamp = _to_int(row.get("time")) or None
+    day = datetime.fromtimestamp(stamp / 1000, CN_TZ).date() if stamp else None
+    info = prev.get(_six(symbol)) or {}
+    last = _to_float(row.get("close"))
+    prev_close = info.get("pre_close") if day is not None and info.get("day") == day else None
+    pct = _to_float(row.get("pct_chg"))
+    change_pct = pct / 100.0 if pct is not None else None
+    change_amount = last - prev_close if last is not None and prev_close is not None else None
+    if change_pct is None and change_amount is not None and prev_close:
+        change_pct = change_amount / prev_close
+    return {
+        "symbol": symbol,
+        "name": info.get("name"),
+        "last_price": last,
+        "prev_close": prev_close,
+        "open": _to_float(row.get("open")),
+        "high": _to_float(row.get("high")),
+        "low": _to_float(row.get("low")),
+        "volume": _to_float(row.get("vol")),
+        "amount": _to_float(row.get("amount")),
+        "change_pct": change_pct,
+        "change_amount": change_amount,
+        "amplitude": None,
+        "turnover_rate": None,  # 需股本口径 (§3.4), 交给 enriched 管道计算
+        "timestamp": stamp,
+        "session": None,
+    }
+
+
 def _index_record(row: dict, now_ms: int) -> dict:
     """指数快照行 → realtime record。成交量单位官方未确认, 置 None 不透传。"""
     rec = _quote_record(row, str(row.get("symbol") or ""), date.min, now_ms)
@@ -429,6 +469,8 @@ class MeozProvider:
         self._universe_at = 0.0
         self._hot_money: dict[str, str] = {}
         self._hot_money_at = 0.0
+        self._prev: dict | None = None  # 当日昨收表 (tick 无昨收)
+        self._prev_at = 0.0
 
     def close(self) -> None:  # loader.load_all 重建注册表时会对每个 provider 调 close
         with self._lock:
@@ -511,15 +553,56 @@ class MeozProvider:
 
     # ---- realtime ----
     def _stock_quote_rows(self) -> list[dict]:
+        """全市场 tick (不带代码单请求); 超出行数上限时按代码分批。"""
         client = self._get_client()
         try:
-            return client.query("daily", {}, _QUOTE_FIELDS)
+            return client.query("tick", {"type": 1})
         except MeozTruncatedError:
             sixes = sorted(self._universe_map())
             rows: list[dict] = []
-            for group in _chunks(sixes, _MAX_SYMBOLS):
-                rows.extend(client.query("daily", {"symbols": ",".join(group)}, _QUOTE_FIELDS))
+            for group in _chunks(sixes, _TICK_QUOTE_BATCH):
+                rows.extend(client.query("tick", {"symbols": ",".join(group), "type": 1}))
             return rows
+
+    def _prev_close_map(self) -> dict[str, dict]:
+        """当日 daily 快照的昨收与名称 {六位代码: {day, pre_close, name}}, 按日缓存。
+
+        tick 不含昨收; 盘中昨收不变, 每天加载一次。盘前 daily 仍为上一交易日时定期重载,
+        失败时短间隔重试; 加载失败不影响行情, 昨收置空。
+        """
+        now = time_mod.time()
+        today = cn_now().date()
+        with self._lock:
+            cache, loaded_at = self._prev, self._prev_at
+        if cache is not None and cache["today"] == today:
+            wait = _PREV_RETRY_S if cache["failed"] else _PREV_STALE_RETRY_S
+            if cache["complete"] or now - loaded_at < wait:
+                return cache["rows"]
+        kept = cache["rows"] if cache is not None and cache["today"] == today else {}
+        client = self._get_client()
+        try:
+            try:
+                raw = client.query("daily", {}, _PREV_FIELDS)
+            except MeozTruncatedError:
+                raw = []
+                for group in _chunks(sorted(self._universe_map()), _MAX_SYMBOLS):
+                    raw.extend(client.query("daily", {"symbols": ",".join(group)}, _PREV_FIELDS))
+        except MeozError as e:
+            logger.warning("猫爪昨收表加载失败, 本轮实时行情昨收置空: %s", e)
+            with self._lock:
+                self._prev = {"today": today, "complete": False, "failed": True, "rows": kept}
+                self._prev_at = now
+            return kept
+        rows = {}
+        for row in raw:
+            six = _six(str(row.get("symbol") or ""))
+            rows[six] = {"day": _parse_ymd(row.get("tradedate")), "pre_close": _to_float(row.get("pre_close")),
+                         "name": row.get("name")}
+        complete = any(info["day"] == today for info in rows.values())
+        with self._lock:
+            self._prev = {"today": today, "complete": complete, "failed": False, "rows": rows}
+            self._prev_at = now
+        return rows
 
     def get_realtime(self) -> list[dict]:
         """A 股全市场快照 → realtime records。失败软返回空列表(不阻断轮询)。"""
@@ -531,8 +614,7 @@ class MeozProvider:
         except MeozError as e:
             logger.warning("猫爪实时行情拉取失败: %s", e)
             return []
-        now_ms = int(time_mod.time() * 1000)
-        today = cn_now().date()
+        prev = self._prev_close_map()
         records = []
         unknown = 0
         for row in rows:
@@ -540,7 +622,7 @@ class MeozProvider:
             if symbol is None:
                 unknown += 1
                 continue
-            records.append(_quote_record(row, symbol, today, now_ms))
+            records.append(_tick_record(row, symbol, prev))
         if rows and not records:
             logger.warning("猫爪快照 %d 行均无法识别代码, 疑似接口结构变化", len(rows))
             return []
@@ -552,6 +634,20 @@ class MeozProvider:
         apiname = _DAILY_API.get(asset_type)
         if apiname is None or not symbols:
             return []
+        if asset_type == "stock":  # 股票同全市场轮走 tick, 带逐股市场时间
+            try:
+                prev = self._prev_close_map()
+                records = []
+                for group in _chunks(list(symbols), _TICK_QUOTE_BATCH):
+                    wanted = {_six(s): s for s in group}
+                    for row in self._get_client().query("tick", {"symbols": ",".join(wanted), "type": 1}):
+                        symbol = wanted.get(_six(str(row.get("symbol") or "")))
+                        if symbol is not None:
+                            records.append(_tick_record(row, symbol, prev))
+            except MeozError as e:
+                logger.warning("猫爪股票快照补拉失败: %s", e)
+                return None
+            return records
         fields = _QUOTE_FIELDS + (",code" if asset_type == "etf" else "")
         now_ms = int(time_mod.time() * 1000)
         today = cn_now().date()

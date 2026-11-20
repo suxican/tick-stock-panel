@@ -309,3 +309,54 @@ def test_partial_quote_publication_keeps_untouched_asset_records(monkeypatch):
     service._process_full_market_records(updated, t0=0, now_ts=0, source="third",
                                         final_boundary_ms=9_999_999)
     assert set(service.get_market_records()) == {"600519.SH", "159558.SZ"}
+
+
+def test_collect_uses_directly_fetched_position_quotes(tmp_path, monkeypatch):
+    """全市场快照到手已晚 5-15 秒 (猫爪 tick 实测); 做T 持仓单独拉取, 不读共享快照的旧报价。"""
+    adapter, pos, accounts, _fetch, now = _market_context(tmp_path, monkeypatch)
+    cached = adapter.quotes.get_market_records()
+    stale = {**cached["600000.SH"], "timestamp": (now - timedelta(seconds=14)).timestamp() * 1000}
+    adapter.quotes.get_market_records = lambda: {**cached, "600000.SH": stale}
+    direct = {**cached["600000.SH"], "last_price": 10.02, "source": "direct"}
+    adapter.quotes.fetch_symbol_records = Mock(return_value={"600000.SH": direct})
+    quote = adapter.collect([pos], accounts, now)[("a", "600000.SH")]["quote"]
+    adapter.quotes.fetch_symbol_records.assert_called_once_with(["600000.SH"])
+    assert quote["price"] == 10.02 and quote["source"] == "direct"
+    assert quote["data_errors"] == []
+
+
+def test_collect_keeps_shared_quotes_when_direct_fetch_unavailable(tmp_path, monkeypatch):
+    adapter, pos, accounts, _fetch, now = _market_context(tmp_path, monkeypatch)
+    adapter.quotes.fetch_symbol_records = Mock(return_value={})
+    quote = adapter.collect([pos], accounts, now)[("a", "600000.SH")]["quote"]
+    assert quote["source"] == "fixture" and quote["data_errors"] == []
+    adapter.quotes.status = lambda: {"enabled": False}
+    adapter.quotes.fetch_symbol_records.reset_mock()
+    adapter.collect([pos], accounts, now)
+    adapter.quotes.fetch_symbol_records.assert_not_called()  # 全局行情暂停时不另行取数
+
+
+def test_fetch_symbol_records_uses_plugin_without_touching_shared_cache(monkeypatch):
+    from app.data_providers import custom as custom_sources
+    from app.services import preferences
+    from app.services.quote_service import QuoteService
+
+    service = QuoteService()
+    provider = SimpleNamespace(get_realtime_symbols=Mock(return_value=[
+        {"symbol": "600000.SH", "last_price": 10, "timestamp": 1000},
+        {"symbol": "600001.SH", "last_price": 9, "timestamp": 1000},
+    ]))
+    monkeypatch.setattr(preferences, "get_realtime_data_provider", lambda: "plugin_x")
+    monkeypatch.setattr(custom_sources, "provider_has_dataset", lambda name, ds: name == "plugin_x")
+    monkeypatch.setattr(custom_sources, "get_provider", lambda name: provider)
+    out = service.fetch_symbol_records(["600000.SH", "600000.SH"])
+    provider.get_realtime_symbols.assert_called_once_with(["600000.SH"], asset_type="stock")
+    assert set(out) == {"600000.SH"}  # 只返回所请求的代码
+    assert out["600000.SH"]["source"] == "plugin_x" and out["600000.SH"]["timestamp"] == 1000
+    assert out["600000.SH"]["received_ts"] > 1000
+    assert service.get_market_records() == {}  # 不写共享缓存, 不影响收盘定版
+
+    provider.get_realtime_symbols.side_effect = RuntimeError("down")
+    assert service.fetch_symbol_records(["600000.SH"]) == {}
+    monkeypatch.setattr(preferences, "get_realtime_data_provider", lambda: "tickflow")
+    assert service.fetch_symbol_records(["600000.SH"]) == {}  # 无按代码接口的源沿用共享快照

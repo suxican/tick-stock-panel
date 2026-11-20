@@ -202,6 +202,10 @@ class PositionTMarket:
         symbols = list(dict.fromkeys(p["symbol"] for p in positions))
         selected = symbols[:int(support["max_symbols"])] if support["available"] else []
         records = self.quotes.get_market_records()
+        # 全市场快照到手时可能已晚数秒; 持仓按代码直接取最新报价覆盖 (源不支持时沿用快照)
+        direct = getattr(self.quotes, "fetch_symbol_records", None)
+        if trading and enabled and symbols and callable(direct):
+            records = {**records, **direct(symbols)}
         # 成分股只有真实市场时间新鲜才参与聚合，不用接收时间替代。
         fresh = [r for r in records.values() if (s := market_time_ms(r.get("timestamp"))) and 0 <= (now - s).total_seconds() <= 10]
         targets = [{"key": key} for key in {*(f"index:{p['benchmark_symbol']}" for p in positions), *(p["sector_id"] for p in positions if p.get("sector_id"))}]

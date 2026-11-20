@@ -697,6 +697,30 @@ class QuoteService:
             wanted = symbols if symbols is not None else records.keys()
             return {symbol: dict(records[symbol]) for symbol in wanted if symbol in records}
 
+    def fetch_symbol_records(self, symbols: list[str]) -> dict[str, dict]:
+        """按代码直接向当前实时源取最新股票报价, 供少量标的的低延迟判断 (如持仓做T)。
+
+        全市场快照到手时可能已晚数秒 (猫爪 tick 实测 5-15 秒)。结果只返回给调用方,
+        不写共享缓存, 不参与收盘定版与全站展示。仅插件源实现 get_realtime_symbols 时可用;
+        不可用或失败返回空, 调用方沿用共享快照, 不跨源回退。
+        """
+        from app.data_providers import custom as custom_sources
+        from app.services import preferences
+
+        wanted = sorted({str(s) for s in symbols if s})
+        provider_name = preferences.get_realtime_data_provider()
+        if not wanted or provider_name == "tickflow" or not custom_sources.provider_has_dataset(provider_name, "realtime"):
+            return {}
+        try:
+            fetch = getattr(custom_sources.get_provider(provider_name), "get_realtime_symbols", None)
+            rows = fetch(wanted, asset_type="stock") if callable(fetch) else None
+        except Exception as exc:  # noqa: BLE001 -- 单独取数失败只回退共享快照
+            logger.warning("按代码实时行情取数失败，沿用共享快照: %s", exc)
+            return {}
+        received = time.time() * 1000
+        return {row["symbol"]: {**row, "source": provider_name, "received_ts": received}
+                for row in rows or [] if row.get("symbol") in wanted}
+
     def subscribe_quotes(self, client_id: str, symbols: list[str]) -> None:
         """Register demand only; HTTP readers never start their own market fetch."""
         self._quote_demand.subscribe(client_id, symbols)

@@ -197,46 +197,90 @@ def _quote(symbol="600519", tradedate="20261111", **over):
     return row
 
 
-def test_realtime_units_suffix_and_server_side_full_market(monkeypatch):
-    provider, fake = _provider(monkeypatch, lambda *a: [_quote(), _quote("000001", name="平安银行")])
+_TICK_MS = int(datetime(2026, 11, 11, 10, 5, 17, 250000, tzinfo=CN_TZ).timestamp() * 1000)
+
+
+def _tick_quote(symbol="600519.SH", **over):
+    """猫头鹰 tick 行 (2026-11-20 实测字段): 无昨收、无名称, time 为逐股市场时间毫秒。"""
+    row = {"a": "s", "symbol": symbol, "code": symbol, "time": _TICK_MS, "open": 1460.0,
+           "high": 1490.5, "low": 1455.0, "close": 1480.0, "vol": 32000, "amount": 4.7e9,
+           "pct_chg": 1.72, "bid1": 1479.9, "ask1": 1480.0}
+    row.update(over)
+    return row
+
+
+def _tick_market(ticks, dailies=None):
+    """tick 全市场 + daily 昨收/名称表 的路由。"""
+    dailies = [_quote(), _quote("000001", name="平安银行", pre_close=11.0)] if dailies is None else dailies
+
+    def handler(apiname, params, fields, service):
+        if apiname == "tick":
+            return ticks(params) if callable(ticks) else ticks
+        if apiname == "daily":
+            return dailies(params) if callable(dailies) else dailies
+        raise AssertionError(apiname)
+    return handler
+
+
+def test_realtime_uses_tick_full_market_with_market_time(monkeypatch):
+    provider, fake = _provider(monkeypatch, _tick_market([_tick_quote(), _tick_quote("000001.SZ", close=11.2, pct_chg=1.8182)]))
     records = provider.get_realtime()
     by_symbol = {r["symbol"]: r for r in records}
     assert set(by_symbol) == {"600519.SH", "000001.SZ"}
     rec = by_symbol["600519.SH"]
+    assert rec["timestamp"] == _TICK_MS  # 逐股真实市场时间, 不是接收时间
     assert rec["change_pct"] == pytest.approx(0.0172)  # 百分数 → 小数制
-    assert rec["volume"] == 32000.0  # 文档写明为手, 不换算
-    assert rec["prev_close"] == 1455.0 and rec["last_price"] == 1480.0
-    assert rec["turnover_rate"] is None and rec["amplitude"] is None
-    daily_calls = [c for c in fake.calls if c[0] == "daily"]
-    assert len(daily_calls) == 1 and "symbols" not in daily_calls[0][1]
+    assert rec["volume"] == 32000.0  # 手, 与 daily 快照一致, 不换算
+    assert rec["prev_close"] == 1455.0 and rec["last_price"] == 1480.0  # 昨收来自当日 daily
+    assert rec["name"] == "贵州茅台"
+    assert by_symbol["000001.SZ"]["prev_close"] == 11.0
+    tick_calls = [c for c in fake.calls if c[0] == "tick"]
+    assert len(tick_calls) == 1 and "symbols" not in tick_calls[0][1]  # 全市场单请求
+    provider.get_realtime()
+    assert len([c for c in fake.calls if c[0] == "daily"]) == 1  # 昨收按日缓存, 不每轮请求
 
 
-def test_realtime_stale_trade_date_stamped_at_that_close(monkeypatch):
-    provider, _ = _provider(monkeypatch, lambda *a: [_quote(tradedate="20261110")])
+def test_realtime_missing_tick_time_is_unknown_not_receive_time(monkeypatch):
+    provider, _ = _provider(monkeypatch, _tick_market([_tick_quote(time=None)]))
+    assert provider.get_realtime()[0]["timestamp"] is None
+
+
+def test_realtime_previous_session_tick_keeps_its_time_without_wrong_prev_close(monkeypatch):
+    stale_ms = int(datetime(2026, 11, 10, 15, 30, tzinfo=CN_TZ).timestamp() * 1000)
+    provider, _ = _provider(monkeypatch, _tick_market([_tick_quote(time=stale_ms)]))
     rec = provider.get_realtime()[0]
-    assert rec["timestamp"] == mp._ms(date(2026, 11, 10), mp._DAILY_CLOSE)
+    assert rec["timestamp"] == stale_ms  # 下游按日期归属过滤旧日快照
+    assert rec["prev_close"] is None  # 当日 daily 昨收不属于旧交易日
 
 
-def test_realtime_derives_pct_when_missing(monkeypatch):
-    provider, _ = _provider(monkeypatch, lambda *a: [_quote(pct_chg=None, change=None)])
+def test_realtime_prev_close_only_from_same_trade_day(monkeypatch):
+    provider, _ = _provider(monkeypatch, _tick_market([_tick_quote()], [_quote(tradedate="20261110")]))
     rec = provider.get_realtime()[0]
-    assert rec["change_amount"] == pytest.approx(25.0)
-    assert rec["change_pct"] == pytest.approx(25.0 / 1455.0)
+    assert rec["prev_close"] is None and rec["change_pct"] == pytest.approx(0.0172)
+
+
+def test_realtime_prev_close_failure_keeps_quotes(monkeypatch):
+    def dailies(params):
+        raise mc.MeozError("down")
+
+    provider, _ = _provider(monkeypatch, _tick_market([_tick_quote()], dailies))
+    rec = provider.get_realtime()[0]
+    assert rec["last_price"] == 1480.0 and rec["prev_close"] is None and rec["timestamp"] == _TICK_MS
 
 
 def test_realtime_truncation_falls_back_to_universe_chunks(monkeypatch):
-    def handler(apiname, params, fields, service):
+    def ticks(params):
         if "symbols" not in params:
             raise mc.MeozTruncatedError("cap")
-        return [_quote(s) for s in params["symbols"].split(",")]
+        return [_tick_quote(s + {"6": ".SH", "0": ".SZ", "9": ".BJ"}[s[0]]) for s in params["symbols"].split(",")]
 
-    provider, _ = _provider(monkeypatch, handler)
+    provider, _ = _provider(monkeypatch, _tick_market(ticks))
     records = provider.get_realtime()
     assert {r["symbol"] for r in records} == {"600519.SH", "000001.SZ", "920001.BJ"}
 
 
 def test_realtime_unrecognized_rows_and_errors_return_empty(monkeypatch):
-    provider, _ = _provider(monkeypatch, lambda *a: [{"tradedate": "20261111", "close": 1.0}])
+    provider, _ = _provider(monkeypatch, _tick_market([{"time": _TICK_MS, "close": 1.0}]))
     assert provider.get_realtime() == []
 
     def boom(*a):
@@ -244,6 +288,13 @@ def test_realtime_unrecognized_rows_and_errors_return_empty(monkeypatch):
 
     provider, _ = _provider(monkeypatch, boom)
     assert provider.get_realtime() == []
+
+
+def test_realtime_symbols_stock_uses_tick(monkeypatch):
+    provider, fake = _provider(monkeypatch, _tick_market(lambda p: [_tick_quote()]))
+    rows = provider.get_realtime_symbols(["600519.SH"])
+    assert [(r["symbol"], r["timestamp"]) for r in rows] == [("600519.SH", _TICK_MS)]
+    assert [c[1]["symbols"] for c in fake.calls if c[0] == "tick"] == ["600519"]
 
 
 def test_realtime_symbols_etf_uses_full_code_and_failure_is_none(monkeypatch):
