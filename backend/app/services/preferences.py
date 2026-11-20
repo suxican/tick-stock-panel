@@ -401,8 +401,22 @@ def get_full_minute_data_provider() -> str:
     return _validated_provider(provider, "full_minute_data_provider")
 
 
+def _registered_plugin(name: str) -> bool:
+    """插件已注册 (含暂时不可用: Key 未配 / 依赖未就绪)。"""
+    try:
+        from app.data_providers import custom as custom_sources
+        return any(p.get("name") == name and not p.get("pending_remove")
+                   for p in custom_sources.list_plugins())
+    except Exception:  # noqa: BLE001 — an optional plugin failure must not break preferences
+        return False
+
+
 def get_depth5_data_provider() -> str:
     provider = str(load().get("depth5_data_provider", "tickflow") or "tickflow").lower()
+    # 主源插件暂不可用 (如 Key 被清) 时保留为主源: 取数时由兜底链跳过它, 交给用户配置的兜底源;
+    # 若在此回退 tickflow, 会绕过兜底顺序且页面不提示降级。
+    if provider not in _allowed_data_providers() and _registered_plugin(provider):
+        return provider
     return _validated_provider(provider, "depth5_data_provider")
 
 

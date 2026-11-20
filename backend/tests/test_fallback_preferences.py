@@ -124,3 +124,20 @@ def test_api_rejects_pending_remove_in_fallbacks(monkeypatch):
             settings_api.DataProvidersIn(depth5_data_provider_fallbacks=["MEOZ"]), request)
     assert exc.value.status_code == 400
     assert "depth5_data_provider_fallbacks" not in saved
+
+
+def test_unavailable_primary_is_kept_so_the_chain_takes_over(monkeypatch):
+    """主源插件暂不可用 (Key 被清/依赖未就绪) 时仍是主源, 由兜底链接管; 不得静默回退 tickflow。"""
+    _setup(monkeypatch, {"depth5_data_provider": "tdxquant",
+                         "depth5_data_provider_fallbacks": ["meoz"]})
+    monkeypatch.setattr(custom_sources, "names", lambda: {"meoz"})  # tdxquant 不可用 → 不在 names()
+    rows = _plugin_rows(_DECLARED)
+    rows[0]["available"] = False
+    monkeypatch.setattr(custom_sources, "list_plugins", lambda: rows)
+    assert preferences.get_depth5_data_provider() == "tdxquant"
+    assert preferences.get_capability_fallbacks("depth5") == ["meoz"]
+
+
+def test_unregistered_primary_still_falls_back_to_tickflow(monkeypatch):
+    _setup(monkeypatch, {"depth5_data_provider": "ghost"})
+    assert preferences.get_depth5_data_provider() == "tickflow"
