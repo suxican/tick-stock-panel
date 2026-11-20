@@ -62,21 +62,24 @@ export function ThemeAttributionPanel({ conceptKeys, onSelectConcept }: {
         {failed.length > 0 && !unavailable && (
           <p className="text-amber-500">{failed.map(s => SOURCE_LABELS[s]).join('、')}本次取数失败，下列结果不完整。</p>
         )}
-        <ul className="space-y-2">
+        <ul className="grid grid-cols-1 gap-2 md:grid-cols-2 2xl:grid-cols-3">
           {grouped.map(([name, items]) => (
-            <li key={name} className="space-y-0.5">
-              <p className="flex items-center gap-2 font-medium">
-                {name}
+            <li key={name} data-theme-card className="flex flex-col gap-1.5 rounded-lg border border-border bg-elevated/40 p-3">
+              <p className="flex items-center justify-between gap-2 text-sm font-medium">
+                <span className="min-w-0 truncate" title={name}>{name}</span>
                 {conceptKeys.has(name) && (
-                  <button type="button" className="rounded border border-border px-1.5 py-0.5 text-[11px] font-normal text-accent hover:bg-elevated"
+                  <button type="button" className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[11px] font-normal text-accent hover:bg-elevated"
                     onClick={() => onSelectConcept(name)}>概念榜同名</button>
                 )}
               </p>
-              {items.map(item => (
-                <p key={`${item.source}-${item.theme_id}`} className="text-secondary">
-                  <span className="mr-1 text-foreground">{SOURCE_LABELS[item.source]}</span>{item.reason || '（无原文）'}
-                </p>
-              ))}
+              <ul className="space-y-1.5">
+                {items.map(item => (
+                  <li key={`${item.source}-${item.theme_id}`} className="flex items-start gap-2 leading-relaxed text-secondary">
+                    <span className="mt-0.5 shrink-0 rounded bg-surface px-1.5 py-px text-[11px] text-foreground">{SOURCE_LABELS[item.source]}</span>
+                    <span className="min-w-0">{item.reason || '（无原文）'}</span>
+                  </li>
+                ))}
+              </ul>
             </li>
           ))}
         </ul>
