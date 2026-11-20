@@ -2,8 +2,11 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   X, Sparkles, Loader2, AlertTriangle, Copy, Check, RefreshCw,
-  Settings2, Send, Wand2, Minimize2, History, LineChart,
+  Settings2, Send, Wand2, Minimize2, History, LineChart, Download,
 } from 'lucide-react'
+import {
+  type ReportExportFormat, buildReportFileName, downloadMarkdown, downloadPng, downloadPdf,
+} from '@/lib/reportExport'
 import { cn } from '@/lib/cn'
 import { copyText } from '@/lib/clipboard'
 import { toast } from '@/components/Toast'
@@ -46,6 +49,9 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [focus, setFocus] = useState('')
   const [copied, setCopied] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [exporting, setExporting] = useState<ReportExportFormat | null>(null)
+  const reportRef = useRef<HTMLDivElement>(null)
 
   const phase = getPhase(task)
   const content = getContent(task)
@@ -80,6 +86,34 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
     setCopied(true)
     toast('已复制到剪贴板', 'success')
     setTimeout(() => setCopied(false), 2000)
+  }
+
+  const handleExport = async (fmt: ReportExportFormat) => {
+    setMenuOpen(false)
+    if (!task || !content || exporting) return
+    const name = 'name' in task ? task.name : ''
+    const when = 'created_at' in task ? task.created_at : null
+    const fileName = buildReportFileName(name, task.symbol, fmt, when)
+    setExporting(fmt)
+    try {
+      if (fmt === 'md') {
+        downloadMarkdown(content, fileName)
+      } else {
+        const node = reportRef.current
+        if (!node) throw new Error('报告内容未就绪')
+        const opts = {
+          title: `${name || task.symbol} 个股分析报告`,
+          subtitle: [task.symbol, meta?.summary].filter(Boolean).join(' · '),
+        }
+        if (fmt === 'png') await downloadPng(node, fileName, opts)
+        else await downloadPdf(node, fileName, opts)
+      }
+      toast('报告已导出', 'success')
+    } catch (e) {
+      toast(`导出失败: ${e instanceof Error ? e.message : '未知错误'}`, 'error')
+    } finally {
+      setExporting(null)
+    }
   }
 
   const backdrop = useDialogBackdrop(closeDialog, () => !isWorking)
@@ -134,6 +168,24 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
                 </div>
               </div>
               <div className="flex items-center gap-1 shrink-0">
+                {content && !isWorking && (
+                  <div className="relative">
+                    <button onClick={() => setMenuOpen(v => !v)} title="下载报告" disabled={!!exporting}
+                      className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-foreground transition-colors disabled:opacity-50">
+                      {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                    </button>
+                    {menuOpen && (
+                      <div className="absolute right-0 top-full mt-1 z-10 w-36 rounded-lg border border-border/60 bg-surface shadow-xl py-1">
+                        {([['md', 'Markdown (.md)'], ['pdf', 'PDF (.pdf)'], ['png', '图片 (.png)']] as const).map(([fmt, label]) => (
+                          <button key={fmt} onClick={() => handleExport(fmt)}
+                            className="w-full text-left px-3 py-1.5 text-xs text-secondary hover:bg-elevated hover:text-foreground transition-colors">
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {content && !isWorking && (
                   <button onClick={handleCopy} title="复制全文"
                     className="p-1.5 rounded-lg hover:bg-elevated text-muted hover:text-foreground transition-colors">
@@ -192,7 +244,7 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
             )}
 
             {(content || phase === 'streaming') && (
-              <div className="relative">
+              <div className="relative" ref={reportRef}>
                 <MarkdownRenderer content={content} />
                 {phase === 'streaming' && (
                   <span className="inline-block w-1.5 h-3.5 bg-sky-400 ml-0.5 align-middle animate-pulse rounded-sm" />
