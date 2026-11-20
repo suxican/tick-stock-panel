@@ -649,6 +649,10 @@ def analyze_holdings(repo, quote_service, sector_service, position_service, sour
 
     # 业绩事件只作证据与提示 (不进入风险确认); 来源不可用为 None, 不当作无事件
     events_raw = earnings_events.fetch_events(sorted(symbols), now.date()) if symbols else None
+    from app.services import fund_evidence
+
+    fund_raw = (fund_evidence.fetch_holdings(sorted(symbols), now, getattr(getattr(repo, "store", None), "data_dir", None))
+                if symbols else None)
     from app.services import theme_authenticity
 
     # 精选板块正宗度只作证据 (精选板块不在本地目录, 不改变主要关联板块); 不可用不当作不正宗
@@ -671,6 +675,9 @@ def analyze_holdings(repo, quote_service, sector_service, position_service, sour
             raw = events_raw.get(row["symbol"]) if isinstance(events_raw, dict) else None
             row["events"] = earnings_events.summarize(raw, now.date(), _day(row["plan"].get("expires_on")))
             row["evidence"].append(earnings_events.event_evidence(row["events"], now.date()))
+            # 资金证据只展示 (厂商模型口径, 不打分、不进入判定与风险确认); 不可用不当作无资金流向
+            row["fund_evidence"] = fund_evidence.summarize(fund_raw, row["symbol"])
+            row["evidence"].append(fund_evidence.evidence_text(row["fund_evidence"]))
             row["jx_authentic"] = theme_authenticity.summarize(authentic_raw, row["symbol"])
             row["evidence"].append(theme_authenticity.authenticity_evidence(row["jx_authentic"]))
         row["risk_status"] = risk_status(row["symbol"], risk_on, risk_reference, risk_regulatory)

@@ -541,3 +541,24 @@ def test_collect_attaches_regulatory_risk_flags(tmp_path, monkeypatch):
     assert [f["id"] for f in env["risk_flags"]] == ["monitor_unknown", "anomaly_forecast"]
     adapter.collect([pos], accounts, now + timedelta(seconds=5))
     assert calls == [now.date()]  # 盘中按日缓存, 不每轮读盘
+
+
+def test_collect_attaches_intraday_fund_evidence_without_touching_other_fields(tmp_path, monkeypatch):
+    from app.services import fund_evidence
+
+    adapter, pos, accounts, _fetch, now = _market_context(tmp_path, monkeypatch)
+    calls = []
+
+    def fake(symbols, at):
+        calls.append((symbols, at))
+        return {"600000.SH": {"status": "ok", "main_net": 1.5e8, "unit": "元", "available_at": at.isoformat()}}
+
+    monkeypatch.setattr(fund_evidence, "intraday_main_net", fake)
+    env = adapter.collect([pos], accounts, now)[("a", "600000.SH")]["environment"]
+    assert calls == [(["600000.SH"], now)]
+    assert env["fund_evidence"]["main_net"] == 1.5e8
+
+    monkeypatch.setattr(fund_evidence, "intraday_main_net", lambda s, a: {})
+    env2 = adapter.collect([pos], accounts, now + timedelta(seconds=5))[("a", "600000.SH")]["environment"]
+    assert env2["fund_evidence"] is None
+    assert {k: v for k, v in env2.items() if k != "fund_evidence"} ==         {k: v for k, v in env.items() if k != "fund_evidence"}

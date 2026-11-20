@@ -439,3 +439,19 @@ it('still allows stopping automatic simulation when overview refresh fails', asy
   await click('停止自动模拟')
   expect(mocks.config).toHaveBeenCalledWith('a', expect.objectContaining({ auto_simulation_enabled: false }))
 })
+
+it('shows intraday main net only in the signal detail, with fetch time and refresh hint', async () => {
+  const fund = { status: 'ok' as const, source: 'meoz', unit: '元', available_at: '2026-11-05T10:01:00+08:00', data_through: '2026-11-05', model_basis: 'vendor_model', kind: 'intraday_cumulative' as const, refresh_hint: '厂商约 4 分钟更新一次，非分钟级区间值', main_net: 533744622 }
+  await render(<Opportunity signal={{ ...signal, fund_evidence: fund }} position={position} unavailable={false} onCreated={vi.fn()} />)
+  const line = host.querySelector('[data-testid="signal-fund"]')!
+  expect(line.textContent).toContain('+5.34 亿元')
+  expect(line.textContent).toContain('当日累计')
+  expect(line.textContent).toContain('4 分钟')
+  expect(line.textContent).toContain('厂商模型口径')
+  expect(host.querySelector('details')!.contains(line)).toBe(true)
+  await render(<Opportunity signal={{ ...signal, fund_evidence: { ...fund, status: 'unavailable', main_net: undefined } }} position={position} unavailable={false} onCreated={vi.fn()} />)
+  expect(host.querySelector('[data-testid="signal-fund"]')!.textContent).toContain('资金数据不可用')
+  expect(host.textContent).not.toContain('0 万元')
+  await render(<Opportunity signal={signal} position={position} unavailable={false} onCreated={vi.fn()} />)
+  expect(host.querySelector('[data-testid="signal-fund"]')).toBeNull()
+})

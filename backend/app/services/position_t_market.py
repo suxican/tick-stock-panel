@@ -274,6 +274,10 @@ class PositionTMarket:
         from app.services.regulatory_reference import risk_items
 
         regulatory = self._regulatory_reference(now)
+        # 当日累计主力净额只作详情展示 (厂商模型口径, 约 4 分钟更新一次); 不参与任何判定, 失败即不可用
+        from app.services import fund_evidence
+
+        funds = fund_evidence.intraday_main_net([p["symbol"] for p in positions], now) if trading and enabled else {}
         result = {}
         worst_ts = min((market_time_ms(r["timestamp"]) for r in fresh), default=None)
         # 板块行情时间 = 该板块参与聚合成分股市场时间的中位数: 代表板块整体新鲜度, 成交清淡个股的
@@ -309,7 +313,8 @@ class PositionTMarket:
                    "benchmark_symbol": pos["benchmark_symbol"], "sector_id": sector_id,
                    "sector_basis": sector_basis, "sector_name": sector_name or sector.get("name"),
                    # 重点监控 / 严重异动预测 (含不可用): 人工账户建计划前逐条确认, 自动模拟暂停新建
-                   "risk_flags": risk_items(pos["symbol"], regulatory)}
+                   "risk_flags": risk_items(pos["symbol"], regulatory),
+                   "fund_evidence": funds.get(pos["symbol"])}
             bars = normalize_bars(self._minutes.get(pos["symbol"], []), now, cfg.get("minute_timestamp_semantics")) if enabled and trading else []
             result[(pos["account_id"], pos["symbol"])] = {"bars": bars, "quote": quote, "environment": env}
         return result

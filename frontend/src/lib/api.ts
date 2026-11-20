@@ -2194,6 +2194,8 @@ export interface PositionTSignal {
   sector?: { id: string | null; name: string | null; basis: 'manual' | 'auto' | null }
   /** 重点监控 / 严重异动预测 (含不可用): 建立计划前须逐条确认 */
   risk_flags?: HoldingAnalysisRiskItem[]
+  /** 当日累计主力净额 (只展示, 不参与任何判定); 随信号写入 signal_history */
+  fund_evidence?: PositionTFundEvidence | null
 }
 export interface PositionTSignalHistoryEvent {
   signal: PositionTSignal; previous_state: string | null; recorded_at: string
@@ -2354,7 +2356,23 @@ export interface HoldingAnalysisRow {
   events?: HoldingAnalysisEvents
   /** 精选板块正宗度 (只作证据); available=false 表示来源不可用 */
   jx_authentic?: { available: boolean; themes?: { theme_id: string; theme_name: string | null; change_pct: number | null }[] }
+  /** 资金证据 (只展示, 厂商模型口径, 不打分不进入判定); 各项 status=unavailable 表示资金数据不可用, 不是 0 */
+  fund_evidence?: HoldingFundEvidence
 }
+/** 资金证据单项公共字段; available_at 是本系统取到数据的时刻, data_through 是数据覆盖截止日 */
+export interface FundItemBase {
+  status: 'ok' | 'empty' | 'unavailable'
+  source: string | null; unit: string | null; available_at: string | null; data_through: string | null
+}
+export interface HoldingFundEvidence {
+  model_basis: string; window: string[]; available_at: string | null
+  main_net: FundItemBase & { model_basis?: string; total?: number | null; direction?: 'inflow' | 'outflow' | 'flat'; days?: { date: string; main_net: number }[]; missing_days?: string[] }
+  dragon_tiger: FundItemBase & { listings?: { date: string; reasons: string[]; net_value: number; source?: string | null }[]; hot_money?: { date: string; name: string | null; net_value: number | null }[]; hot_money_basis?: string | null; missing_days?: string[] }
+  margin: FundItemBase & { balance?: number; compare_date?: string | null; change?: number | null; change_pct?: number | null }
+  northbound: FundItemBase & { disclosure?: 'quarterly'; shares?: number; ratio?: number | null; previous_date?: string | null; shares_change?: number | null; ratio_change?: number | null }
+}
+/** 做T 信号详情: 当日累计主力净额 (厂商约 4 分钟更新一次, 非分钟级区间值) */
+export type PositionTFundEvidence = FundItemBase & { model_basis?: string; kind?: 'intraday_cumulative'; refresh_hint?: string; main_net?: number }
 export interface HoldingAnalysisEvents {
   available: boolean
   forecast?: { report_period: string; announce_date: string; type: string | null; change_min: number | null; change_max: number | null } | null

@@ -384,7 +384,9 @@ def evaluate_candidate(bars: list[dict], quote: dict, environment: dict, positio
               # 本轮板块环境用的是哪个板块 (手工设置或自动关联), 便于复核
               "sector": {"id": environment.get("sector_id"), "name": environment.get("sector_name"),
                          "basis": environment.get("sector_basis")},
-              "risk_flags": list(environment.get("risk_flags") or [])}
+              "risk_flags": list(environment.get("risk_flags") or []),
+              # 资金证据只展示, 随信号写入 signal_history 供前向验证; 本函数任何判定都不读取它
+              "fund_evidence": environment.get("fund_evidence")}
     identity = f"{account.get('id')}|{position.get('symbol')}|{direction}|{now.isoformat()}|{version}"
     result["id"] = "pt_" + hashlib.sha256(identity.encode()).hexdigest()[:24]
     try:

@@ -414,6 +414,15 @@ Python 插件声明 `datasets: [ths_index]` 后需实现以下方法。通用 YA
 - `get_theme_authenticity(symbols: list[str]) -> dict[str, list[dict]]`：按请求代码返回该股所在的「最正宗」板块列表 `[{theme_id, theme_name, change_pct}]`（`change_pct` 为当日涨跌幅，小数制；名称或涨跌幅取不到时为空），每个请求代码都要有键，不在任何名单中为空列表。
 - 名单取数失败直接抛异常，调用方会标记「来源不可用」。
 
+### 资金证据数据集 `fund_flow` / `margin_balance` / `northbound_holding`
+
+持仓分析「资金」栏与做T 信号详情的证据，只展示。仅支持 Python 插件，按声明的数据集分别实现（缺一不影响其他项）：
+
+- `fund_flow`：`get_fund_flow(symbols, start, end) -> {代码: [{date, main_net}]}`（日主力净额，元，流出为负，升序）与 `get_fund_flow_now(symbols) -> {代码: {date, main_net}}`（当日累计，盘中更新）。
+- `margin_balance`：`get_margin_balance(symbols, start, end) -> {代码: [{date, financing_balance}]}`（融资余额，元，升序，可有 T-1 滞后）。
+- `northbound_holding`：`get_northbound(symbol, as_of) -> [{date, shares, ratio}]`（最近两期，升序；`shares` 股，`ratio` 占 A 股比例小数制）。供应商若使用港交所中央结算编码等非 6 位代码，须在插件内按单只查询或映射，业务层只收到请求代码对应的行。
+- 空值行跳过，不得补 0；无记录返回空列表；上游失败直接抛异常，调用方会标记「资金数据不可用」，不要返回空结果冒充「无资金流向」。
+
 ### 海外观察数据集 `overseas`
 
 海外观察使用独立数据集和路由，不混入 A 股 `realtime`、国内指数缓存或本地日线仓库。

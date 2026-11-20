@@ -295,3 +295,14 @@ def test_ready_event_broadcasts_to_every_existing_quote_subscriber(service, monk
     assert one == two
     assert any(e["kind"] == "second_leg_ready" and e["reference_price"] == 10.30 for e in one)
     assert left.pop()["alerts"] == []
+
+
+def test_fund_evidence_is_saved_in_signal_history_with_available_at(service):
+    fund = {"status": "ok", "main_net": 2.5e8, "unit": "元", "model_basis": "vendor_model",
+            "data_through": "2026-10-16", "available_at": service.market.now.isoformat()}
+    service.market.data["environment"] = {**service.market.data["environment"], "fund_evidence": fund}
+    signal = triggered(service)
+    assert signal["fund_evidence"] == fund
+    history = service.store.list_signal_history(signal["account_id"], signal["symbol"])
+    saved = [e for e in history if e["signal"]["direction"] == "buy_sell"][0]["signal"]["fund_evidence"]
+    assert saved["available_at"] == fund["available_at"] and saved["main_net"] == 2.5e8

@@ -381,3 +381,39 @@ it('does not treat an unavailable authenticity source as not authentic', async (
   expect(host.textContent).toContain('来源不可用，不能视为不正宗')
   expect(host.textContent).not.toContain('未列入任何精选板块')
 })
+
+const fundItem = { source: 'meoz', unit: '元', available_at: '2026-11-05T10:01:00+08:00' }
+const fund = (patch: Record<string, unknown> = {}) => ({ model_basis: 'vendor_model', window: ['2026-11-04'], available_at: '2026-11-05T10:01:00+08:00',
+  main_net: { status: 'ok', ...fundItem, data_through: '2026-11-04', model_basis: 'vendor_model', total: -250000000, direction: 'outflow', days: [{ date: '2026-11-04', main_net: -250000000 }], missing_days: [] },
+  dragon_tiger: { status: 'ok', ...fundItem, data_through: '2026-11-04', listings: [{ date: '2026-11-04', reasons: ['日涨幅偏离值达7%'], net_value: -8678850 }], hot_money: [{ date: '2026-11-04', name: '某游资', net_value: 15000000 }], hot_money_basis: '营业部简称近似匹配', missing_days: [] },
+  margin: { status: 'ok', ...fundItem, data_through: '2026-11-03', balance: 14489884702, compare_date: '2026-10-27', change: -724661108, change_pct: -0.048 },
+  northbound: { status: 'ok', ...fundItem, data_through: '2026-09-30', disclosure: 'quarterly', shares: 55263682, ratio: 0.0442, ratio_change: 0.0013 }, ...patch })
+
+it('shows the fund evidence column in the expanded row only, with source, unit and model basis', async () => {
+  mocks.analyze.mockResolvedValue({ ...report, rows: [{ ...row, fund_evidence: fund() }] })
+  await render(); await click('生成分析')
+  const block = host.querySelector('[data-testid="fund-evidence"]')!
+  expect(block.textContent).toContain('主力净额合计 −2.50 亿元')
+  expect(block.textContent).toContain('净流出')
+  expect(block.textContent).toContain('厂商模型口径')
+  expect(block.textContent).toContain('游资席位：某游资')
+  expect(block.textContent).toContain('数据日 11-03，T-1')
+  expect(block.textContent).toContain('季度披露，非实时')
+  expect(block.textContent).toContain('不打分')
+  expect(host.querySelector('article')!.textContent!.indexOf('资金')).toBeGreaterThan(-1)
+})
+
+it('shows fund data unavailable instead of zero, and keeps empty distinct', async () => {
+  const gone = { status: 'unavailable', source: null, unit: null, available_at: null, data_through: null }
+  mocks.analyze.mockResolvedValue({ ...report, rows: [{ ...row, fund_evidence: fund({ main_net: gone, margin: gone, northbound: gone, dragon_tiger: { ...gone } }) }] })
+  await render(); await click('生成分析')
+  const text = host.querySelector('[data-testid="fund-evidence"]')!.textContent!
+  expect(text.match(/资金数据不可用/g)).toHaveLength(4)
+  expect(text).not.toMatch(/0\.00 亿元|0 万元/)
+})
+
+it('keeps an empty margin record distinct from unavailable', async () => {
+  mocks.analyze.mockResolvedValue({ ...report, rows: [{ ...row, fund_evidence: fund({ margin: { status: 'empty', ...fundItem, data_through: null } }) }] })
+  await render(); await click('生成分析')
+  expect(host.querySelector('[data-testid="fund-evidence"]')!.textContent).toContain('非两融标的或无记录')
+})

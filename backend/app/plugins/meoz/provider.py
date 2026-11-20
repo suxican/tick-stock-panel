@@ -69,7 +69,7 @@ logger = logging.getLogger(__name__)
 
 _DATASETS = ("realtime", "depth5", "daily", "adj_factor", "minute", "full_minute",
              "price_limits", "st_status", "suspensions", "limit_events", "dragon_tiger", "earnings_events",
-             "theme_authenticity")
+             "theme_authenticity", "fund_flow", "margin_balance", "northbound_holding")
 
 API_KEY_ENV = "MEOZ_API_KEY"
 SECRETS_FIELD = "meoz_api_key"  # UI 配置的 Key 存 secrets.json, 优先级高于 .env
@@ -1107,6 +1107,58 @@ class MeozProvider:
                     out[symbol].append({"theme_id": theme, "theme_name": info.get("theme_name"),
                                         "change_pct": pct / 100.0 if pct is not None else None})
         return out
+
+    # ---- 资金证据: 主力净额 / 两融余额 / 北向持股 (只作证据展示, 厂商模型口径) ----
+    def _series(self, api: str, symbols: list[str], params: dict, date_key: str, value_key: str,
+                out_key: str, *, service: str, fields: str | None = None) -> dict[str, list[dict]]:
+        """按代码批量取日序列 → {代码: [{date, out_key}]}; 空值行跳过 (不补 0), 非请求代码忽略。"""
+        wanted = {_six(s): s for s in symbols if s}
+        out: dict[str, list[dict]] = {s: [] for s in wanted.values()}
+        if not wanted:
+            return out
+        rows = self._get_client().query(api, {"symbols": ",".join(sorted(wanted)), **params}, fields, service=service)
+        for row in rows:
+            symbol = wanted.get(_six(str(row.get("symbol") or "")))
+            day, value = _parse_ymd(row.get(date_key)), _to_float(row.get(value_key))
+            if symbol is not None and day is not None and value is not None:
+                out[symbol].append({"date": day.isoformat(), out_key: value})
+        for series in out.values():
+            series.sort(key=lambda item: item["date"])
+        return out
+
+    def get_fund_flow(self, symbols: list[str], start: date, end: date) -> dict[str, list[dict]]:
+        """日主力净额 `fundflow_kp` (live 服务, 元, 流出为负) → {代码: [{date, main_net}]}。上游失败抛异常。"""
+        return self._series("fundflow_kp", symbols, {"startdate": _ymd(start), "enddate": _ymd(end)},
+                            "tradedate", "main_net_amount", "main_net", service="live")
+
+    def get_fund_flow_now(self, symbols: list[str]) -> dict[str, dict]:
+        """当日累计主力净额 `screening` (盘中约 4 分钟更新一次) → {代码: {date, main_net}}; 无值的代码不返回。"""
+        series = self._series("screening", symbols, {}, "tradedate", "main_net_amount", "main_net",
+                              service="live", fields="symbol,tradedate,main_net_amount")
+        return {symbol: rows[-1] for symbol, rows in series.items() if rows}
+
+    def get_margin_balance(self, symbols: list[str], start: date, end: date) -> dict[str, list[dict]]:
+        """融资余额 `margin_detail` (history 服务, 元, T-1 滞后) → {代码: [{date, financing_balance}]}。"""
+        return self._series("margin_detail", symbols, {"startdate": _ymd(start), "enddate": _ymd(end)},
+                            "tradedate", "financing_balance", "financing_balance", service="history")
+
+    def get_northbound(self, symbol: str, as_of: date) -> list[dict]:
+        """北向持股 `northbound_holding` 最近两期 (季度披露): [{date, shares 股, ratio 占 A 股比例小数制}]。
+
+        厂商返回港交所中央结算编码 (如 600519 → 90519), 不能当代码用; 以 6 位代码单只查询, 服务端
+        完成映射, 返回行即属于该代码。无记录返回 [] (不在股通名单或无披露, 不是 0 股)。
+        """
+        rows = self._get_client().query(
+            "northbound_holding", {"symbols": _six(symbol), "startdate": _ymd(as_of - timedelta(days=400)),
+                                   "enddate": _ymd(as_of)}, service="history")
+        points = []
+        for row in rows:
+            day, shares, ratio = _parse_ymd(row.get("trade_date")), _to_float(row.get("vol")), _to_float(row.get("ratio"))
+            if day is not None and shares is not None:
+                points.append({"date": day.isoformat(), "shares": shares,
+                               "ratio": ratio / 100.0 if ratio is not None else None})
+        points.sort(key=lambda item: item["date"])
+        return points[-2:]
 
     def get_limit_events(self, day: date) -> pl.DataFrame:
         """`limit_pool` (2017 起): 涨跌停与炸板明细。pct_chg 百分数 → 小数制。"""

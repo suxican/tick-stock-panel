@@ -5,6 +5,7 @@ import { api, type HoldingAnalysisOverview, type HoldingAnalysisProfile, type Ho
 import { QK } from '@/lib/queryKeys'
 import { fmtPct, fmtPrice } from '@/lib/format'
 import { cn } from '@/lib/cn'
+import { HoldingFundDetails } from './FundEvidence'
 import { beijingDate, buttonClass, Empty, Field, formatTime, inputClass, Notice, primaryClass } from './positionTShared'
 
 const ageLabels = { new: '刚建仓', holding: '持有中', overdue: '超过计划周期', unknown: '建仓时间未知' }
@@ -198,6 +199,7 @@ function AnalysisEvidence({ row }: { row: HoldingAnalysisRow }) {
     <RiskDetails status={row.risk_status} />
     <EventDetails events={row.events} />
     <AuthenticDetails value={row.jx_authentic} />
+    <HoldingFundDetails value={row.fund_evidence} />
     <div><h5 className="font-medium text-foreground">本次研究设置</h5><div className="mt-2 space-y-2 leading-relaxed text-secondary"><p>操作周期 {row.profile.horizon === 'short' ? '短线' : '波段'} · 预计最长 {row.profile.max_holding_days} 个交易日 · 最大亏损阈值 {row.profile.max_loss_pct == null ? '未设定' : `${row.profile.max_loss_pct}%`}</p><p className="whitespace-pre-wrap break-words">买入理由：{row.profile.thesis || '未填写'}</p><p className="whitespace-pre-wrap break-words">研究失效条件：{row.profile.invalidation || '未填写'}</p></div></div>
     <div><h5 className="font-medium text-foreground">价格与技术依据</h5><p className="mt-2 leading-relaxed text-secondary">参考价 {price(row.price.value)} · 行情日期 {row.price.date ?? '未知'} · {sourceName}{!row.price.fresh && '（非新鲜盘中报价）'} · 市场时间 {formatTime(row.price.market_at)}</p><dl className="mt-2 grid grid-cols-2 gap-x-5 gap-y-2 sm:grid-cols-4">{[['支撑', row.technicals.support], ['压力', row.technicals.resistance], ['20日均线', row.technicals.ma20], ['60日均线', row.technicals.ma60]].map(([label, value]) => <div key={String(label)} className="flex justify-between gap-2 border-b border-border/60 py-2"><dt className="text-secondary">{label}</dt><dd className="font-mono text-foreground">{price(value as number | null)}</dd></div>)}</dl></div>
     <div><h5 className="font-medium text-foreground">关联板块与覆盖</h5>{!row.sectors.length ? <p className="mt-2 text-secondary">板块关联未知，无法判断相对强弱。</p> : <ul className="mt-2 divide-y divide-border/60">{row.sectors.map(sector => <li key={sector.key} className="space-y-1 py-2"><div className="flex flex-wrap justify-between gap-2"><span className="text-foreground">{sector.name || sector.key}</span><span className="font-mono text-foreground">{percent(sector.change_ratio)}</span></div><p className="break-words leading-relaxed text-secondary">有效成分 {sector.valid_count} / {sector.member_count} · 覆盖 {Number.isFinite(sector.coverage_ratio) ? `${(sector.coverage_ratio * 100).toFixed(1)}%` : '未知'} · {sector.valid ? '可用于本次比较' : '覆盖不足，不参与强弱判断'} · 来源 {sector.source_id || '未知'}</p></li>)}</ul>}</div>

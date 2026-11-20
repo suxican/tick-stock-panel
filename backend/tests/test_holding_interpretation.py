@@ -60,3 +60,17 @@ async def test_failure_does_not_expose_provider_secrets(monkeypatch, report):
     with pytest.raises(ResearchError) as error:
         await module.interpret_report(report)
     assert "secret-key" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_prompt_forbids_inferring_fund_intent(monkeypatch, report):
+    calls = []
+
+    async def generate(messages, **kwargs):
+        calls.append(messages)
+        return json.dumps({"summary_focus": "data", "observations": [
+            {"key": "h_a", "focus": "data", "evidence_indices": [0]}]}, ensure_ascii=False)
+
+    monkeypatch.setattr(module, "generate_ai_text", generate)
+    await module.interpret_report(report)
+    assert "不得据此推断主力意图" in calls[0][0]["content"]

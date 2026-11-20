@@ -272,3 +272,16 @@ def test_input_is_not_mutated_and_unfinished_bar_not_used():
     b[-1]["complete"] = False
     result = evaluate_candidate(b, q, e, p, a, n + timedelta(seconds=12), "buy_sell", c)
     assert result["state"] == "paused"
+
+
+@pytest.mark.parametrize("fund", [None, {"status": "unavailable"},
+                                  {"status": "ok", "main_net": -9.9e9, "unit": "元"},
+                                  {"status": "ok", "main_net": 9.9e9, "unit": "元"}])
+@pytest.mark.parametrize("direction", ["buy_sell", "sell_buy"])
+def test_fund_evidence_rides_on_signal_but_never_changes_decision(direction, fund):
+    """资金证据只随信号保存: 无论缺失、不可用或极端数值, 状态/价位/数量/原因都与不带资金证据时逐字段相同。"""
+    bars, quote, env, position, account, now, config = sample_context(direction)
+    base = evaluate_candidate(bars, quote, env, position, account, now, direction, config)
+    with_fund = evaluate_candidate(bars, quote, {**env, "fund_evidence": fund}, position, account, now, direction, config)
+    assert with_fund["fund_evidence"] == fund
+    assert {k: v for k, v in with_fund.items() if k != "fund_evidence"} ==         {k: v for k, v in base.items() if k != "fund_evidence"}

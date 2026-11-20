@@ -607,3 +607,32 @@ def test_analysis_lists_theme_authenticity_as_evidence(tmp_path, monkeypatch):
     assert row["jx_authentic"]["themes"][0]["theme_name"] == "锂电池"
     assert row["evidence"][-2] == theme_authenticity.authenticity_evidence(row["jx_authentic"])
     assert row["plan"]["can_adopt"] is True
+
+
+def test_analysis_fund_evidence_is_display_only(tmp_path, monkeypatch):
+    """资金证据只展示: 有无该证据, 采纳条件、情景价位与风险指纹完全一致; 不可用不当作 0。"""
+    from app.services import earnings_events, fund_evidence
+
+    repo = Repo(tmp_path)
+    save_lot(repo)
+    _reference(monkeypatch, {"st": {}, "suspensions": {}})
+    monkeypatch.setattr(earnings_events, "fetch_events", lambda symbols, as_of: None)
+    fund_evidence._cache.clear()
+    plain = analyze(repo)["rows"][0]  # 默认无资金数据源: 全部不可用
+    assert plain["fund_evidence"]["main_net"]["status"] == "unavailable"
+    text = fund_evidence.evidence_text(plain["fund_evidence"])
+    assert text in plain["evidence"] and "资金数据不可用" in text
+
+    raw = {"days": ["2026-10-29", "2026-10-30", "2026-11-02", "2026-11-03", "2026-11-04"],
+           "fetched_at": NOW.isoformat(), "sources": {"flow": "x", "margin": "x"}, "dragon": None, "north": {},
+           "flow": {SYMBOL: [{"date": "2026-11-04", "main_net": -2.5e8}]},
+           "margin": {SYMBOL: []}}
+    calls = []
+    monkeypatch.setattr(fund_evidence, "fetch_holdings",
+                        lambda symbols, now, data_dir: calls.append((symbols, now, data_dir)) or raw)
+    rich = analyze(repo)["rows"][0]
+    assert calls == [([SYMBOL], NOW, tmp_path)]
+    assert rich["fund_evidence"]["main_net"]["total"] == -2.5e8 and rich["fund_evidence"]["margin"]["status"] == "empty"
+    assert fund_evidence.evidence_text(rich["fund_evidence"]) in rich["evidence"]
+    assert rich["plan"] == plain["plan"] and rich["risk_status"] == plain["risk_status"]
+    assert rich["constraints"] == plain["constraints"] and rich["warnings"] == plain["warnings"]
