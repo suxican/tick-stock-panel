@@ -25,6 +25,7 @@ import { fmtBigNum, fmtPct, priceColorClass } from '@/lib/format'
 import { cn } from '@/lib/cn'
 import { resolveDimension, type DimensionGroup, type StockRow } from '@/lib/analysis-adapter'
 import { SectorRotationCard } from '@/components/SectorRotationCard'
+import { ThemeAttributionPanel } from './ThemeAttributionPanel'
 
 const KEYWORDS = ['concept', '概念', 'theme', '题材', '板块']
 const CANDIDATE_FIELDS = ['concept', '概念', 'theme', '题材', '板块', 'concept_name', '概念名称']
@@ -306,6 +307,8 @@ export function ConceptAnalysis() {
       .filter(s => s.count > 0)
   }, [resolved.groups, marketMap])
 
+  const conceptKeySet = useMemo(() => new Set(stats.map(s => s.key)), [stats])
+
   const filteredStats = useMemo(() => {
     const q = search.trim().toLowerCase()
     const base = q ? stats.filter(s => s.key.toLowerCase().includes(q)) : stats
@@ -402,6 +405,8 @@ export function ConceptAnalysis() {
       <div className="min-h-full bg-[radial-gradient(circle_at_12%_0%,rgba(59,130,246,0.12),transparent_28%),radial-gradient(circle_at_85%_8%,rgba(244,63,94,0.08),transparent_28%)] px-6 py-5">
         <div className="mx-auto max-w-[1440px] space-y-5">
           <SectorRotationCard kind="concept" />
+
+          <ThemeAttributionPanel conceptKeys={conceptKeySet} onSelectConcept={key => { setSearch(''); setSelectedKey(key) }} />
 
           <HeroPanel leading={leading[0]} falling={falling[0]} activeConcept={activeConcept} conceptBreadth={conceptBreadth} />
 

@@ -199,7 +199,9 @@ def _six(symbol: str) -> str:
 _REASON_MAP = {"kpl": "reason_main_kpl", "jygs": "reason_main_jygs", "jygs_detail": "reason_jygs",
                "xgb": "reason_xgb"}
 _REASON_FIELDS = "tradedate,symbol,type," + ",".join(_REASON_MAP.values())
-_AUCTION_FIELDS = "tradedate,symbol,auc_pct_chg,auc_amt,auc_vol_ratio,ztwme"
+# 2026-11-20 专业版实测: 只有这三个榜单有数据 (同花顺人气/东财人气/同花顺飙升)
+_HOT_STOCK_TYPES = {"ths_normal": "ths&normal", "dfcf_renqi": "dfcf&renqi", "ths_trend": "ths&trend"}
+_AUCTION_FIELDS ="tradedate,symbol,auc_pct_chg,auc_amt,auc_vol_ratio,ztwme"
 _DEPTH_BATCH = 500  # tick 单次代码数 (实测 1000 只可用, 留余量)
 _TICK_QUOTE_BATCH = 1000  # 全市场 tick 被截断时的回退分批 (实测 1000 只/请求可用)
 _PREV_FIELDS = "tradedate,symbol,name,pre_close"
@@ -1392,6 +1394,89 @@ class MeozProvider:
             symbol = _full_symbol(row.get("symbol"), universe)
             if symbol and any(item.values()):
                 out.append({"symbol": symbol, **item})
+        return out
+
+    def _query_retry(self, api: str, params: dict) -> list[dict]:
+        """盘中偶发 502: 重试至多 2 次再抛出。"""
+        client = self._get_client()
+        for attempt in range(3):
+            try:
+                return client.query(api, params)
+            except MeozAuthError:
+                raise
+            except MeozError as exc:
+                if attempt == 2 or "502" not in str(exc):
+                    raise
+                time_mod.sleep(1.0)
+        return []  # pragma: no cover
+
+    def get_theme_reasons(self, day: date) -> dict:
+        """`theme_reason` 板块原因 (选股宝 xgb / 韭菜公社 jygs): {rows, failed}。
+
+        题材 ID 是各来源自己的体系, 只能按名称与本地板块对接; 接口无更新时间字段。
+        单个来源失败记入 failed, 不当作无数据; 两个来源都失败才抛异常。
+        """
+        params_day = {} if day == cn_now().date() else {"tradedate": _ymd(day)}
+        rows: list[dict] = []
+        failed: list[str] = []
+        last_error: MeozError | None = None
+        for source in ("xgb", "jygs"):
+            try:
+                data = self._query_retry("theme_reason", {"source": source, **params_day})
+            except MeozAuthError:
+                raise
+            except MeozError as exc:
+                failed.append(source)
+                last_error = exc
+                continue
+            for row in data:
+                if str(row.get("tradedate") or _ymd(day)) != _ymd(day):
+                    continue
+                name, reason = str(row.get("name") or "").strip(), str(row.get("reason") or "").strip()
+                if name:
+                    rows.append({"source": source, "theme_id": str(row.get("symbol") or ""),
+                                 "name": name, "reason": reason})
+        if len(failed) == 2 and last_error is not None:
+            raise last_error
+        return {"rows": rows, "failed": failed}
+
+    def get_hot_stocks(self, kind: str, day: date | None = None) -> list[dict]:
+        """`hotstock` 个股热榜 → [{symbol, rank, name, pct_chg 小数制}]。
+
+        实时返回无排名字段 (行序即名次) 且无时间戳; 历史 (2026-07 起) 只有代码与名次。
+        """
+        if kind not in _HOT_STOCK_TYPES:
+            raise ValueError(f"未知热榜: {kind}")
+        params = {"type": _HOT_STOCK_TYPES[kind]}
+        if day is not None:
+            params["tradedate"] = _ymd(day)
+        rows = self._query_retry("hotstock", params)
+        universe = self._universe_map()
+        out = []
+        for index, row in enumerate(rows, start=1):
+            symbol = _full_symbol(row.get("s"), universe)
+            rank = _to_int(row.get("rank")) or (index if day is None else None)
+            if symbol is None or rank is None:
+                continue
+            pct = _to_float(row.get("pc"))
+            out.append({"symbol": symbol, "rank": rank, "name": row.get("n") or None,
+                        "pct_chg": pct / 100.0 if pct is not None else None})
+        return out
+
+    def get_theme_hot(self) -> list[dict]:
+        """`theme_hot_kp` 板块热搜 (只有最新榜单, 无历史): updated_at 作为可用时间。"""
+        out = []
+        for row in self._query_retry("theme_hot_kp", {}):
+            rank = _to_int(row.get("rank"))
+            if rank is None or not row.get("theme_name"):
+                continue
+            try:
+                at = datetime.strptime(str(row.get("updated_at")), "%Y-%m-%d %H:%M:%S").replace(tzinfo=CN_TZ)
+                available_at = at.isoformat(timespec="seconds")
+            except ValueError:
+                available_at = None
+            out.append({"rank": rank, "theme_id": str(row.get("theme_symbol") or ""),
+                        "name": str(row["theme_name"]), "available_at": available_at})
         return out
 
     def ws_ticket(self, body: dict) -> dict:

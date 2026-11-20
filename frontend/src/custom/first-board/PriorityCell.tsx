@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { FirstBoardCandidate, FirstBoardPriority, FirstBoardPriorityStatus, FirstBoardRadarBoard } from '@/lib/api'
+import { MeozHotEvidence } from './MeozHotEvidence'
 import { pct, stamp } from './shared'
 
 const statusLabels: Record<FirstBoardPriorityStatus, string> = {
@@ -85,8 +86,8 @@ export function PrioritySummary({ row, current }: { row: Pick<FirstBoardCandidat
   </div>
 }
 
-export function PriorityCell({ row, current, archived = false }: {
-  row: Pick<FirstBoardCandidate, 'priority_score' | 'last_priority'>; current: boolean; archived?: boolean
+export function PriorityCell({ row, current, archived = false, symbol }: {
+  row: Pick<FirstBoardCandidate, 'priority_score' | 'last_priority'>; current: boolean; archived?: boolean; symbol?: string
 }) {
   const [expanded, setExpanded] = useState(false)
   const p = row.priority_score
@@ -124,6 +125,7 @@ export function PriorityCell({ row, current, archived = false }: {
           : <p>{popularity?.status === 'unranked' ? '当时完整人气榜未上榜' : '当时人气榜待确认'}{popularity?.fetched_at && ` · 获取 ${stamp(popularity.fetched_at)}`}</p>}
         {theme?.source === 'official_core' && <RadarBoard entry={theme} />}
         {vendorBoards(p.radar).map(entry => <RadarBoard key={`${entry.plate_type}-${entry.tid}`} entry={entry} />)}
+        {current && !archived && symbol && <MeozHotEvidence symbol={symbol} boardName={group?.name} />}
         <p>{p.reason}</p>
       </div>}
     </details>}

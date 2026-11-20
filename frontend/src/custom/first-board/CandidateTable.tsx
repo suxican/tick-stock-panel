@@ -192,7 +192,7 @@ function CandidateEvidence({ row, current, day, stockReasons }: { row: FirstBoar
     </section>
     <section className="min-w-0 space-y-2">
       <h4 className="font-medium">评分与日线</h4>
-      <PriorityCell row={row} current={current} />
+      <PriorityCell row={row} current={current} symbol={row.symbol} />
       <TechnicalEvidence facts={row.evidence} pattern={row.pattern} day={day} historical={!current || row.priority_score?.status === 'stale'} />
     </section>
     <section className="min-w-0 space-y-2">

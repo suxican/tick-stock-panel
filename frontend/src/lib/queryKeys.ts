@@ -126,6 +126,8 @@ export const QK = {
   kaipanlaStatus:       ['kaipanla', 'status'] as const,
   kaipanla:             (date?: string) => ['kaipanla', 'intraday', date ?? 'today'] as const,
   meozLimitReasons:     (date: string) => ['meoz', 'limit-reasons', date] as const,
+  meozThemeReasons:     (date: string) => ['meoz', 'theme-reasons', date] as const,
+  meozHotRank:          ['meoz', 'hot-rank'] as const,
 
   // Backtest
   backtestStatus:       ['backtest-status'] as const,

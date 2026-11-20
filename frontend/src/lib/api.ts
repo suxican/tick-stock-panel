@@ -1204,6 +1204,33 @@ export interface MeozLimitReasons {
   rows: MeozLimitReason[]
 }
 
+/** 猫爪板块原因 (选股宝 / 韭菜公社); 题材 ID 是各来源自己的体系, 只能按名称对接, 接口无更新时间 */
+export interface MeozThemeReason {
+  source: 'xgb' | 'jygs'
+  theme_id: string
+  name: string
+  reason: string
+}
+export interface MeozThemeReasons {
+  date: string
+  source: 'live' | 'archive'
+  final: boolean
+  rows: MeozThemeReason[]
+  /** 本次取数失败的来源: 显示「来源不可用」, 不能当作无题材 */
+  unavailable_sources: ('xgb' | 'jygs')[]
+  fetched_at: string | null
+}
+
+/** 猫爪热榜: 个股热榜 (无上游时间戳, 只有获取时间) 与板块热搜 (带上游更新时间) */
+export type MeozHotStockKind = 'ths_normal' | 'dfcf_renqi' | 'ths_trend'
+export interface MeozHotStock { symbol: string; rank: number; name: string | null; pct_chg: number | null }
+export interface MeozHotTheme { rank: number; theme_id: string; name: string; available_at: string | null }
+export interface MeozHotRank {
+  fetched_at: string
+  stocks: Record<MeozHotStockKind, { available: boolean; rows: MeozHotStock[] }>
+  themes: { available: boolean; rows: MeozHotTheme[] }
+}
+
 export interface KplSnapshot {
   date: string
   fetched_at: string
@@ -4171,6 +4198,9 @@ export const api = {
     request<KplSnapshot>(`/api/kaipanla/intraday${date ? `?date=${date}` : ''}`, { quiet: true, timeoutMs: 90_000 }),
   meozLimitReasons: (date: string) =>
     request<MeozLimitReasons>(`/api/meoz/limit-reasons?date=${date}`, { quiet: true, timeoutMs: 60_000 }),
+  meozThemeReasons: (date: string) =>
+    request<MeozThemeReasons>(`/api/meoz/theme-reasons?date=${date}`, { quiet: true, timeoutMs: 60_000 }),
+  meozHotRank: () => request<MeozHotRank>('/api/meoz/hot-rank', { quiet: true, timeoutMs: 60_000 }),
   huichunConfig: () => request<HuichunConfig>('/api/huichun/config', { quiet: true }),
   huichunSaveConfig: (body: { rules: HuichunRules; expected_revision: number }) => request<HuichunConfig>('/api/huichun/config', {
     method: 'PUT', body: JSON.stringify(body), quiet: true,
