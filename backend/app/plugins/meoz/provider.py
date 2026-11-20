@@ -1502,6 +1502,81 @@ class MeozProvider:
                         "name": str(row["theme_name"]), "available_at": available_at})
         return out
 
+    def get_strongest_vent(self, day: date | None = None) -> list[dict]:
+        """`fengk_kp` 最强风口个股榜 (上游已按 strength 降序), pct_chg 上游为百分数, 这里转小数制。
+
+        `tradedate` 有效 (`date` 无效); signal_time 秒级时间戳 → 北京时间 ISO; 题材按「、」拆分。
+        """
+        rows = self._query_retry("fengk_kp", {"tradedate": _ymd(day)} if day is not None else {})
+        universe = self._universe_map()
+        out = []
+        for row in rows:
+            symbol = _full_symbol(row.get("symbol"), universe)
+            strength = _to_int(row.get("strength"))
+            if symbol is None or strength is None:
+                continue
+            pct = _to_float(row.get("pct_chg"))
+            stamp = _to_float(row.get("signal_time"))
+            try:
+                signal_at = (datetime.fromtimestamp(stamp, CN_TZ).isoformat(timespec="seconds")
+                             if stamp else None)
+            except (OverflowError, OSError, ValueError):
+                signal_at = None
+            themes = list(dict.fromkeys(
+                t.strip() for t in str(row.get("selected_themes") or "").split("、") if t.strip()))
+            out.append({
+                "symbol": symbol, "name": str(row.get("name") or "").strip(), "strength": strength,
+                "pct_chg": pct / 100.0 if pct is not None else None,
+                "main_net_amount": _to_float(row.get("main_net_amount")),
+                "main_buy_amount": _to_float(row.get("main_buy_amount")),
+                "main_sell_amount": _to_float(row.get("main_sell_amount")),
+                "signal_at": signal_at, "themes": themes,
+            })
+        if rows and not out:
+            raise MeozError(f"fengk_kp 返回 {len(rows)} 行但全部无法解析")
+        return out
+
+    def get_news(self, limit: int = 50) -> list[dict]:
+        """`news` 资讯 (只有当天): 只保留展示字段, 丢弃 image/rank 等。
+
+        `display_at` 无时区, 按北京时间补 +08:00 (推断, 待与 time_label 实测核对)。
+        标题为空或 display_at 无法解析的行跳过。
+        """
+        rows = self._query_retry("news", {"limit": limit})
+        out = []
+        seen_ids: set[str] = set()
+        for row in rows:
+            title = str(row.get("title") or "").strip()
+            if not title:
+                continue
+            try:
+                display_at = datetime.fromisoformat(str(row.get("display_at")).strip())
+            except ValueError:
+                continue
+            display_at = (display_at.replace(tzinfo=CN_TZ) if display_at.tzinfo is None
+                          else display_at.astimezone(CN_TZ))
+            source = str(row.get("source") or "").strip()
+            source_id = str(row.get("source_id") or "").strip() or title
+            item_id = f"{source}:{source_id}"
+            if item_id in seen_ids:
+                continue
+            seen_ids.add(item_id)
+            out.append({
+                "id": item_id,
+                "published_at": str(row["published_at"]) if row.get("published_at") else None,
+                "display_at": display_at.isoformat(timespec="seconds"),
+                "time_label": str(row["time_label"]).strip() if row.get("time_label") else None,
+                "source": source,
+                "source_name": str(row.get("source_name") or "").strip() or source,
+                "title": title,
+                "summary": str(row.get("summary") or "").strip() or None,
+                "url": str(row.get("url") or "").strip() or None,
+                "item_type": str(row["item_type"]).strip() if row.get("item_type") else None,
+            })
+        if rows and not out:
+            raise MeozError(f"news 返回 {len(rows)} 行但全部无法解析")
+        return out
+
     def ws_ticket(self, body: dict) -> dict:
         """实时订阅票据 (异动订阅 WebSocket); 返回的 url 含票据, 调用方不得记录。"""
         return self._get_client().ws_ticket(body)

@@ -1238,6 +1238,45 @@ export interface MeozHotRank {
   themes: { available: boolean; rows: MeozHotTheme[] }
 }
 
+/** 猫爪最强风口 (fengk_kp 个股榜, 已按强度降序); pct_chg 是小数制 (0.1003 = 10.03%), 金额单位元 */
+export interface MeozStrongestVentRow {
+  symbol: string
+  name: string
+  strength: number
+  pct_chg: number | null
+  main_net_amount: number | null
+  main_buy_amount: number | null
+  main_sell_amount: number | null
+  /** 信号时间 (北京时间 ISO) */
+  signal_at: string | null
+  themes: string[]
+}
+export interface MeozStrongestVent {
+  fetched_at: string
+  /** 回看日期; 实时为 null */
+  trade_date: string | null
+  rows: MeozStrongestVentRow[]
+}
+
+/** 猫爪新闻 (news): 只保留展示字段, 不含图片与正文; display_at 为北京时间 ISO */
+export interface MeozNewsRow {
+  id: string
+  published_at: string | null
+  display_at: string
+  time_label: string | null
+  source: string
+  source_name: string
+  title: string
+  summary: string | null
+  url: string | null
+  item_type: string | null
+}
+export interface MeozNews {
+  fetched_at: string
+  rows: MeozNewsRow[]
+  sources: { source: string; source_name: string }[]
+}
+
 export interface KplSnapshot {
   date: string
   fetched_at: string
@@ -4245,6 +4284,11 @@ export const api = {
   meozThemeReasons: (date: string) =>
     request<MeozThemeReasons>(`/api/meoz/theme-reasons?date=${date}`, { quiet: true, timeoutMs: 60_000 }),
   meozHotRank: () => request<MeozHotRank>('/api/meoz/hot-rank', { quiet: true, timeoutMs: 60_000 }),
+  meozStrongestVent: (date?: string) =>
+    request<MeozStrongestVent>(date ? `/api/meoz/strongest-vent?date=${date}` : '/api/meoz/strongest-vent',
+      { quiet: true, timeoutMs: 60_000 }),
+  meozNews: (limit = 50) =>
+    request<MeozNews>(`/api/meoz/news?limit=${limit}`, { quiet: true, timeoutMs: 60_000 }),
   huichunConfig: () => request<HuichunConfig>('/api/huichun/config', { quiet: true }),
   huichunSaveConfig: (body: { rules: HuichunRules; expected_revision: number }) => request<HuichunConfig>('/api/huichun/config', {
     method: 'PUT', body: JSON.stringify(body), quiet: true,

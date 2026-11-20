@@ -217,3 +217,32 @@ describe('bellwether widget params', () => {
     expect(twice.filter(it => it.t === 'bellwether')).toHaveLength(1)
   })
 })
+
+describe('hot-search widget params', () => {
+  const item = (p?: Record<string, unknown>) => ({ v: 1, items: [{ i: 'hot-search', t: 'hot-search', x: 0, y: 0, w: 4, h: 10, ...(p ? { p } : {}) }] })
+  it('is registered as a single-instance built-in, not in the default layout', () => {
+    expect(isKnownWidgetType('hot-search')).toBe(true)
+    expect(DEFAULT_LAYOUT.some(it => it.t === 'hot-search')).toBe(false)
+  })
+  it('keeps a valid kind and drops anything else', () => {
+    expect(normalizeDashboardLayout(item({ kind: 'themes' }))[0].p).toEqual({ kind: 'themes' })
+    expect(normalizeDashboardLayout(item({ kind: 'bogus', url: 'https://example.com' }))[0].p).toBeUndefined()
+    expect(normalizeDashboardLayout(item())[0].p).toBeUndefined()
+  })
+})
+
+describe('news widget params', () => {
+  const item = (p?: Record<string, unknown>) => ({ v: 1, items: [{ i: 'news', t: 'news', x: 0, y: 0, w: 4, h: 12, ...(p ? { p } : {}) }] })
+  it('is registered as a single-instance built-in, not in the default layout', () => {
+    expect(isKnownWidgetType('news')).toBe(true)
+    expect(DEFAULT_LAYOUT.some(it => it.t === 'news')).toBe(false)
+  })
+  it('keeps only a valid source and drops other keys and values', () => {
+    expect(normalizeDashboardLayout(item({ source: 'all' }))[0].p).toEqual({ source: 'all' })
+    expect(normalizeDashboardLayout(item({ source: 'cls_depth_1000', url: 'https://example.com' }))[0].p).toEqual({ source: 'cls_depth_1000' })
+    expect(normalizeDashboardLayout(item({ source: 'bad source!' }))[0].p).toBeUndefined()
+    expect(normalizeDashboardLayout(item({ source: 'x'.repeat(41) }))[0].p).toBeUndefined()
+    expect(normalizeDashboardLayout(item({ source: 5, url: 'https://example.com' }))[0].p).toBeUndefined()
+    expect(normalizeDashboardLayout(item())[0].p).toBeUndefined()
+  })
+})

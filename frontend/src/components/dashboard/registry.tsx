@@ -8,7 +8,7 @@ import type { CSSProperties } from 'react'
 import type { ReactNode } from 'react'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowUpRight, BarChart3, BellRing, Compass, Flame, Gauge, LineChart, Link2, Sparkles, Target, TrendingUp, TrendingDown, Coins, Repeat } from 'lucide-react'
+import { ArrowUpRight, BarChart3, BellRing, Compass, Flame, Gauge, LineChart, Link2, Newspaper, Sparkles, Target, TrendingUp, TrendingDown, Coins, Repeat } from 'lucide-react'
 import type { AlertEvent, OverviewMarket } from '@/lib/api'
 import { fmtBigNum } from '@/lib/format'
 import type { DimensionMembersTarget } from '@/components/DimensionMembersDialog'
@@ -22,6 +22,9 @@ import {
 import type { DashboardItem, WidgetType } from './layout'
 import { ExternalLinkWidget } from './ExternalLinkWidget'
 import { BellwetherWidget } from './BellwetherWidget'
+import { HotSearchWidget } from './HotSearchWidget'
+import { NewsWidget } from './NewsWidget'
+import { StrongestVentWidget } from './StrongestVentWidget'
 
 /** 渲染上下文: 数据切片与交互回调(由 Dashboard 页提供, 组件不自取数据) */
 export interface WidgetCtx {
@@ -37,6 +40,8 @@ export interface WidgetCtx {
   openAlert: (ev: AlertEvent, navList?: { symbol: string; name?: string }[]) => void
   /** 看板选中的是最新交易日(非历史回看) */
   isLatestDate: boolean
+  /** 看板选中的交易日 (YYYY-MM-DD), 回看历史日的组件按它取数, 不要用 isLatestDate 反推 */
+  tradeDate: string
   /** 更新某个组件实例的参数(随布局保存), 如风向标的范围 */
   updateItemParams: (id: string, p: Record<string, string>) => void
 }
@@ -272,6 +277,37 @@ export const WIDGET_DEFS: WidgetDef[] = [
         isLatestDate={ctx.isLatestDate}
         onScopeChange={scope => ctx.updateItemParams(item.i, { scope })}
         onOpenStock={(symbol, name, navList) => ctx.openStock('bellwether', symbol, name, navList)}
+      />
+    ),
+  },
+  {
+    id: 'hot-search', label: '实时热搜', icon: Flame, minW: 3, minH: 7, defW: 4, defH: 10,
+    render: (ctx, item) => (
+      <HotSearchWidget
+        kind={item.p?.kind}
+        isLatestDate={ctx.isLatestDate}
+        onKindChange={kind => ctx.updateItemParams(item.i, { kind })}
+        onOpenStock={(s, n, nav) => ctx.openStock('hot-search', s, n, nav)}
+      />
+    ),
+  },
+  {
+    id: 'strongest-vent', label: '最强风口', icon: Compass, minW: 3, minH: 7, defW: 4, defH: 9,
+    render: ctx => (
+      <StrongestVentWidget
+        tradeDate={ctx.tradeDate}
+        isLatestDate={ctx.isLatestDate}
+        onOpenStock={(s, n, nav) => ctx.openStock('strongest-vent', s, n, nav)}
+      />
+    ),
+  },
+  {
+    id: 'news', label: '新闻', icon: Newspaper, minW: 3, minH: 8, defW: 4, defH: 12,
+    render: (ctx, item) => (
+      <NewsWidget
+        source={item.p?.source}
+        isLatestDate={ctx.isLatestDate}
+        onSourceChange={source => ctx.updateItemParams(item.i, { source })}
       />
     ),
   },

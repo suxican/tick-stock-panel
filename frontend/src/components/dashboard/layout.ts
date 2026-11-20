@@ -19,7 +19,7 @@ export type WidgetType =
   | 'indices' | 'kpi' | 'distribution' | 'radar' | 'trend'
   | 'concept-rank' | 'industry-rank'
   | 'gainers' | 'losers' | 'turnover' | 'activity'
-  | 'ladder' | 'monitor' | 'bellwether' | 'ext-link'
+  | 'ladder' | 'monitor' | 'bellwether' | 'hot-search' | 'strongest-vent' | 'news' | 'ext-link'
 
 export interface DashboardItem {
   /** 实例 id: 内置组件 = type; 外部链接 = ext-link-<seq> */
@@ -103,6 +103,14 @@ export function normalizeLayout(
       // 风向标只保留合法的范围参数; 未知值丢弃, 组件按默认「大盘」显示
       const scope = (r.p as Record<string, unknown> | undefined)?.scope
       if (scope === 'market' || scope === 'holdings' || scope === 'watchlist') item = { ...item, p: { scope } }
+    } else if (t === 'hot-search') {
+      // 实时热搜只保留合法的榜单参数; 未知值丢弃, 组件按默认「同花顺人气」显示
+      const kind = (r.p as Record<string, unknown> | undefined)?.kind
+      if (kind === 'ths_normal' || kind === 'dfcf_renqi' || kind === 'ths_trend' || kind === 'themes') item = { ...item, p: { kind } }
+    } else if (t === 'news') {
+      // 新闻只保留来源筛选参数 ('all' 或合法来源 id); 其它键值丢弃, 组件按默认「全部」显示
+      const source = (r.p as Record<string, unknown> | undefined)?.source
+      if (typeof source === 'string' && (source === 'all' || /^[A-Za-z0-9_]{1,40}$/.test(source))) item = { ...item, p: { source } }
     }
     out.push(item)
   }

@@ -1,5 +1,6 @@
 """猫爪个股涨停归因的只读入口 (连板梯队展示用)。"""
 
+import logging
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Request
@@ -8,8 +9,14 @@ from app.extensions import BACKEND_EXTENSION_API_VERSION, BackendExtensionRegist
 from app.services.meoz_hot_rank import HotRankUnavailableError
 from app.services.meoz_hot_rank import read as read_hot_rank
 from app.services.meoz_limit_reasons import ReasonsUnavailableError, read
+from app.services.meoz_news import NewsUnavailableError
+from app.services.meoz_news import read as read_news
+from app.services.meoz_strongest_vent import StrongestVentUnavailableError
+from app.services.meoz_strongest_vent import read as read_strongest_vent
 from app.services.meoz_theme_reasons import ThemeReasonsUnavailableError
 from app.services.meoz_theme_reasons import read as read_theme_reasons
+
+logger = logging.getLogger(__name__)
 
 EXTENSION_ID = "meoz.limit_reasons"
 EXTENSION_API_VERSION = BACKEND_EXTENSION_API_VERSION
@@ -49,6 +56,32 @@ def hot_rank() -> dict:
         raise HTTPException(503, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, "猫爪热榜暂时不可用，请稍后重试") from exc
+
+
+@router.get("/strongest-vent")
+def strongest_vent(date: date | None = None) -> dict:
+    try:
+        return read_strongest_vent(date)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except StrongestVentUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except Exception as exc:
+        logger.warning("猫爪最强风口取数失败", exc_info=True)
+        raise HTTPException(502, "猫爪最强风口暂时不可用，请稍后重试") from exc
+
+
+@router.get("/news")
+def news(limit: int = 50) -> dict:
+    try:
+        return read_news(limit)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except NewsUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except Exception as exc:
+        logger.warning("猫爪新闻取数失败", exc_info=True)
+        raise HTTPException(502, "猫爪新闻暂时不可用，请稍后重试") from exc
 
 
 def setup(registrar: BackendExtensionRegistrar) -> None:
