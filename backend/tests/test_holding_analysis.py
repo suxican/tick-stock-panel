@@ -618,7 +618,9 @@ def test_analysis_fund_evidence_is_display_only(tmp_path, monkeypatch):
     _reference(monkeypatch, {"st": {}, "suspensions": {}})
     monkeypatch.setattr(earnings_events, "fetch_events", lambda symbols, as_of: None)
     fund_evidence._cache.clear()
-    plain = analyze(repo)["rows"][0]  # 默认无资金数据源: 全部不可用
+    # 打桩为「资金数据整体不可用」, 避免在配置了真实 Key 的机器上访问真实接口
+    monkeypatch.setattr(fund_evidence, "fetch_holdings", lambda symbols, now, data_dir: None)
+    plain = analyze(repo)["rows"][0]  # 资金数据不可用: 全部标记不可用
     assert plain["fund_evidence"]["main_net"]["status"] == "unavailable"
     text = fund_evidence.evidence_text(plain["fund_evidence"])
     assert text in plain["evidence"] and "资金数据不可用" in text
