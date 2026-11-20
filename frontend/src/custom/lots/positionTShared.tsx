@@ -15,7 +15,8 @@ export function formatTime(value?: string | null) {
 }
 export const money = (n?: number | null) => n == null || !Number.isFinite(n) ? '待核对' : `¥${n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 export const priceRange = (p: [number, number] | null | undefined) => p?.every(Number.isFinite) ? `${p[0].toFixed(2)} — ${p[1].toFixed(2)}` : '数据不足'
-export const newKey = () => crypto.randomUUID()
+// HTTP 非 localhost 部署不是安全上下文, crypto.randomUUID 不存在, 需回退
+export const newKey = () => globalThis.crypto?.randomUUID?.() ?? `k_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`
 export function usePositionTClock() {
   const [now, setNow] = useState(Date.now)
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer) }, [])
