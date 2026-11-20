@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Bell, RefreshCw } from 'lucide-react'
-import { api, type HoldingAnalysisOverview, type HoldingAnalysisProfile, type HoldingAnalysisReport, type HoldingAnalysisRiskStatus, type HoldingAnalysisRow, type HoldingAnalysisSavedPlan, type HoldingAnalysisSource } from '@/lib/api'
+import { api, type HoldingAnalysisOverview, type HoldingAnalysisProfile, type HoldingAnalysisReport, type HoldingAnalysisEvents, type HoldingAnalysisRiskStatus, type HoldingAnalysisRow, type HoldingAnalysisSavedPlan, type HoldingAnalysisSource } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { fmtPct, fmtPrice } from '@/lib/format'
 import { cn } from '@/lib/cn'
@@ -129,6 +129,27 @@ function InterpretationPanel({ report, disabled }: { report: HoldingAnalysisRepo
   </div>
 }
 
+const signedPct = (value: number | null | undefined) => value == null || !Number.isFinite(value) ? '未知' : `${value >= 0 ? '+' : ''}${(value * 100).toFixed(0)}%`
+
+function EventDetails({ events }: { events?: HoldingAnalysisEvents }) {
+  if (!events) return null
+  if (!events.available) return <div><h5 className="font-medium text-foreground">近期事件</h5><p className="mt-2 text-secondary">业绩事件来源不可用，不能视为无事件。</p></div>
+  const { forecast, express, next_disclosure: next } = events
+  return <div><h5 className="font-medium text-foreground">近期事件</h5><ul className="mt-2 list-disc space-y-1 pl-4 leading-relaxed text-secondary">
+    <li>{forecast ? `业绩预告：${forecast.report_period} 报告期 ${forecast.type ?? '类型未知'}，净利润同比 ${signedPct(forecast.change_min)}～${signedPct(forecast.change_max)}（${forecast.announce_date} 公告）` : '近 120 天无业绩预告'}</li>
+    <li>{express ? `业绩快报：${express.report_period} 报告期，净利润同比 ${signedPct(express.net_profit_yoy)}（${express.announce_date} 公告）` : '近 120 天无业绩快报'}</li>
+    <li className={events.disclosure_in_horizon ? 'text-foreground' : undefined}>{next ? `下一次定期报告：${next.report_period} 报告期，预约 ${next.date} 披露${events.disclosure_in_horizon ? '（在计划持有期内）' : ''}` : '下一次定期报告预约披露日未公布'}</li>
+  </ul><p className="mt-1 text-secondary">只列已发布事实与日期，不代表业绩判断。</p></div>
+}
+
+function AuthenticDetails({ value }: { value?: HoldingAnalysisRow['jx_authentic'] }) {
+  if (!value) return null
+  const themes = value.themes ?? []
+  return <div><h5 className="font-medium text-foreground">精选板块正宗度</h5><p className="mt-2 leading-relaxed text-secondary">{!value.available ? '来源不可用，不能视为不正宗。'
+    : !themes.length ? '未列入任何精选板块的最正宗名单。'
+    : themes.map(theme => `${theme.theme_name || theme.theme_id}（最正宗，当日 ${theme.change_pct == null ? '涨跌未知' : `${theme.change_pct >= 0 ? '+' : ''}${(theme.change_pct * 100).toFixed(2)}%`}）`).join('；')}</p>{value.available && <p className="mt-1 text-secondary">数据源精选板块的当前名单，仅作参考，不改变主要关联板块。</p>}</div>
+}
+
 function RiskBadge({ status }: { status?: HoldingAnalysisRiskStatus }) {
   const items = riskItems(status)
   const hits = items.filter(item => !riskUnknown(item.id)).length
@@ -138,7 +159,7 @@ function RiskBadge({ status }: { status?: HoldingAnalysisRiskStatus }) {
 
 function RiskDetails({ status }: { status?: HoldingAnalysisRiskStatus }) {
   const items = riskItems(status)
-  if (!items.length) return <div><h5 className="font-medium text-foreground">风险状态</h5><p className="mt-2 text-secondary">截至 {status?.as_of ?? '未知'} 未命中 ST、停牌名单。</p></div>
+  if (!items.length) return <div><h5 className="font-medium text-foreground">风险状态</h5><p className="mt-2 text-secondary">截至 {status?.as_of ?? '未知'} 未命中 ST、停牌、重点监控与严重异动预测。</p></div>
   return <div><h5 className="font-medium text-foreground">风险状态</h5><p className="mt-1 text-secondary">截至 {status?.as_of ?? '未知'} · 来源：交易所按日名单（当前数据源）</p><ul className="mt-2 list-disc space-y-1 pl-4 leading-relaxed text-secondary">{items.map(item => <li key={item.id}><span className="text-foreground">{item.label}</span>{item.detail && `：${item.detail}`}</li>)}</ul></div>
 }
 
@@ -157,7 +178,7 @@ function AnalysisRow({ row, expired, adoptDisabled, onAdopt, onEdit }: { row: Ho
   const risks = riskItems(row.risk_status)
   return <article className="min-w-0 space-y-3 p-3 sm:p-4">
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div className="min-w-0"><h4 className="break-words text-sm font-semibold text-foreground">{row.name || row.symbol} <span className="font-mono text-xs font-normal text-secondary">{row.symbol}</span></h4><div className="mt-2 flex flex-wrap gap-1.5">{[ageLabels[row.age_state], pnlLabels[row.pnl_state], trendLabels[row.trend], strengthLabels[row.relative_strength]].map(label => <span key={label} className="rounded border border-border bg-elevated px-2 py-0.5 text-xs text-foreground">{label}</span>)}<RiskBadge status={row.risk_status} /></div></div>
+      <div className="min-w-0"><h4 className="break-words text-sm font-semibold text-foreground">{row.name || row.symbol} <span className="font-mono text-xs font-normal text-secondary">{row.symbol}</span></h4><div className="mt-2 flex flex-wrap gap-1.5">{[ageLabels[row.age_state], pnlLabels[row.pnl_state], trendLabels[row.trend], strengthLabels[row.relative_strength]].map(label => <span key={label} className="rounded border border-border bg-elevated px-2 py-0.5 text-xs text-foreground">{label}</span>)}<RiskBadge status={row.risk_status} />{row.events?.disclosure_in_horizon && <span className="rounded border border-border bg-elevated px-2 py-0.5 text-xs text-foreground">披露日在持有期内</span>}</div></div>
       <div className="text-xs text-secondary"><span className="block">参考成本价差</span><span className="mt-1 block font-mono text-sm text-foreground">{percent(row.pnl_ratio)}</span></div>
     </div>
     <p className="text-xs leading-relaxed text-foreground">{row.plan.summary}</p>
@@ -175,6 +196,8 @@ function AnalysisEvidence({ row }: { row: HoldingAnalysisRow }) {
   const sourceName = row.price.source === 'quote' ? '行情快照' : row.price.source === 'daily' ? '日线参考' : '来源未知'
   return <>
     <RiskDetails status={row.risk_status} />
+    <EventDetails events={row.events} />
+    <AuthenticDetails value={row.jx_authentic} />
     <div><h5 className="font-medium text-foreground">本次研究设置</h5><div className="mt-2 space-y-2 leading-relaxed text-secondary"><p>操作周期 {row.profile.horizon === 'short' ? '短线' : '波段'} · 预计最长 {row.profile.max_holding_days} 个交易日 · 最大亏损阈值 {row.profile.max_loss_pct == null ? '未设定' : `${row.profile.max_loss_pct}%`}</p><p className="whitespace-pre-wrap break-words">买入理由：{row.profile.thesis || '未填写'}</p><p className="whitespace-pre-wrap break-words">研究失效条件：{row.profile.invalidation || '未填写'}</p></div></div>
     <div><h5 className="font-medium text-foreground">价格与技术依据</h5><p className="mt-2 leading-relaxed text-secondary">参考价 {price(row.price.value)} · 行情日期 {row.price.date ?? '未知'} · {sourceName}{!row.price.fresh && '（非新鲜盘中报价）'} · 市场时间 {formatTime(row.price.market_at)}</p><dl className="mt-2 grid grid-cols-2 gap-x-5 gap-y-2 sm:grid-cols-4">{[['支撑', row.technicals.support], ['压力', row.technicals.resistance], ['20日均线', row.technicals.ma20], ['60日均线', row.technicals.ma60]].map(([label, value]) => <div key={String(label)} className="flex justify-between gap-2 border-b border-border/60 py-2"><dt className="text-secondary">{label}</dt><dd className="font-mono text-foreground">{price(value as number | null)}</dd></div>)}</dl></div>
     <div><h5 className="font-medium text-foreground">关联板块与覆盖</h5>{!row.sectors.length ? <p className="mt-2 text-secondary">板块关联未知，无法判断相对强弱。</p> : <ul className="mt-2 divide-y divide-border/60">{row.sectors.map(sector => <li key={sector.key} className="space-y-1 py-2"><div className="flex flex-wrap justify-between gap-2"><span className="text-foreground">{sector.name || sector.key}</span><span className="font-mono text-foreground">{percent(sector.change_ratio)}</span></div><p className="break-words leading-relaxed text-secondary">有效成分 {sector.valid_count} / {sector.member_count} · 覆盖 {Number.isFinite(sector.coverage_ratio) ? `${(sector.coverage_ratio * 100).toFixed(1)}%` : '未知'} · {sector.valid ? '可用于本次比较' : '覆盖不足，不参与强弱判断'} · 来源 {sector.source_id || '未知'}</p></li>)}</ul>}</div>

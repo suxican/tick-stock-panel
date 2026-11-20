@@ -168,6 +168,17 @@ it('shows which sector the environment used, including auto association', async 
   await render(<Opportunity signal={signal} position={position} unavailable={false} onCreated={vi.fn()} />)
   expect(host.textContent).toContain('未关联，板块环境缺失')
 })
+it('requires acknowledging every risk flag before building a plan', async () => {
+  const flags = [{ id: 'monitored' as const, label: '交易所重点监控', detail: '交易所风险提示 2026-11-19 至 2026-12-02', source: 'exchange_daily' },
+    { id: 'anomaly_unknown' as const, label: '严重异动预测不可用', detail: '无法确认是否接近严重异常波动', source: null }]
+  await render(<Opportunity signal={{ ...signal, risk_flags: flags }} position={position} unavailable={false} onCreated={vi.fn()} />)
+  const button = () => [...host.querySelectorAll('button')].find(item => item.textContent?.trim() === '建立计划并预留')!
+  expect(button().disabled).toBe(true)
+  for (const box of [...host.querySelectorAll<HTMLInputElement>('input[type="checkbox"][aria-label^="已知悉"]')]) await act(async () => box.click())
+  expect(button().disabled).toBe(false)
+  await click('建立计划并预留')
+  expect(mocks.createPlan).toHaveBeenCalledWith(expect.objectContaining({ acknowledged_risks: ['monitored', 'anomaly_unknown'] }))
+})
 it('expires old opportunities and rejects unknown expiry', async () => {
   await render(<Opportunity signal={{ ...signal, expires_at: '2020-01-01T00:00:00+08:00' }} unavailable={false} onCreated={vi.fn()} />)
   expect(host.textContent).toContain('已过期')

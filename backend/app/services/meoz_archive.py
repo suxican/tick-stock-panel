@@ -25,8 +25,12 @@ PROVIDER = "meoz"
 ROOT = ("meoz_archive", "v1")
 # 与 plugins.meoz.provider.ARCHIVE_DATASETS 一致; 这里单列, 插件未加载时状态页仍能列出
 DATASETS = ("theme_catalog", "theme_members", "jx_members", "thememinute_jx",
-            "themefundflow_jx", "theme_hot_kp", "point_monitor", "anomaly_forecast")
+            "themefundflow_jx", "theme_hot_kp", "point_monitor", "anomaly_forecast", "jx_authentic")
 READY_AT = time(15, 30)
+# 监管名单与严重异动预测"当天为空"是常态 (无监控股/无预测), 晚间补存轮仍为空时写 0 行文件,
+# 读取方据此区分「无」与「不可用」; 15:40 那轮为空可能是上游尚未更新, 不写, 留给晚间补存。
+EMPTY_RECORDED = ("point_monitor", "anomaly_forecast")
+EMPTY_FINAL_AT = time(20, 30)
 
 _write_lock = Lock()
 _last_run: dict[Path, dict] = {}
@@ -42,6 +46,8 @@ def _path(data_dir: Path, dataset: str, day: date) -> Path:
 
 def _frame(rows: list[dict], fetched_at: str) -> pl.DataFrame:
     # 列表/字典字段转 JSON 文本, 其余标量原样; 全部按字符串推断以免混合类型整批失败
+    if not rows:  # 0 行留档: 只保留 fetched_at 列 (常量列不能广播出一行)
+        return pl.DataFrame(schema={"fetched_at": pl.String})
     columns = list(dict.fromkeys(key for row in rows for key in row))
     flat = [{key: _scalar(row.get(key)) for key in columns} for row in rows]
     frame = pl.DataFrame(flat, schema={key: pl.String for key in columns}, orient="row")
@@ -89,7 +95,7 @@ def archive_today(data_dir: Path, datasets: tuple[str, ...] = DATASETS) -> dict:
             logger.warning("猫爪留档 %s 失败: %s", dataset, exc)
             results[dataset] = {"state": "error", "error": str(exc)[:200]}
             continue
-        if not rows:
+        if not rows and not (dataset in EMPTY_RECORDED and now.time() >= EMPTY_FINAL_AT):
             results[dataset] = {"state": "empty"}
             continue
         frame = _frame(rows, now.isoformat(timespec="seconds"))

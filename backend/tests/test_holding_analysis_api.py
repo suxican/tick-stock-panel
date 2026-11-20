@@ -25,7 +25,7 @@ def client(tmp_path, monkeypatch):
               "positions": [{"key": "h_test", "symbol": "600000.SH"}], "warnings": []}
     monkeypatch.setattr(api, "read_inputs", lambda *_a, **_k: deepcopy(inputs))
     risk = {"current": CLEAN_RISK}
-    monkeypatch.setattr(analysis, "current_risk", lambda _symbol, _now=None: deepcopy(risk["current"]))
+    monkeypatch.setattr(analysis, "current_risk", lambda _symbol, _now=None, **_k: deepcopy(risk["current"]))
     row = {"key": "h_test", "symbol": "600000.SH", "name": "测试股份", "asset_type": "stock",
            "warnings": [], "price": {"fresh": True}, "risk_status": deepcopy(CLEAN_RISK),
            "plan": {"can_adopt": True, "expires_on": cn_now().date().isoformat(),

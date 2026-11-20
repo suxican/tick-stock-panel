@@ -351,3 +351,33 @@ it('warns on a saved plan whose risk status changed after adoption', async () =>
   await render()
   expect(host.textContent).toContain('风险状态已变化')
 })
+
+it('shows recent earnings events and flags a disclosure inside the holding horizon', async () => {
+  mocks.analyze.mockResolvedValue({ ...report, rows: [{ ...row, events: { available: true, forecast: { report_period: '2026-09-30', announce_date: '2026-10-15', type: '预增', change_min: .3, change_max: .5 }, express: null, next_disclosure: { report_period: '2026-12-31', date: '2026-11-25' }, disclosure_in_horizon: true } }] })
+  await render(); await click('生成分析')
+  expect(host.textContent).toContain('披露日在持有期内')
+  expect(host.textContent).toContain('业绩预告：2026-09-30 报告期 预增，净利润同比 +30%～+50%（2026-10-15 公告）')
+  expect(host.textContent).toContain('近 120 天无业绩快报')
+  expect(host.textContent).toContain('预约 2026-11-25 披露（在计划持有期内）')
+})
+
+it('shows an unavailable earnings source instead of no events', async () => {
+  mocks.analyze.mockResolvedValue({ ...report, rows: [{ ...row, events: { available: false } }] })
+  await render(); await click('生成分析')
+  expect(host.textContent).toContain('业绩事件来源不可用，不能视为无事件')
+  expect(host.textContent).not.toContain('披露日在持有期内')
+})
+
+it('shows theme authenticity as evidence and an unavailable source distinctly', async () => {
+  mocks.analyze.mockResolvedValue({ ...report, rows: [{ ...row, jx_authentic: { available: true, themes: [{ theme_id: '801004k', theme_name: '锂电池', change_pct: -0.03452 }] } }] })
+  await render(); await click('生成分析')
+  expect(host.textContent).toContain('锂电池（最正宗，当日 -3.45%）')
+  expect(host.textContent).toContain('不改变主要关联板块')
+})
+
+it('does not treat an unavailable authenticity source as not authentic', async () => {
+  mocks.analyze.mockResolvedValue({ ...report, rows: [{ ...row, jx_authentic: { available: false } }] })
+  await render(); await click('生成分析')
+  expect(host.textContent).toContain('来源不可用，不能视为不正宗')
+  expect(host.textContent).not.toContain('未列入任何精选板块')
+})

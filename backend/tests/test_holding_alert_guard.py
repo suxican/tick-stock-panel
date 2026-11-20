@@ -13,7 +13,7 @@ from app.strategy import monitor_rules
 from app.strategy.monitor import MonitorRuleEngine
 
 
-def test_guard_requires_fresh_quote_current_source_and_live_worker(tmp_path, monkeypatch):
+def test_guard_requires_current_source_plan_and_live_worker(tmp_path, monkeypatch):
     now = cn_now()
     store = HoldingAnalysisStore(tmp_path)
     keys = ["h_test"]
@@ -32,7 +32,7 @@ def test_guard_requires_fresh_quote_current_source_and_live_worker(tmp_path, mon
     inputs = {"input_version": "v1", "positions": [{"key": keys[0]}]}
     monkeypatch.setattr("app.services.holding_alert_guard.read_inputs", lambda *_a: inputs)
     risk = {"fingerprint": "clean"}
-    monkeypatch.setattr("app.services.holding_analysis.current_risk", lambda _s, _now=None: {"items": [], **risk})
+    monkeypatch.setattr("app.services.holding_analysis.current_risk", lambda _s, _now=None, **_k: {"items": [], **risk})
     clock = [now]
     quote = {"600000.SH": {"timestamp": int(now.timestamp() * 1000), "last_price": 10, "prev_close": 10}}
     guard = HoldingAlertGuard(SimpleNamespace(store=SimpleNamespace(data_dir=tmp_path)),
@@ -61,7 +61,8 @@ def test_guard_requires_fresh_quote_current_source_and_live_worker(tmp_path, mon
     inputs["input_version"] = "v1"
     quote["600000.SH"]["timestamp"] -= 60_000
     guard.refresh()
-    assert not guard.allow(rule, now.timestamp())
+    # 报价新鲜度改由引擎在评估那一刻按所用报价判断; 守卫只管计划、版本、风险与昨收基准
+    assert guard.allow(rule, now.timestamp())
     quote["600000.SH"]["timestamp"] = int(now.timestamp() * 1000)
     clock[0] = now + timedelta(days=1)
     guard.refresh()
@@ -73,7 +74,8 @@ def test_engine_holding_rules_fail_closed_and_compare_raw_prices():
     rule = {"id": "ha_test", "name": "研究价格提醒", "type": "price", "enabled": True,
             "scope": "symbols", "symbols": ["600000.SH"], "holding_plan_id": "hap_test",
             "conditions": [{"field": "raw_close", "op": "<=", "value": 10}], "cooldown_seconds": 0}
-    frame = pl.DataFrame({"symbol": ["600000.SH"], "close": [20.], "raw_close": [9.], "change_pct": [-.01]})
+    frame = pl.DataFrame({"symbol": ["600000.SH"], "close": [20.], "raw_close": [9.], "change_pct": [-.01],
+                          "quote_ts": [95_000]})
     assert not engine._evaluate_rule(frame, rule, 100.)
     engine.set_holding_alert_guard(lambda _rule, _now: True)
     events = engine._evaluate_rule(frame, rule, 100.)
@@ -126,3 +128,23 @@ def test_revoke_waits_for_old_refresh_before_clearing_admission(tmp_path, monkey
         cancellation.join(2)
     assert revoked.is_set()
     assert not guard.allow({"id": "ha_test", "holding_plan_id": "hap_test"}, now.timestamp())
+
+
+def test_engine_holding_rules_require_fresh_quote_at_evaluation():
+    """全市场行情到手已晚 6-9 秒; 新鲜度在引擎评估时按触发所用的同一份报价判断 (不超过 10 秒)。"""
+    engine = MonitorRuleEngine()
+    engine.set_holding_alert_guard(lambda _rule, _now: True)
+    rule = {"id": "ha_fresh", "name": "研究价格提醒", "type": "price", "enabled": True,
+            "scope": "symbols", "symbols": ["600000.SH"], "holding_plan_id": "hap_test",
+            "conditions": [{"field": "raw_close", "op": "<=", "value": 10}], "cooldown_seconds": 0}
+
+    def frame(quote_ts):
+        return pl.DataFrame({"symbol": ["600000.SH"], "close": [20.], "raw_close": [9.], "change_pct": [-.01],
+                             "quote_ts": [quote_ts]}, schema_overrides={"quote_ts": pl.Int64})
+
+    assert len(engine._evaluate_rule(frame(91_000), rule, 100.)) == 1  # 9 秒前: 放行
+    assert not engine._evaluate_rule(frame(89_000), rule, 100.)  # 11 秒前: 不触发, 等下一轮
+    assert not engine._evaluate_rule(frame(101_000), rule, 100.)  # 晚于评估时刻: 时间异常
+    assert not engine._evaluate_rule(frame(None), rule, 100.)  # 缺报价时间: 不触发
+    no_ts = pl.DataFrame({"symbol": ["600000.SH"], "close": [20.], "raw_close": [9.], "change_pct": [-.01]})
+    assert not engine._evaluate_rule(no_ts, rule, 100.)

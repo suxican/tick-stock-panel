@@ -523,3 +523,21 @@ def test_sector_time_is_median_of_members_so_one_illiquid_stock_does_not_stale_i
     adapter.sectors.members_for = Mock(return_value=set(ages))
     env = adapter.collect([pos], accounts, now)[("a", "600000.SH")]["environment"]
     assert env["sector_ts"] == (now - timedelta(seconds=2)).isoformat()
+
+
+def test_collect_attaches_regulatory_risk_flags(tmp_path, monkeypatch):
+    from app.services import regulatory_reference
+
+    adapter, pos, accounts, _fetch, now = _market_context(tmp_path, monkeypatch)
+    calls = []
+
+    def fake(day, data_dir):
+        calls.append(day)
+        return {"monitor": None, "anomaly": {"600000": {"rule": "30日偏离值-70%", "trigger_price": 9.5,
+                                                        "required_pct": -0.05, "status": "reachable"}}}
+
+    monkeypatch.setattr(regulatory_reference, "regulatory_reference", fake)
+    env = adapter.collect([pos], accounts, now)[("a", "600000.SH")]["environment"]
+    assert [f["id"] for f in env["risk_flags"]] == ["monitor_unknown", "anomaly_forecast"]
+    adapter.collect([pos], accounts, now + timedelta(seconds=5))
+    assert calls == [now.date()]  # 盘中按日缓存, 不每轮读盘

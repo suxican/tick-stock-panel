@@ -185,6 +185,11 @@ class PositionTSimulation:
             aid = signal["account_id"]
             if signal.get("state") != "triggered" or not self._enabled(self.store.get_account(aid)):
                 continue
+            if signal.get("risk_flags"):
+                # 无人确认风险提示, 自动模拟不新建计划; 已有计划的风险退出不受影响
+                labels = "、".join(flag["label"] for flag in signal["risk_flags"])
+                self._status(aid, "paused", now, [f"{signal['symbol']} {labels}，自动模拟暂停新建计划"])
+                continue
             plan = None
             try:
                 data = outputs.get((aid, signal["symbol"]), {})

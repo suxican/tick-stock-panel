@@ -455,8 +455,14 @@ def test_evidence_states_unknown_values_without_manufacturing_explanations(tmp_p
 
 # ---- 风险状态 (ST / 停牌, 来自按日交易所参考数据) ----
 
-def _reference(monkeypatch, tables, seen=None):
-    from app.services import market_reference
+NO_REGULATORY = {"monitor": {}, "anomaly": {}}
+
+
+def _reference(monkeypatch, tables, seen=None, regulatory=None):
+    from app.services import market_reference, regulatory_reference
+
+    monkeypatch.setattr(regulatory_reference, "regulatory_reference",
+                        lambda day, data_dir: regulatory if regulatory is not None else NO_REGULATORY)
 
     def fake(day):
         if seen is not None:
@@ -470,11 +476,11 @@ def test_risk_status_hits_st_and_suspension(monkeypatch):
     from app.services.holding_analysis import risk_status
 
     _reference(monkeypatch, {"st": {SYMBOL: "*ST"}, "suspensions": {SYMBOL: None}})
-    status = risk_status(SYMBOL, date(2026, 11, 5))
+    status = risk_status(SYMBOL, date(2026, 11, 5), regulatory=NO_REGULATORY)
     assert [(i["id"], i["detail"]) for i in status["items"]] == [("st", "*ST"), ("suspended", "全天")]
     assert status["as_of"] == "2026-11-05" and status["fingerprint"]
     _reference(monkeypatch, {"st": {}, "suspensions": {}})
-    clean = risk_status(SYMBOL, date(2026, 11, 5))
+    clean = risk_status(SYMBOL, date(2026, 11, 5), regulatory=NO_REGULATORY)
     assert clean["items"] == [] and clean["fingerprint"] != status["fingerprint"]
 
 
@@ -483,8 +489,9 @@ def test_risk_status_unknown_when_tables_missing(monkeypatch):
 
     _reference(monkeypatch, {})
     status = risk_status(SYMBOL, date(2026, 11, 5))
-    assert [i["id"] for i in status["items"]] == ["st_unknown", "suspension_unknown"]
-    assert [i["id"] for i in risk_status(SYMBOL, None)["items"]] == ["st_unknown", "suspension_unknown"]
+    unknown = ["st_unknown", "suspension_unknown", "monitor_unknown", "anomaly_unknown"]
+    assert [i["id"] for i in status["items"]] == unknown  # 未提供监管名单同样视为不可用
+    assert [i["id"] for i in risk_status(SYMBOL, None)["items"]] == unknown
 
 
 def test_risk_status_uses_latest_session_on_weekend():
@@ -504,3 +511,99 @@ def test_risk_does_not_change_ready(tmp_path, monkeypatch):
     assert [i["id"] for i in row["risk_status"]["items"]] == ["st"]
     assert row["plan"]["can_adopt"] is True
     assert seen == [NOW.date()]  # 一次分析只读一次当日参考数据
+
+
+def test_risk_status_is_cited_as_template_evidence(tmp_path, monkeypatch):
+    """AI 解读只能引用程序证据; 风险状态以模板文字进入 evidence, 不当作无风险。"""
+    from app.services.holding_analysis import risk_evidence
+
+    repo = Repo(tmp_path)
+    save_lot(repo)
+    _reference(monkeypatch, {"st": {SYMBOL: "*ST"}, "suspensions": None})
+    row = analyze(repo)["rows"][0]
+    assert row["evidence"][-1] == risk_evidence(row["risk_status"])
+    assert risk_evidence(row["risk_status"]) == "风险状态（截至 2026-11-05，交易所按日名单）：风险警示（*ST）；停牌名单不可用（无法确认当日是否停牌）"
+    assert risk_evidence({"items": [], "as_of": "2026-11-05"}) == "风险状态（截至 2026-11-05，交易所按日名单）：未命中 ST、停牌、重点监控与严重异动预测"
+
+
+def test_regulatory_items_monitor_anomaly_and_unknown():
+    from app.services.holding_analysis import regulatory_items
+
+    regulatory = {"monitor": {"600000": [{"label": "交易所风险提示", "start": "2026-11-19", "end": "2026-12-02",
+                                          "reason": "股价累计涨幅较大"}]},
+                  "anomaly": {"600000": {"rule": "30日偏离值-70%", "trigger_price": 5.99, "required_pct": -0.049,
+                                         "status": "reachable"}}}
+    items = regulatory_items(SYMBOL, regulatory)
+    assert [(i["id"], i["detail"]) for i in items] == [
+        ("monitored", "交易所风险提示 2026-11-19 至 2026-12-02：股价累计涨幅较大"),
+        ("anomaly_forecast", "30日偏离值-70%，触发价 5.99，需涨跌 -4.90%，涨跌停内可触及")]
+    assert regulatory_items(SYMBOL, NO_REGULATORY) == []
+    assert [i["id"] for i in regulatory_items(SYMBOL, {"monitor": None, "anomaly": {}})] == ["monitor_unknown"]
+
+
+def test_analysis_reads_regulatory_for_next_trading_session(tmp_path, monkeypatch):
+    """盘中针对当天, 收盘后与周末针对下一交易日 (异动预测作用于次日)。"""
+    from app.services.holding_analysis import trade_day
+
+    assert trade_day(NOW) == NOW.date()
+    assert trade_day(NOW.replace(hour=16)) == date(2026, 11, 6)
+    assert trade_day(datetime(2026, 11, 7, 10, tzinfo=CN_TZ)) == date(2026, 11, 9)
+    repo = Repo(tmp_path)
+    save_lot(repo)
+    _reference(monkeypatch, {"st": {}, "suspensions": {}},
+               regulatory={"monitor": None, "anomaly": {"600000": {"rule": "r", "trigger_price": None,
+                                                                   "required_pct": None, "status": None}}})
+    row = analyze(repo)["rows"][0]
+    assert [i["id"] for i in row["risk_status"]["items"]] == ["monitor_unknown", "anomaly_forecast"]
+    assert row["plan"]["can_adopt"] is True  # 风险只列事实, 不改变研究结论
+
+
+def test_analysis_lists_recent_earnings_events_as_evidence(tmp_path, monkeypatch):
+    """业绩事件只作证据与提示: 列在依据中 (风险状态之前), 不改变采纳条件。"""
+    from app.services import earnings_events
+
+    repo = Repo(tmp_path)
+    save_lot(repo)
+    _reference(monkeypatch, {"st": {}, "suspensions": {}})
+    calls = []
+
+    def fake(symbols, as_of):
+        calls.append((symbols, as_of))
+        return {SYMBOL: {"forecast": None, "express": None,
+                         "disclosures": [{"report_period": "2026-12-31", "scheduled_date": "2026-11-06",
+                                          "actual_date": None}]}}
+
+    monkeypatch.setattr(earnings_events, "fetch_events", fake)
+    row = analyze(repo)["rows"][0]
+    assert calls == [([SYMBOL], NOW.date())]
+    assert row["events"]["available"] is True and row["events"]["disclosure_in_horizon"] is True
+    assert earnings_events.event_evidence(row["events"], NOW.date()) in row["evidence"]
+    assert row["plan"]["can_adopt"] is True
+
+
+def test_analysis_marks_unavailable_earnings_source(tmp_path, monkeypatch):
+    from app.services import earnings_events
+
+    repo = Repo(tmp_path)
+    save_lot(repo)
+    _reference(monkeypatch, {"st": {}, "suspensions": {}})
+    monkeypatch.setattr(earnings_events, "fetch_events", lambda symbols, as_of: None)
+    row = analyze(repo)["rows"][0]
+    assert row["events"] == {"available": False}
+    assert any("业绩事件来源不可用" in item for item in row["evidence"])
+
+
+def test_analysis_lists_theme_authenticity_as_evidence(tmp_path, monkeypatch):
+    """精选板块正宗度只作证据: 列在依据中 (风险状态之前), 不改变主要关联板块与采纳条件。"""
+    from app.services import earnings_events, theme_authenticity
+
+    repo = Repo(tmp_path)
+    save_lot(repo)
+    _reference(monkeypatch, {"st": {}, "suspensions": {}})
+    monkeypatch.setattr(earnings_events, "fetch_events", lambda symbols, as_of: None)
+    monkeypatch.setattr(theme_authenticity, "fetch_authenticity", lambda symbols: {
+        SYMBOL: [{"theme_id": "801004k", "theme_name": "锂电池", "change_pct": -0.03452}]})
+    row = analyze(repo)["rows"][0]
+    assert row["jx_authentic"]["themes"][0]["theme_name"] == "锂电池"
+    assert row["evidence"][-2] == theme_authenticity.authenticity_evidence(row["jx_authentic"])
+    assert row["plan"]["can_adopt"] is True

@@ -246,10 +246,26 @@ def risk_day(now):
     return days[-1] if days else None
 
 
-def risk_status(symbol, day, reference=None):
-    """按日 ST / 停牌名单给出风险事实; 名单未落盘为"不可用", 不当作无风险。
+def trade_day(now):
+    """监管风险针对的交易日: 交易日收盘 (15:00) 前为当天, 之后或非交易日为下一交易日。"""
+    try:
+        days = load_market_calendar(BUNDLED_CALENDAR_PATH, start=now.date(), end=now.date() + timedelta(days=20))
+    except (ValueError, OSError):
+        return None
+    if days and days[0] == now.date() and now.time() < CLOSE_CUTOFF:
+        return days[0]
+    later = [d for d in days if d > now.date()]
+    return later[0] if later else None
 
-    只列事实, 不改变研究结论、情景或价位。reference 可传入同日已读取的结果以免重复读取。
+
+from app.services.regulatory_reference import risk_items as regulatory_items  # noqa: E402
+
+
+def risk_status(symbol, day, reference=None, regulatory=None):
+    """按日 ST / 停牌名单与监管名单给出风险事实; 名单未落盘为"不可用", 不当作无风险。
+
+    只列事实, 不改变研究结论、情景或价位。reference 可传入同日已读取的结果以免重复读取;
+    regulatory 为 regulatory_reference 的结果, 未提供即为不可用。
     """
     if reference is None and day is not None:
         from app.services import market_reference
@@ -269,13 +285,32 @@ def risk_status(symbol, day, reference=None):
     elif symbol in suspensions:
         items.append({"id": "suspended", "label": "停牌", "detail": suspensions[symbol] or "全天",
                       "source": "exchange_daily"})
+    items.extend(regulatory_items(symbol, regulatory))
     as_of = day.isoformat() if day else None
     return {"items": items, "as_of": as_of, "fingerprint": _hash([symbol, items])}
 
 
-def current_risk(symbol, now=None):
+def risk_evidence(status):
+    """风险状态的程序模板文字, 供报告依据与 AI 解读引用 (模型不得自行生成风险结论)。"""
+    head = f"风险状态（截至 {status.get('as_of') or '未知'}，交易所按日名单）："
+    items = status.get("items") or []
+    if not items:
+        return head + "未命中 ST、停牌、重点监控与严重异动预测"
+    return head + "；".join(f"{item['label']}（{item['detail']}）" if item.get("detail") else item["label"]
+                            for item in items)
+
+
+def regulatory_for(now, data_dir):
+    from app.services.regulatory_reference import regulatory_reference
+
+    target = trade_day(now)
+    return regulatory_reference(target, data_dir) if target is not None else None
+
+
+def current_risk(symbol, now=None, data_dir=None):
     """采纳、概览与提醒复核用的当前风险状态 (与生成报告同一口径)。"""
-    return risk_status(symbol, risk_day(now or datetime.now(CN_TZ)))
+    now = now or datetime.now(CN_TZ)
+    return risk_status(symbol, risk_day(now), regulatory=regulatory_for(now, data_dir))
 
 
 def risk_changed(row, current):
@@ -609,6 +644,15 @@ def analyze_holdings(repo, quote_service, sector_service, position_service, sour
         from app.services import market_reference
 
         risk_reference = market_reference.day_reference(risk_on)
+    risk_regulatory = regulatory_for(now, getattr(getattr(repo, "store", None), "data_dir", None))
+    from app.services import earnings_events
+
+    # 业绩事件只作证据与提示 (不进入风险确认); 来源不可用为 None, 不当作无事件
+    events_raw = earnings_events.fetch_events(sorted(symbols), now.date()) if symbols else None
+    from app.services import theme_authenticity
+
+    # 精选板块正宗度只作证据 (精选板块不在本地目录, 不改变主要关联板块); 不可用不当作不正宗
+    authentic_raw = theme_authenticity.fetch_authenticity(sorted(symbols)) if symbols else None
     rows = []
     for position in inputs["positions"]:
         try:
@@ -623,7 +667,14 @@ def analyze_holdings(repo, quote_service, sector_service, position_service, sour
             row["plan"]["can_adopt"] = False
             for scenario in row["plan"]["scenarios"]:
                 scenario["price_trigger"] = None
-        row["risk_status"] = risk_status(row["symbol"], risk_on, risk_reference)
+        if row.get("asset_type") == "stock":
+            raw = events_raw.get(row["symbol"]) if isinstance(events_raw, dict) else None
+            row["events"] = earnings_events.summarize(raw, now.date(), _day(row["plan"].get("expires_on")))
+            row["evidence"].append(earnings_events.event_evidence(row["events"], now.date()))
+            row["jx_authentic"] = theme_authenticity.summarize(authentic_raw, row["symbol"])
+            row["evidence"].append(theme_authenticity.authenticity_evidence(row["jx_authentic"]))
+        row["risk_status"] = risk_status(row["symbol"], risk_on, risk_reference, risk_regulatory)
+        row["evidence"].append(risk_evidence(row["risk_status"]))
         rows.append(row)
     after = read_inputs(repo, position_service, source, account_id)
     if after["input_version"] != inputs["input_version"]:

@@ -52,6 +52,18 @@ class PositionTMarket:
         self._instrument_day = None
         self._metadata_at = None
         self._sessions = {}
+        self._regulatory = (None, None, None)  # (交易日, 读取时刻, 结果)
+
+    def _regulatory_reference(self, now):
+        """当日重点监控与严重异动预测 (盘后留档, 盘中不变); 60 秒内复用, 不可用的项为 None。"""
+        from app.services.regulatory_reference import regulatory_reference
+
+        day, at, value = self._regulatory
+        if day != now.date() or at is None or (now - at).total_seconds() >= 60:
+            data_dir = getattr(getattr(self.repo, "store", None), "data_dir", None)
+            value = regulatory_reference(now.date(), data_dir)
+            self._regulatory = (now.date(), now, value)
+        return value
 
     def sessions(self, first: date, last: date):
         return load_market_calendar(BUNDLED_CALENDAR_PATH, start=first, end=last)
@@ -259,6 +271,9 @@ class PositionTMarket:
                 self._minutes.setdefault(row["symbol"], []).append(row)
             self._minute_received = datetime.now(CN_TZ).isoformat()
         checked = as_cn(clock()) if clock is not None else now
+        from app.services.regulatory_reference import risk_items
+
+        regulatory = self._regulatory_reference(now)
         result = {}
         worst_ts = min((market_time_ms(r["timestamp"]) for r in fresh), default=None)
         # 板块行情时间 = 该板块参与聚合成分股市场时间的中位数: 代表板块整体新鲜度, 成交清淡个股的
@@ -292,7 +307,9 @@ class PositionTMarket:
                    "sector_ts": sector_stamp.isoformat() if sector_stamp and sector.get("valid") else None,
                    "window_metric": "daily_return_difference",
                    "benchmark_symbol": pos["benchmark_symbol"], "sector_id": sector_id,
-                   "sector_basis": sector_basis, "sector_name": sector_name or sector.get("name")}
+                   "sector_basis": sector_basis, "sector_name": sector_name or sector.get("name"),
+                   # 重点监控 / 严重异动预测 (含不可用): 人工账户建计划前逐条确认, 自动模拟暂停新建
+                   "risk_flags": risk_items(pos["symbol"], regulatory)}
             bars = normalize_bars(self._minutes.get(pos["symbol"], []), now, cfg.get("minute_timestamp_semantics")) if enabled and trading else []
             result[(pos["account_id"], pos["symbol"])] = {"bars": bars, "quote": quote, "environment": env}
         return result

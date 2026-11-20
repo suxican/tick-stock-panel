@@ -396,6 +396,24 @@ Python 插件声明 `datasets: [ths_index]` 后需实现以下方法。通用 YA
 
 列与类型须与 `app.data_providers.schemas` 中的 `PRICE_LIMIT_SCHEMA`、`ST_STATUS_SCHEMA`、`SUSPENSION_SCHEMA`、`LIMIT_EVENT_SCHEMA` 完全一致；代码带交易所后缀且当日唯一，`date` 全部等于请求日。上游尚无当日数据时抛异常，不返回空表或其他日期的数据；不符合契约的结果整日不落盘。
 
+### 业绩事件数据集 `earnings_events`
+
+持仓分析的「近期事件」证据。仅支持 Python 插件，声明后实现：
+
+- `get_earnings_events(symbols: list[str], as_of: date) -> dict[str, dict]`：按请求代码返回 `{forecast, express, disclosures}`，每个请求代码都要有键。
+  - `forecast`：`report_period`、`announce_date`（ISO 日期）、`type`（预增、预减等原文）、`change_min`/`change_max`（净利润同比，小数制）。
+  - `express`：`report_period`、`announce_date`、`net_profit`（元）、`net_profit_yoy`（小数制）。
+  - `disclosures`：`[{report_period, scheduled_date, actual_date}]`。
+  - 无记录为 `None` 或空列表；只返回 `as_of` 当时已披露的版本。
+- 上游失败直接抛异常，调用方会标记「来源不可用」，不要返回空结果冒充「无事件」。
+
+### 精选板块正宗度数据集 `theme_authenticity`
+
+持仓分析的「精选板块正宗度」证据。仅支持 Python 插件，声明后实现：
+
+- `get_theme_authenticity(symbols: list[str]) -> dict[str, list[dict]]`：按请求代码返回该股所在的「最正宗」板块列表 `[{theme_id, theme_name, change_pct}]`（`change_pct` 为当日涨跌幅，小数制；名称或涨跌幅取不到时为空），每个请求代码都要有键，不在任何名单中为空列表。
+- 名单取数失败直接抛异常，调用方会标记「来源不可用」。
+
 ### 海外观察数据集 `overseas`
 
 海外观察使用独立数据集和路由，不混入 A 股 `realtime`、国内指数缓存或本地日线仓库。

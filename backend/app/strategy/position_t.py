@@ -383,7 +383,8 @@ def evaluate_candidate(bars: list[dict], quote: dict, environment: dict, positio
               "probability": None, "required_cash": 0, "risk_estimate": 0,
               # 本轮板块环境用的是哪个板块 (手工设置或自动关联), 便于复核
               "sector": {"id": environment.get("sector_id"), "name": environment.get("sector_name"),
-                         "basis": environment.get("sector_basis")}}
+                         "basis": environment.get("sector_basis")},
+              "risk_flags": list(environment.get("risk_flags") or [])}
     identity = f"{account.get('id')}|{position.get('symbol')}|{direction}|{now.isoformat()}|{version}"
     result["id"] = "pt_" + hashlib.sha256(identity.encode()).hexdigest()[:24]
     try:

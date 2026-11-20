@@ -386,3 +386,17 @@ def test_expiring_one_plan_preserves_other_symbol_pending_order(sim):
     assert sim.store.get_plan(first["id"])["state"] == "cancelled"
     assert sim.store.plan_detail(second["id"])["orders"][0]["status"] == "submitted"
     assert not sim.store.get_plan(second["id"])["first_stopped"]
+
+
+def test_auto_simulation_does_not_open_plan_with_risk_flags(sim):
+    """自动模拟没有人确认风险提示: 命中重点监控 / 异动预测 (含不可用) 时不新建计划, 并写明原因。"""
+    sim.data["environment"]["risk_flags"] = [{"id": "monitored", "label": "交易所重点监控", "detail": "交易所风险提示 2026-10-15 至 2026-10-28", "source": "exchange_daily"}]
+    a, p = sim.store.get_account(sim.aid), sim.store.get_position(sim.aid, sim.symbol)
+    signal = evaluate_candidate(sim.data["bars"], sim.data["quote"], sim.data["environment"], p, a, sim.now,
+                                "buy_sell", a["config"])
+    assert signal["state"] == "triggered"
+    sim.store.save_signals([signal], now=sim.now)
+    sim.engine.submit([signal], outputs(sim), sim.now)
+    assert sim.store.list_plans() == []
+    status = sim.engine.status_by_account[sim.aid]
+    assert status["state"] == "paused" and "交易所重点监控" in status["reasons"][0]

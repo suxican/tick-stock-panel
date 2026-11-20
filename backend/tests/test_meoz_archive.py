@@ -56,6 +56,13 @@ def test_members_are_exploded_and_catalog_marks_concepts():
     assert catalog[1]["type"] == "hy"
 
 
+def test_authentic_list_is_exploded_for_archive():
+    """最正宗名单只有当前快照, 逐日留档 (板块-股票 一行) 才有历史可查。"""
+    provider, _ = _provider({"themeauthentic_jx": [{"theme_symbol": "801004k", "symbols": ["688388", "300750"]}]})
+    assert provider.get_archive_rows("jx_authentic", DAY) == [
+        {"theme_symbol": "801004k", "symbol": "688388"}, {"theme_symbol": "801004k", "symbol": "300750"}]
+
+
 def test_five_minute_labels_cover_both_sessions():
     assert len(_FIVE_MINUTE_LABELS) == 49
     assert _FIVE_MINUTE_LABELS[0] == "0930" and _FIVE_MINUTE_LABELS[-1] == "1500"
@@ -203,3 +210,16 @@ def test_run_endpoint_errors_and_status(app_env, monkeypatch):
         assert client.post("/api/meoz-archive/run").status_code == 409
         body = client.get("/api/meoz-archive/status").json()
         assert set(body["datasets"]) == set(svc.DATASETS)
+
+
+def test_evening_empty_regulatory_lists_are_recorded_as_none(archive, monkeypatch):
+    """当天无监控股或无异动预测是常态: 晚间补存轮仍为空时写 0 行文件, 读取方区分「无」与「不可用」。"""
+    archive.fetch.side_effect = lambda ds, day: [] if ds in ("point_monitor", "anomaly_forecast") else archive.rows[ds]
+    first = svc.archive_today(archive.data_dir)["results"]
+    assert first["anomaly_forecast"] == {"state": "empty"}  # 15:40 可能尚未更新, 留给晚间补存
+    monkeypatch.setattr(svc, "cn_now", lambda: AFTER_CLOSE.replace(hour=20, minute=40))
+    second = svc.archive_today(archive.data_dir)["results"]
+    assert second["anomaly_forecast"] == {"state": "saved", "rows": 0}
+    assert second["point_monitor"] == {"state": "saved", "rows": 0}
+    path = archive.data_dir / "meoz_archive" / "v1" / "anomaly_forecast" / "date=2026-11-18.parquet"
+    assert pl.read_parquet(path).height == 0

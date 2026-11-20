@@ -172,7 +172,7 @@ def overview(request: Request, source: Literal["lots", "position_t"] = "lots", a
         reasons = _review_reasons(request, store, plan, current=current)
         symbol = plan["row"].get("symbol")
         if symbol not in risks:
-            risks[symbol] = _current_risk(symbol)
+            risks[symbol] = _current_risk(request, symbol)
         if _risk_changed(plan["row"], risks[symbol]):
             reasons.append(RISK_CHANGED)
         expires = plan.get("expires_on")
@@ -234,9 +234,10 @@ async def interpret(report_id: str, request: Request):
 RISK_CHANGED = "风险状态已变化，请重新分析"
 
 
-def _current_risk(symbol):
+def _current_risk(request, symbol):
     try:
-        return analysis.current_risk(symbol)
+        repo, _ = _dependencies(request)
+        return analysis.current_risk(symbol, data_dir=repo.store.data_dir)
     except Exception:  # noqa: BLE001 -- 风险来源异常按"不可用"处理, 由调用方判为已变化
         logger.warning("持仓研究风险状态读取失败", exc_info=True)
         return None
@@ -255,7 +256,7 @@ def adopt(request: Request, body: AdoptBody):
         row = next((r for r in report.get("rows", []) if r.get("key") == body.row_key), None)
         if row is not None:
             # 服务端按当前名单重新核对, 避免用户确认的是旧风险
-            current = _current_risk(row.get("symbol"))
+            current = _current_risk(request, row.get("symbol"))
             if _risk_changed(row, current):
                 raise HTTPException(409, RISK_CHANGED)
             pending = {item["id"] for item in current["items"]} - set(body.acknowledged_risks)

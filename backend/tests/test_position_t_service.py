@@ -195,3 +195,20 @@ def test_recorded_evidence_roundtrips_into_isolated_same_day_replay(service):
     assert service.store.list_plans() == []
     with pytest.raises(LedgerError, match="单交易日"):
         service.replay({**payload, "end_date": "2026-10-19"})
+
+
+RISK_FLAG = {"id": "monitored", "label": "交易所重点监控", "detail": "交易所风险提示 2026-10-15 至 2026-10-28", "source": "exchange_daily"}
+
+
+def test_accept_requires_acknowledging_every_risk_flag(service):
+    """人工账户: 有重点监控 / 异动预测 (含不可用) 时信号照常评估, 建计划须逐条确认。"""
+    service.market.data["environment"]["risk_flags"] = [RISK_FLAG]
+    signal = triggered(service)
+    assert signal["risk_flags"] == [RISK_FLAG]
+    payload = {"signal_id": signal["id"], "quantity": 200, "expected_account_version": signal["account_version"],
+               "expected_position_version": signal["position_version"], "idempotency_key": "request-risk"}
+    with pytest.raises(LedgerError, match="确认风险"):
+        service.accept_plan(payload)
+    assert service.store.list_plans() == []
+    plan = service.accept_plan({**payload, "acknowledged_risks": ["monitored"]})
+    assert plan["signal_id"] == signal["id"]

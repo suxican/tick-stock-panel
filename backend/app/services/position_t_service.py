@@ -413,6 +413,10 @@ class PositionTService:
         current = next((s for s in self.store.list_signals(old["account_id"]) if s["symbol"] == old["symbol"] and s["direction"] == old["direction"]), None)
         if not current or current["id"] != old["id"] or current["state"] != "triggered":
             raise LedgerError("行情或候选已变化，请刷新后重新确认", "signal_changed", 409)
+        # 风险项按刚重算的信号核对: 确认须覆盖当前全部风险项 (含"不可用"), 风险变化时需重新确认
+        pending = {flag["id"] for flag in current.get("risk_flags") or []} - set(payload.get("acknowledged_risks") or [])
+        if pending:
+            raise LedgerError("请先逐条确认风险提示后再建立计划", "risk_unacknowledged", 409)
         now = as_cn(self.clock())
         reason = self._session_pause_reason(now)
         if reason:

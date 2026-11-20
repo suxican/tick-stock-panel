@@ -63,14 +63,15 @@ class HoldingAlertGuard:
                     continue
                 symbol = plan["row"]["symbol"]
                 if symbol not in risks:
-                    risks[symbol] = analysis.current_risk(symbol, now)
+                    risks[symbol] = analysis.current_risk(symbol, now, data_dir=self.repo.store.data_dir)
                 if analysis.risk_changed(plan["row"], risks[symbol]):
                     continue
                 quote = quotes.get(plan["row"]["symbol"], {})
                 stamp = quote.get("timestamp")
                 price = quote.get("last_price")
-                if (isinstance(stamp, bool) or not isinstance(stamp, (int, float))
-                        or not math.isfinite(stamp) or not 0 <= now.timestamp() - stamp / 1000 <= 10
+                # 报价新鲜度不在这里判断: 全市场行情到手已晚数秒, 许可按报价时间截止会在引擎
+                # 评估新一轮时已过期。改由引擎评估时按触发所用的同一份报价判断 (monitor.py)。
+                if (isinstance(stamp, bool) or not isinstance(stamp, (int, float)) or not math.isfinite(stamp)
                         or isinstance(price, bool) or not isinstance(price, (int, float))
                         or not math.isfinite(price) or price <= 0):
                     continue
@@ -86,7 +87,7 @@ class HoldingAlertGuard:
                             or not math.isclose(anchor, previous, abs_tol=.011)):
                         continue
                 # The worker must refresh its permission lease; a stopped worker fails closed.
-                deadline = min(now.timestamp() + 6, stamp / 1000 + 10)
+                deadline = now.timestamp() + 6
                 for rule_id in plan["alert_rule_ids"]:
                     if plan.get("alert_bindings", {}).get(rule_id) != "active":
                         continue

@@ -240,6 +240,16 @@ def test_realtime_uses_tick_full_market_with_market_time(monkeypatch):
     assert len([c for c in fake.calls if c[0] == "daily"]) == 1  # 昨收按日缓存, 不每轮请求
 
 
+def test_realtime_no_trade_is_unknown_not_minus_100_percent(monkeypatch):
+    """停牌或当日尚无成交时 tick 成交价为 0、涨跌幅 -100 (2026-11-20 实测 000635);
+    按未知处理, 否则板块均值被拉低, 停牌股时而算新鲜时而不算会让板块 5 分钟涨跌大幅跳动。"""
+    provider, _ = _provider(monkeypatch, _tick_market([_tick_quote(close=0, open=0, high=0, low=0, vol=0,
+                                                                   amount=0, pct_chg=-100)]))
+    rec = provider.get_realtime()[0]
+    assert rec["last_price"] is None and rec["change_pct"] is None and rec["change_amount"] is None
+    assert rec["prev_close"] == 1455.0 and rec["volume"] == 0  # 昨收与零成交量照常保留
+
+
 def test_realtime_missing_tick_time_is_unknown_not_receive_time(monkeypatch):
     provider, _ = _provider(monkeypatch, _tick_market([_tick_quote(time=None)]))
     assert provider.get_realtime()[0]["timestamp"] is None
@@ -615,7 +625,7 @@ def test_datasets_declaration_and_unsupported_test_dataset(monkeypatch):
     provider, _ = _provider(monkeypatch, lambda *a: [])
     assert set(provider.config.datasets) == {"realtime", "depth5", "daily", "adj_factor", "minute",
                                              "full_minute", "price_limits", "st_status", "suspensions", "limit_events",
-                                             "dragon_tiger"}
+                                             "dragon_tiger", "earnings_events", "theme_authenticity"}
     assert "financial" not in provider.config.datasets
     out = provider.test_dataset("financial")
     assert out["rows"] == 0 and "未接入" in out["error"]
@@ -673,7 +683,7 @@ def test_loader_manifest_declares_plugin():
     assert manifest is not None
     datasets = manifest["datasets"] if isinstance(manifest, dict) else manifest.datasets
     assert set(datasets) == {"realtime", "depth5", "daily", "adj_factor", "minute", "full_minute",
-                             "price_limits", "st_status", "suspensions", "limit_events", "dragon_tiger"}
+                             "price_limits", "st_status", "suspensions", "limit_events", "dragon_tiger", "earnings_events", "theme_authenticity"}
 
 
 # ---- depth5: 猫头鹰 tick 五档 ----
@@ -727,3 +737,87 @@ def test_depth_request_failure_propagates_for_service_to_handle(monkeypatch):
     provider, _ = _provider(monkeypatch, boom)
     with pytest.raises(mc.MeozError):
         provider.get_depth_batch(["600519.SH"])
+
+
+# ---- 业绩事件 (earnings_events): 预告 / 快报 / 定期报告披露计划 ----
+
+def test_earnings_events_normalize_latest_versions_and_periods(monkeypatch):
+    calls = []
+
+    def handler(apiname, params, fields, service):
+        calls.append((apiname, dict(params), service))
+        if apiname == "finance_forecast":
+            return [
+                {"symbol": "600519", "report_date": "20260930", "announce_date": "20261010", "revision_no": 1,
+                 "forecast_type": "预增", "p_change_min": 20, "p_change_max": 40},
+                {"symbol": "600519", "report_date": "20260930", "announce_date": "20261015", "revision_no": 2,
+                 "forecast_type": "预增", "p_change_min": 30, "p_change_max": 50},
+            ]
+        if apiname == "finance_express":
+            return [{"symbol": "600519", "report_date": "20260930", "announce_date": "20261020", "revision_no": 1,
+                     "n_income": 1.2e9, "yoy_net_profit": 1.0e9}]
+        if apiname == "finance_disclosure_date":
+            if params["period"] == "20260930":
+                return [{"symbol": "600519", "report_date": "20260930", "pre_date": "20261030", "actual_date": "20261029"}]
+            return []
+        raise AssertionError(apiname)
+
+    provider, _ = _provider(monkeypatch, handler)
+    out = provider.get_earnings_events(["600519.SH", "000001.SZ"], date(2026, 11, 20))
+    assert set(out) == {"600519.SH", "000001.SZ"}
+    assert out["600519.SH"]["forecast"] == {"report_period": "2026-09-30", "announce_date": "2026-10-15",
+                                            "type": "预增", "change_min": 0.3, "change_max": 0.5}
+    assert out["600519.SH"]["express"] == {"report_period": "2026-09-30", "announce_date": "2026-10-20",
+                                           "net_profit": 1.2e9, "net_profit_yoy": pytest.approx(0.2)}
+    assert out["600519.SH"]["disclosures"] == [{"report_period": "2026-09-30", "scheduled_date": "2026-10-30",
+                                                "actual_date": "2026-10-29"}]
+    assert out["000001.SZ"] == {"forecast": None, "express": None, "disclosures": []}
+    forecast = next(c for c in calls if c[0] == "finance_forecast")
+    assert forecast[1] == {"ann_startdate": "20260723", "ann_enddate": "20261120", "as_of": "20261120",
+                           "symbols": "000001,600519"} and forecast[2] == "history"
+    assert sorted(c[1]["period"] for c in calls if c[0] == "finance_disclosure_date") == ["20260930", "20261231"]
+
+
+def test_earnings_events_upstream_error_raises(monkeypatch):
+    def boom(*a):
+        raise mc.MeozError("down")
+
+    provider, _ = _provider(monkeypatch, boom)
+    with pytest.raises(mc.MeozError):
+        provider.get_earnings_events(["600519.SH"], date(2026, 11, 20))
+
+
+# ---- 精选板块正宗度 (theme_authenticity) ----
+
+def test_theme_authenticity_maps_names_and_percent(monkeypatch):
+    def handler(apiname, params, fields, service):
+        if apiname == "themeauthentic_jx":
+            return [{"theme_symbol": "801004k", "symbols": ["600519", "300750"]},
+                    {"theme_symbol": "801660k", "symbols": ["600519"]}]
+        if apiname == "themedaily_jx":
+            return [{"tradedate": "20261111", "theme_symbol": "801004k", "theme_name": "锂电池", "pct_chg": -3.452}]
+        raise AssertionError(apiname)
+
+    provider, _ = _provider(monkeypatch, handler)
+    out = provider.get_theme_authenticity(["600519.SH", "000001.SZ"])
+    assert out == {"600519.SH": [{"theme_id": "801004k", "theme_name": "锂电池", "change_pct": pytest.approx(-0.03452)},
+                                 {"theme_id": "801660k", "theme_name": None, "change_pct": None}],
+                   "000001.SZ": []}
+
+
+def test_theme_authenticity_names_failure_keeps_list(monkeypatch):
+    def handler(apiname, params, fields, service):
+        if apiname == "themeauthentic_jx":
+            return [{"theme_symbol": "801004k", "symbols": ["600519"]}]
+        raise mc.MeozError("themedaily_jx HTTP 502")
+
+    provider, _ = _provider(monkeypatch, handler)
+    assert provider.get_theme_authenticity(["600519.SH"]) == {
+        "600519.SH": [{"theme_id": "801004k", "theme_name": None, "change_pct": None}]}
+
+    def boom(*a):
+        raise mc.MeozError("down")
+
+    provider, _ = _provider(monkeypatch, boom)
+    with pytest.raises(mc.MeozError):
+        provider.get_theme_authenticity(["600519.SH"])

@@ -2192,6 +2192,8 @@ export interface PositionTSignal {
   source_mode: string
   /** 本轮板块环境所用板块: manual=持仓手工设置, auto=自动关联所属行业 */
   sector?: { id: string | null; name: string | null; basis: 'manual' | 'auto' | null }
+  /** 重点监控 / 严重异动预测 (含不可用): 建立计划前须逐条确认 */
+  risk_flags?: HoldingAnalysisRiskItem[]
 }
 export interface PositionTSignalHistoryEvent {
   signal: PositionTSignal; previous_state: string | null; recorded_at: string
@@ -2348,9 +2350,20 @@ export interface HoldingAnalysisRow {
   plan: { summary: string; priority: 'risk' | 'protect' | 'observe'; scenarios: HoldingAnalysisScenario[]; expires_on: string | null; can_adopt: boolean }
   /** 按日 ST / 停牌名单的风险事实; *_unknown 表示名单不可用 (旧报告可能缺失) */
   risk_status?: HoldingAnalysisRiskStatus
+  /** 近期业绩事件 (只作证据与提示, 不进入风险确认); available=false 表示来源不可用 */
+  events?: HoldingAnalysisEvents
+  /** 精选板块正宗度 (只作证据); available=false 表示来源不可用 */
+  jx_authentic?: { available: boolean; themes?: { theme_id: string; theme_name: string | null; change_pct: number | null }[] }
+}
+export interface HoldingAnalysisEvents {
+  available: boolean
+  forecast?: { report_period: string; announce_date: string; type: string | null; change_min: number | null; change_max: number | null } | null
+  express?: { report_period: string; announce_date: string; net_profit: number | null; net_profit_yoy: number | null } | null
+  next_disclosure?: { report_period: string; date: string } | null
+  disclosure_in_horizon?: boolean
 }
 export interface HoldingAnalysisRiskItem {
-  id: 'st' | 'suspended' | 'st_unknown' | 'suspension_unknown'
+  id: 'st' | 'suspended' | 'st_unknown' | 'suspension_unknown' | 'monitored' | 'anomaly_forecast' | 'monitor_unknown' | 'anomaly_unknown'
   label: string
   detail: string
   source: string | null
@@ -6491,7 +6504,7 @@ export const api = {
     request<PositionTLotsSyncResult>(`/api/position-t/accounts/${encodeURIComponent(id)}/sync-lots`, { method: 'POST', body: JSON.stringify(body), quiet: true }),
   positionTConfig: (id: string, body: PositionTConfig & { expected_version: number }) =>
     request<{ account: PositionTAccount; config: PositionTConfig }>(`/api/position-t/accounts/${encodeURIComponent(id)}/config`, { method: 'PUT', body: JSON.stringify(body), quiet: true }),
-  positionTCreatePlan: (body: { signal_id: string; quantity: number; expected_account_version: number; expected_position_version: number; idempotency_key: string }) =>
+  positionTCreatePlan: (body: { signal_id: string; quantity: number; expected_account_version: number; expected_position_version: number; idempotency_key: string; acknowledged_risks: string[] }) =>
     request<{ plan: PositionTPlan }>('/api/position-t/plans', { method: 'POST', body: JSON.stringify(body), quiet: true }),
   positionTStopFirstLeg: (id: string, expected_version: number) =>
     request<{ plan: PositionTPlan }>(`/api/position-t/plans/${encodeURIComponent(id)}/stop-first-leg`, { method: 'POST', body: JSON.stringify({ expected_version }), quiet: true }),

@@ -68,7 +68,8 @@ from app.plugins.meoz.client import MeozAuthError, MeozClient, MeozError, MeozTr
 logger = logging.getLogger(__name__)
 
 _DATASETS = ("realtime", "depth5", "daily", "adj_factor", "minute", "full_minute",
-             "price_limits", "st_status", "suspensions", "limit_events", "dragon_tiger")
+             "price_limits", "st_status", "suspensions", "limit_events", "dragon_tiger", "earnings_events",
+             "theme_authenticity")
 
 API_KEY_ENV = "MEOZ_API_KEY"
 SECRETS_FIELD = "meoz_api_key"  # UI 配置的 Key 存 secrets.json, 优先级高于 .env
@@ -329,6 +330,8 @@ def _quote_record(row: dict, symbol: str, today: date, now_ms: int) -> dict:
         change_amount = last - prev
     if change_pct is None and change_amount is not None and prev not in (None, 0):
         change_pct = change_amount / prev
+    if last is not None and last <= 0:  # 停牌或当日尚无成交, 同 _tick_record
+        last = change_pct = change_amount = None
     trade_day = _parse_ymd(row.get("tradedate"))
     stale = trade_day is not None and trade_day != today
     stamp = _ms(trade_day, _DAILY_CLOSE) if stale else now_ms
@@ -364,6 +367,9 @@ def _tick_record(row: dict, symbol: str, prev: dict) -> dict:
     prev_close = info.get("pre_close") if day is not None and info.get("day") == day else None
     pct = _to_float(row.get("pct_chg"))
     change_pct = pct / 100.0 if pct is not None else None
+    if last is not None and last <= 0:
+        # 停牌或当日尚无成交: 上游成交价为 0、涨跌幅 -100, 按未知处理, 不当作跌 100%
+        last = change_pct = None
     change_amount = last - prev_close if last is not None and prev_close is not None else None
     if change_pct is None and change_amount is not None and prev_close:
         change_pct = change_amount / prev_close
@@ -384,6 +390,17 @@ def _tick_record(row: dict, symbol: str, prev: dict) -> dict:
         "timestamp": stamp,
         "session": None,
     }
+
+
+EARNINGS_LOOKBACK_DAYS = 120  # 业绩预告/快报的公告回看天数 (覆盖一个季度周期)
+
+
+def _report_periods(as_of: date) -> list[date]:
+    """as_of 之前最近一个季末报告期, 以及下一个季末报告期。"""
+    ends = [date(as_of.year - 1, 12, 31), *(date(as_of.year, m, d) for m, d in ((3, 31), (6, 30), (9, 30), (12, 31)))]
+    last = max(e for e in ends if e < as_of)
+    nxt = min(e for e in [*ends, date(as_of.year + 1, 3, 31)] if e > last)
+    return [last, nxt]
 
 
 def _index_record(row: dict, now_ms: int) -> dict:
@@ -1007,6 +1024,90 @@ class MeozProvider:
                and (symbol := _full_symbol(row.get("symbol"), universe)) is not None]
         return pl.DataFrame(out, schema=SUSPENSION_SCHEMA).unique("symbol", keep="first", maintain_order=True)
 
+    # ---- 业绩事件: 预告 / 快报 / 定期报告披露计划 (历史服务, as_of 只取当时已披露版本) ----
+    def get_earnings_events(self, symbols: list[str], as_of: date) -> dict[str, dict]:
+        """持仓代码的业绩事件 → {代码: {forecast, express, disclosures}} (源中立契约)。
+
+        预告/快报取公告日在 as_of 前 EARNINGS_LOOKBACK_DAYS 天内、按 as_of 可见的最新版本;
+        披露计划取 as_of 所在季度末之前最近一个报告期及下一个报告期。上游失败抛异常, 由调用方
+        标记来源不可用 (不当作无事件)。
+        """
+        wanted = {_six(s): s for s in symbols if s}
+        out: dict[str, dict] = {s: {"forecast": None, "express": None, "disclosures": []} for s in wanted.values()}
+        if not wanted:
+            return out
+        client = self._get_client()
+        codes = ",".join(sorted(wanted))
+        window = {"ann_startdate": _ymd(as_of - timedelta(days=EARNINGS_LOOKBACK_DAYS)), "ann_enddate": _ymd(as_of),
+                  "as_of": _ymd(as_of), "symbols": codes}
+
+        def latest(rows):
+            best: dict[str, dict] = {}
+            for row in rows:
+                symbol = wanted.get(_six(str(row.get("symbol") or "")))
+                if symbol is None:
+                    continue
+                key = (str(row.get("announce_date") or ""), _to_int(row.get("revision_no")) or 0)
+                if symbol not in best or key > best[symbol][0]:
+                    best[symbol] = (key, row)
+            return {symbol: row for symbol, (_key, row) in best.items()}
+
+        def iso(value):
+            parsed = _parse_ymd(value)
+            return parsed.isoformat() if parsed else None
+
+        def pct(value):
+            number = _to_float(value)
+            return number / 100.0 if number is not None else None  # 百分数 → 小数制
+
+        for symbol, row in latest(client.query("finance_forecast", window, service="history")).items():
+            out[symbol]["forecast"] = {"report_period": iso(row.get("report_date")),
+                                       "announce_date": iso(row.get("announce_date")),
+                                       "type": row.get("forecast_type"),
+                                       "change_min": pct(row.get("p_change_min")),
+                                       "change_max": pct(row.get("p_change_max"))}
+        for symbol, row in latest(client.query("finance_express", window, service="history")).items():
+            income, last = _to_float(row.get("n_income")), _to_float(row.get("yoy_net_profit"))
+            out[symbol]["express"] = {"report_period": iso(row.get("report_date")),
+                                      "announce_date": iso(row.get("announce_date")),
+                                      "net_profit": income,  # 元
+                                      "net_profit_yoy": income / last - 1 if income is not None and last and last > 0 else None}
+        for period in _report_periods(as_of):
+            rows = client.query("finance_disclosure_date", {"period": _ymd(period), "symbols": codes}, service="history")
+            for symbol, row in latest(rows).items():
+                out[symbol]["disclosures"].append({"report_period": period.isoformat(),
+                                                   "scheduled_date": iso(row.get("pre_date")),
+                                                   "actual_date": iso(row.get("actual_date"))})
+        return out
+
+    # ---- 精选板块正宗度: 最正宗名单 (只有当前快照) + 精选板块名称/涨跌幅 ----
+    def get_theme_authenticity(self, symbols: list[str]) -> dict[str, list[dict]]:
+        """持仓代码所在的「最正宗」精选板块 → {代码: [{theme_id, theme_name, change_pct 小数制}]}。
+
+        正宗名单取数失败抛异常 (调用方标记不可用); 板块名称/涨跌幅取数失败只置空, 不影响名单。
+        """
+        wanted = {_six(s): s for s in symbols if s}
+        out: dict[str, list[dict]] = {s: [] for s in wanted.values()}
+        if not wanted:
+            return out
+        client = self._get_client()
+        rows = client.query("themeauthentic_jx", {})
+        try:
+            daily = {str(r.get("theme_symbol")): r for r in client.query("themedaily_jx", {})}
+        except MeozError as e:
+            logger.warning("精选板块日线取数失败, 正宗度只列板块代码: %s", e)
+            daily = {}
+        for row in rows:
+            theme = str(row.get("theme_symbol") or "")
+            info = daily.get(theme, {})
+            pct = _to_float(info.get("pct_chg"))
+            for code in row.get("symbols") or []:
+                symbol = wanted.get(_six(str(code)))
+                if symbol is not None and theme:
+                    out[symbol].append({"theme_id": theme, "theme_name": info.get("theme_name"),
+                                        "change_pct": pct / 100.0 if pct is not None else None})
+        return out
+
     def get_limit_events(self, day: date) -> pl.DataFrame:
         """`limit_pool` (2017 起): 涨跌停与炸板明细。pct_chg 百分数 → 小数制。"""
         rows, universe = self._reference_rows(
@@ -1259,9 +1360,10 @@ class MeozProvider:
         if dataset == "theme_catalog":
             concepts = [{"type": "gn", **row} for row in client.query("theme_concept", {})]
             return concepts + client.query("theme_industry", {})
-        if dataset in ("theme_members", "jx_members"):
-            api, params = (("theme_members", {}) if dataset == "theme_members"
-                           else ("thememembers_jx", {"tradedate": ymd}))
+        if dataset in ("theme_members", "jx_members", "jx_authentic"):
+            api, params = {"theme_members": ("theme_members", {}),
+                           "jx_members": ("thememembers_jx", {"tradedate": ymd}),
+                           "jx_authentic": ("themeauthentic_jx", {})}[dataset]
             return [{"theme_symbol": row.get("theme_symbol"), "symbol": str(symbol)}
                     for row in client.query(api, params) for symbol in row.get("symbols") or []]
         if dataset == "thememinute_jx":
@@ -1278,7 +1380,7 @@ class MeozProvider:
 
 # 只能当天留档的接口 (2026-11-18 专业版实测: 不支持历史日期或只有当日数据)
 ARCHIVE_DATASETS = ("theme_catalog", "theme_members", "jx_members", "thememinute_jx",
-                    "themefundflow_jx", "theme_hot_kp", "point_monitor", "anomaly_forecast")
+                    "themefundflow_jx", "theme_hot_kp", "point_monitor", "anomaly_forecast", "jx_authentic")
 # 板块 5 分统计的收盘桶标签: 09:30-11:30、13:05-15:00
 _FIVE_MINUTE_LABELS = tuple(
     f"{m // 60:02d}{m % 60:02d}"

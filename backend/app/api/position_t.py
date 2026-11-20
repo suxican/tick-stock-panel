@@ -76,6 +76,8 @@ class PlanBody(Body):
     expected_account_version: Qty
     expected_position_version: Qty
     idempotency_key: Key
+    # 逐条确认的风险项 ID (重点监控 / 严重异动预测 / 不可用), 须覆盖信号当前全部风险项
+    acknowledged_risks: list[Key] = Field(default_factory=list, max_length=10)
 
 
 class StopBody(Body):

@@ -30,6 +30,9 @@ from app.strategy.monitor_rules import MODE_EVENT_LABELS, date_rule_in_window
 
 logger = logging.getLogger(__name__)
 
+# 研究提醒触发时所用报价的最大市场时间年龄 (秒), 与做T 报价时效一致
+HOLDING_QUOTE_MAX_AGE_S = 10
+
 # 字段中文名映射 — 与前端 lib/signals.ts 对齐, 用于告警 message / 推送文案。
 # 信号布尔列 (csg_/csgi_/迁移的 signal_*) 的中文名由 _signal_label 查用户定义,
 # 此处只保留技术指标/行情字段与盘中信号。
@@ -1239,7 +1242,13 @@ class MonitorRuleEngine:
         if rule.get("holding_plan_id"):
             if self._holding_alert_guard is None or not self._holding_alert_guard(rule, now):
                 return []
-            if "raw_close" not in df.columns:
+            if "raw_close" not in df.columns or "quote_ts" not in df.columns:
+                return []
+            # 研究提醒只用评估时刻仍新鲜的报价 (真实市场时间, 不超过 HOLDING_QUOTE_MAX_AGE_S 秒):
+            # 新鲜度与触发价出自同一份行情; 过期或缺时间的标的本轮不触发, 等下一轮。
+            age = now - pl.col("quote_ts").cast(pl.Float64) / 1000
+            df = df.filter(pl.col("quote_ts").is_not_null() & (age >= 0) & (age <= HOLDING_QUOTE_MAX_AGE_S))
+            if df.is_empty():
                 return []
             # Research thresholds and displayed event prices share the unadjusted price domain.
             df = df.with_columns(pl.col("raw_close").alias("close"))
