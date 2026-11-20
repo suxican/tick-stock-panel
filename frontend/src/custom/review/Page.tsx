@@ -38,6 +38,7 @@ import {
   type ReviewPhase, type ReviewMeta,
 } from '@/lib/reviewStore'
 import { cnMonthDayTime, cnToday } from '@/lib/cnTime'
+import { type ReportExportFormat, downloadMarkdown, downloadPng, downloadPdf } from '@/lib/reportExport'
 
 // ================================================================
 // 涨跌幅格式化(注意单位差异)
@@ -248,18 +249,25 @@ export function ReviewPage() {
     }
   }, [content, viewing])
 
-  // 下载为 .md 文件(viewing 优先)
-  const downloadContent = useCallback(() => {
+  // 导出 Markdown / 图片 / PDF(viewing 优先; 图片与 PDF 取已渲染的报告节点, 含数据面板)
+  const exportReport = useCallback(async (fmt: ReportExportFormat, node: HTMLElement | null) => {
     const text = stripPlanBlock(viewing?.content ?? content)
     if (!text) return
     const reportDate = viewing?.as_of ?? meta?.as_of ?? asOf ?? cnToday()
-    const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `复盘_${reportDate}.md`
-    a.click()
-    URL.revokeObjectURL(url)
+    const fileName = `复盘_${reportDate}.${fmt}`
+    try {
+      if (fmt === 'md') {
+        downloadMarkdown(text, fileName)
+        return
+      }
+      if (!node) throw new Error('报告内容未就绪')
+      const opts = { title: `大盘复盘 · ${reportDate}` }
+      if (fmt === 'png') await downloadPng(node, fileName, opts)
+      else await downloadPdf(node, fileName, opts)
+      toast('报告已导出', 'success')
+    } catch (e) {
+      toast(`导出失败: ${e instanceof Error ? e.message : '未知错误'}`, 'error')
+    }
   }, [content, viewing, meta, asOf])
 
   // 查看历史报告(不中断后台生成:仅临时把 viewing 覆盖到主区域,
@@ -396,7 +404,7 @@ export function ReviewPage() {
                   isGenerating={isGenerating}
                   viewing={viewing}
                   onCopy={copyContent}
-                  onDownload={downloadContent}
+                  onExport={exportReport}
                   onRegenerate={generate}
                   reportEndRef={reportEndRef}
                 />
@@ -855,7 +863,7 @@ function MarketSummaryBar({ data }: { data: OverviewMarket }) {
 // 报告面板(流式 + 错误 + 历史/完成态)
 // ================================================================
 function ReportPanel({
-  phase, content, snapshot, onOpenStock, error, isGenerating, viewing, onCopy, onDownload, onRegenerate, reportEndRef,
+  phase, content, snapshot, onOpenStock, error, isGenerating, viewing, onCopy, onExport, onRegenerate, reportEndRef,
 }: {
   phase: ReviewPhase
   content: string
@@ -865,10 +873,19 @@ function ReportPanel({
   isGenerating: boolean
   viewing: AiReviewReport | null
   onCopy: () => void
-  onDownload: () => void
+  onExport: (fmt: ReportExportFormat, node: HTMLElement | null) => Promise<void>
   onRegenerate: () => void
   reportEndRef: React.RefObject<HTMLDivElement>
 }) {
+  const exportRef = useRef<HTMLDivElement>(null)
+  const [exporting, setExporting] = useState<ReportExportFormat | null>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const doExport = async (fmt: ReportExportFormat) => {
+    setMenuOpen(false)
+    if (exporting) return
+    setExporting(fmt)
+    try { await onExport(fmt, exportRef.current) } finally { setExporting(null) }
+  }
   if (phase === 'error') {
     return (
       <div className="flex flex-col items-center justify-center gap-3 rounded-card border border-border bg-surface/80 px-6 py-14">
@@ -951,42 +968,64 @@ function ReportPanel({
             <button onClick={onCopy} className="inline-flex items-center gap-1 rounded-btn bg-elevated px-2 py-1 text-[11px] text-secondary transition-colors hover:text-foreground hover:bg-elevated/70" title="复制全文">
               <Copy className="h-3 w-3" />复制
             </button>
-            <button onClick={onDownload} className="inline-flex items-center gap-1 rounded-btn bg-elevated px-2 py-1 text-[11px] text-secondary transition-colors hover:text-foreground hover:bg-elevated/70" title="下载为 Markdown">
-              <Download className="h-3 w-3" />下载
-            </button>
+            <div className="relative" onMouseLeave={() => setMenuOpen(false)}>
+              <button
+                onClick={() => setMenuOpen(o => !o)}
+                disabled={!!exporting}
+                className="inline-flex items-center gap-1 rounded-btn bg-elevated px-2 py-1 text-[11px] text-secondary transition-colors hover:text-foreground hover:bg-elevated/70 disabled:opacity-60"
+                title="下载报告(Markdown / 图片 / PDF)"
+              >
+                {exporting ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                {exporting ? '导出中' : '下载'}
+                <ChevronDown className="h-3 w-3" />
+              </button>
+              {menuOpen && (
+                <div className="absolute right-0 top-full z-20 min-w-[7rem] pt-1">
+                  <div className="overflow-hidden rounded-btn border border-border bg-surface py-1 shadow-lg">
+                    {([['md', 'Markdown (.md)'], ['png', '图片 (.png)'], ['pdf', 'PDF (.pdf)']] as const).map(([fmt, label]) => (
+                      <button key={fmt} onClick={() => void doExport(fmt)} className="block w-full px-3 py-1.5 text-left text-[11px] text-secondary transition-colors hover:bg-elevated hover:text-foreground">
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
       <div className="max-h-[calc(100vh-22rem)] overflow-y-auto px-5 py-4">
-        {/* 数据面板: 数字统一由快照渲染, 正文只写判断与计划; 旧报告无快照时只显示正文 */}
-        {snapshot && <RecapSnapshotPanel snapshot={snapshot} onOpenStock={onOpenStock} />}
-        {isLoading ? (
-          <div className="flex flex-col items-center justify-center gap-3 py-16">
-            <div className="relative">
-              <div className="grid h-11 w-11 place-items-center rounded-full bg-gradient-to-br from-accent/20 to-purple-500/15 border border-accent/30">
-                <Sparkles className="h-5 w-5 animate-pulse text-accent" />
+        <div ref={exportRef}>
+          {/* 数据面板: 数字统一由快照渲染, 正文只写判断与计划; 旧报告无快照时只显示正文 */}
+          {snapshot && <RecapSnapshotPanel snapshot={snapshot} onOpenStock={onOpenStock} />}
+          {isLoading ? (
+            <div className="flex flex-col items-center justify-center gap-3 py-16">
+              <div className="relative">
+                <div className="grid h-11 w-11 place-items-center rounded-full bg-gradient-to-br from-accent/20 to-purple-500/15 border border-accent/30">
+                  <Sparkles className="h-5 w-5 animate-pulse text-accent" />
+                </div>
+                <RefreshCw className="absolute -inset-1 h-13 w-13 animate-spin text-accent/30" style={{ animationDuration: '3s' }} />
               </div>
-              <RefreshCw className="absolute -inset-1 h-13 w-13 animate-spin text-accent/30" style={{ animationDuration: '3s' }} />
+              <div className="text-sm text-foreground">AI 正在复盘今日盘面…</div>
+              <div className="text-xs text-secondary">分析指数结构 · 连板梯队 · 板块轮动 · 资金情绪</div>
+              <button
+                type="button"
+                onClick={cancelReviewGeneration}
+                className="mt-1 inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-secondary transition-colors hover:bg-elevated hover:text-foreground"
+              >
+                <X className="h-3 w-3" />
+                取消生成
+              </button>
             </div>
-            <div className="text-sm text-foreground">AI 正在复盘今日盘面…</div>
-            <div className="text-xs text-secondary">分析指数结构 · 连板梯队 · 板块轮动 · 资金情绪</div>
-            <button
-              type="button"
-              onClick={cancelReviewGeneration}
-              className="mt-1 inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-secondary transition-colors hover:bg-elevated hover:text-foreground"
-            >
-              <X className="h-3 w-3" />
-              取消生成
-            </button>
-          </div>
-        ) : (
-          <div className="prose prose-invert max-w-none">
-            <MarkdownRenderer content={content} />
-            {showCursor && (
-              <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse rounded-sm bg-accent align-middle" />
-            )}
-          </div>
-        )}
+          ) : (
+            <div className="prose prose-invert max-w-none">
+              <MarkdownRenderer content={content} />
+              {showCursor && (
+                <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse rounded-sm bg-accent align-middle" />
+              )}
+            </div>
+          )}
+        </div>
         <div ref={reportEndRef} />
       </div>
     </motion.div>
