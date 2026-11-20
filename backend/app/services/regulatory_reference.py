@@ -61,7 +61,7 @@ def _monitor(frame: pl.DataFrame, day: date) -> dict[str, list[dict]]:
         if not code or start is None or end is None or not start <= day.isoformat() <= end:
             continue
         out.setdefault(code, []).append({"label": row.get("type") or "交易监管", "start": start, "end": end,
-                                         "reason": row.get("reason")})
+                                         "reason": row.get("reason"), "name": row.get("name")})
     return out
 
 
@@ -71,10 +71,13 @@ def _anomaly(frame: pl.DataFrame) -> dict[str, dict]:
         code = str(row.get("symbol") or "").strip()[:6]
         if not code:
             continue
-        required = _float(row.get("required_pct_chg"))
+        required, deviation = _float(row.get("required_pct_chg")), _float(row.get("deviation_pct"))
+        elapsed = _float(row.get("elapsed_days"))
         out[code] = {"rule": row.get("rule"), "trigger_price": _float(row.get("trigger_price")),
                      "required_pct": required / 100 if required is not None else None,  # 百分数 → 小数制
-                     "status": row.get("status")}
+                     "status": row.get("status"), "name": row.get("name"),
+                     "elapsed_days": int(elapsed) if elapsed is not None else None,
+                     "deviation_pct": deviation / 100 if deviation is not None else None}
     return out
 
 
@@ -130,3 +133,20 @@ def risk_items(symbol, regulatory):
         items.append({"id": "anomaly_forecast", "label": "严重异动预测", "detail": "，".join(parts),
                       "source": "exchange_daily"})
     return items
+def regulatory_listing(day: date, data_dir: Path | None, code_to_symbol: dict[str, str]) -> dict:
+    """异动监控页「交易所口径」: 交易日 day 适用的严重异动预测与重点监控名单 (展开为行)。
+
+    code_to_symbol 由证券目录给出六位代码 → 带后缀代码, 查不到时保留六位代码 (不猜交易所)。
+    某项留档缺失为 None (不可用), 与空列表 (当日无) 区分。
+    """
+    ref = regulatory_reference(day, data_dir)
+    anomaly = None if ref["anomaly"] is None else sorted(
+        ({"symbol": code_to_symbol.get(code, code), "code": code, **v} for code, v in ref["anomaly"].items()),
+        key=lambda r: (r["required_pct"] is None, abs(r["required_pct"] or 0)))
+    monitor = None if ref["monitor"] is None else sorted(
+        ({"symbol": code_to_symbol.get(code, code), "code": code, "name": e.get("name"), "label": e["label"],
+          "start": e["start"], "end": e["end"], "reason": e.get("reason")}
+         for code, entries in ref["monitor"].items() for e in entries),
+        key=lambda r: (r["end"], r["code"]))
+    return {"target_day": day.isoformat(), "anomaly": anomaly, "monitor": monitor,
+            "anomaly_as_of": ref["anomaly_as_of"], "monitor_as_of": ref["monitor_as_of"]}

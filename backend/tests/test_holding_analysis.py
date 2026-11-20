@@ -18,6 +18,16 @@ HISTORY_DAYS = [d for d in SESSIONS if d < NOW.date()][-65:]
 SYMBOL = "600000.SH"
 
 
+@pytest.fixture(autouse=True)
+def _no_vendor_network(monkeypatch):
+    """业绩事件 / 精选正宗度 / 资金证据默认按「来源不可用」, 测试不访问真实接口 (需要时各测试自行覆盖)。"""
+    from app.services import earnings_events, fund_evidence, theme_authenticity
+
+    monkeypatch.setattr(earnings_events, "fetch_events", lambda symbols, as_of: None)
+    monkeypatch.setattr(theme_authenticity, "fetch_authenticity", lambda symbols: None)
+    monkeypatch.setattr(fund_evidence, "fetch_holdings", lambda symbols, now, data_dir: None)
+
+
 class Repo:
     def __init__(self, data_dir, history=None):
         self.store = SimpleNamespace(data_dir=data_dir)

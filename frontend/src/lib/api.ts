@@ -2106,6 +2106,17 @@ export interface AbnormalRow {
   status: AbnormalStatus
 }
 
+/** 异动监控「交易所口径」: 下一个交易时段适用的严重异动预测与重点监控名单 (盘后留档; null = 不可用) */
+export interface AbnormalRegulatory {
+  target_day: string | null
+  anomaly_as_of: string | null
+  monitor_as_of: string | null
+  anomaly: { symbol: string; code: string; name: string | null; rule: string | null; trigger_price: number | null
+    required_pct: number | null; status: string | null; elapsed_days: number | null; deviation_pct: number | null }[] | null
+  monitor: { symbol: string; code: string; name: string | null; label: string; start: string; end: string
+    reason: string | null }[] | null
+}
+
 export interface AbnormalOverview {
   asof: number
   cache_date: string | null
@@ -6549,6 +6560,9 @@ export const api = {
   /** 盘中异动: enriched 当日信号命中行 (涨停/炸板/翘板/跌停/新高/新低/放量) */
   abnormalIntraday: (limit = 500) =>
     request<AbnormalIntradayPayload>(`/api/abnormal/intraday?limit=${limit}`),
+
+  /** 交易所口径: 严重异动预测与重点监控名单 (读盘后留档) */
+  abnormalRegulatory: () => request<AbnormalRegulatory>('/api/abnormal/regulatory'),
 
   // ===== Monitor Rules (监控规则) =====
   monitorRulesList: () =>

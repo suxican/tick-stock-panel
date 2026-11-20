@@ -35,3 +35,30 @@ def abnormal_overview(
     repo = request.app.state.repo
     quote_service = getattr(request.app.state, "quote_service", None)
     return build_overview(repo, quote_service, min_closeness=min_closeness, limit=limit)
+
+
+@router.get("/regulatory")
+def abnormal_regulatory(request: Request):
+    """交易所口径: 下一个交易时段适用的严重异动预测与重点监控名单 (读盘后留档, 不请求上游)。
+
+    目标交易日: 交易日收盘前为当天, 之后或非交易日为下一交易日; 某项留档缺失为 null (不可用)。
+    """
+    from app.market_time import cn_now
+    from app.services import holding_analysis
+    from app.services.regulatory_reference import regulatory_listing
+
+    repo = request.app.state.repo
+    day = holding_analysis.trade_day(cn_now())
+    if day is None:
+        return {"target_day": None, "anomaly": None, "monitor": None, "anomaly_as_of": None, "monitor_as_of": None}
+    code_map: dict[str, str] = {}
+    try:
+        counts: dict[str, int] = {}
+        symbols = [str(s) for s in repo.get_instruments()["symbol"].to_list()]
+        for symbol in symbols:
+            counts[symbol[:6]] = counts.get(symbol[:6], 0) + 1
+        # 六位代码在目录里唯一时才补后缀 (如 000001 同时是平安银行与上证指数则不猜)
+        code_map = {s[:6]: s for s in symbols if counts[s[:6]] == 1}
+    except Exception:  # noqa: BLE001 -- 目录不可用时保留六位代码, 名单照常显示
+        code_map = {}
+    return regulatory_listing(day, repo.store.data_dir, code_map)

@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useQuery, type UseQueryResult } from '@tanstack/react-query'
 import {
   Activity, ChevronRight, Compass, FlaskConical, HelpCircle, History, Power,
-  Radar, RefreshCw, Ruler, Search, Settings2,
+  Radar, RefreshCw, Ruler, Search, Settings2, ShieldAlert,
 } from 'lucide-react'
 import {
   api, type AbnormalIntradayRow, type AbnormalOverview, type AbnormalRow,
@@ -19,6 +19,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { useQuoteStatus } from '@/lib/useSharedQueries'
 import { cnDateTime } from '@/lib/cnTime'
+import { RegulatoryView } from './RegulatoryView'
 
 /**
  * 异动监控 — 全时段异动中心, 按交易时间线分三个 tab:
@@ -53,12 +54,13 @@ const BOARDS = ['主板', '创业板', '科创板', '北交所'] as const
 
 const REFRESH_MS = 60_000
 
-type AbnormalTab = 'auction' | 'intraday' | 'deviation'
+type AbnormalTab = 'auction' | 'intraday' | 'deviation' | 'exchange'
 
 const TAB_META: Array<{ key: AbnormalTab; label: string; icon: typeof Compass; desc: string }> = [
   { key: 'auction', label: '竞价异动', icon: Compass, desc: '盘前 9:15-9:25 · 同花顺风向标 + 竞价扫描' },
   { key: 'intraday', label: '盘中异动', icon: Activity, desc: '当日量价信号 · 涨停/炸板/翘板/新高新低/放量' },
   { key: 'deviation', label: '偏移异动', icon: Ruler, desc: '多日累计偏离值 · 交易所异动规则接近度' },
+  { key: 'exchange', label: '交易所口径', icon: ShieldAlert, desc: '数据源盘后留档 · 严重异动预测 + 交易所重点监控名单' },
 ]
 
 // ---- 盘中信号元数据 (标签 + 配色, 与后端 _INTRADAY_SIGNALS 优先级同序) ----
@@ -143,6 +145,7 @@ export function AbnormalMoves() {
         {tab === 'deviation' && (
           <DeviationView onPreview={(r, navList) => openStock(r.symbol, r.name ?? undefined, navList)} />
         )}
+        {tab === 'exchange' && <RegulatoryView onOpenStock={openStock} />}
       </div>
 
       {preview && (
