@@ -846,3 +846,78 @@ def test_snapshot_carries_live_ladder_with_dashboard_counting(service):
     # 昨日连板池不足 10 家: 晋级率不可比, 只给出池大小。
     assert ladder["promo_pool"] == 1 and ladder["promo_rate"] is None
     assert ladder["live"] is True and ladder["as_of"] == str(NOW.date())
+
+
+def _limit_state(status, **kw):
+    from app.services.meoz_limit_stream import LimitState
+    return LimitState(status=status, at=kw.get("at", NOW), touch_at=NOW, confirmed_opens=kw.get("confirmed_opens", 0),
+                      pool_open_times=kw.get("open_times"))
+
+
+def _stream(service, monkeypatch, status, state="connected", **kw):
+    limits = {SYMBOL: _limit_state(status, **kw)} if status else {}
+    monkeypatch.setattr(service, "_exchange_limit_states",
+                        lambda now: (limits, {"state": state, "seq_gaps": 0}))
+
+
+def _broken(): return quotes(raw_close=10.8, close=10.8, raw_high=11.0, change_pct=.08)
+
+
+def _sealed(): return quotes(raw_close=11.0, close=11.0, raw_high=11.0, change_pct=.1)
+
+
+def test_broken_row_gets_exchange_open_note(service, monkeypatch):
+    _stream(service, monkeypatch, "opened", open_times=1)
+    service.process_snapshot(_broken(), NOW.date(), now=NOW)
+    row = service.snapshot()["rows"][0]
+    assert row["state"] == "broken"
+    assert row["exchange_limit"]["status"] == "opened"
+    assert row["evidence"]["exchange_limit"] == row["exchange_limit"]
+    assert row["evidence"]["exchange_limit"] is not row["exchange_limit"]
+    assert any("交易所确认开板" in reason for reason in row["reasons"])
+
+
+def test_sealed_row_after_reseal_note(service, monkeypatch):
+    _stream(service, monkeypatch, "sealed_confirmed", open_times=2)
+    service.process_snapshot(_sealed(), NOW.date(), now=NOW)
+    row = service.snapshot()["rows"][0]
+    assert row["state"] == "sealed"
+    assert any("当日开板 2 次" in reason for reason in row["reasons"])
+    assert len([r for r in row["reasons"] if "交易所确认封板" in r]) == 1
+
+
+def test_exchange_limit_never_changes_state_or_can_buy(service, monkeypatch):
+    keys = ("state", "can_buy", "blocked_reasons", "event_id", "suggested_amount")
+    for quote, status in ((_broken(), "opened"), (_sealed(), "sealed_confirmed"), (quotes(), "touching")):
+        service.process_snapshot(quote, NOW.date(), now=NOW)
+        _stream(service, monkeypatch, status, open_times=1)
+        service.process_snapshot(quote, NOW.date(), now=NOW + timedelta(seconds=1))
+        with_ev = service.snapshot()["rows"][0]
+        events_with = len(service.events(NOW.date()))
+        monkeypatch.setattr(service, "_exchange_limit_states", lambda now: ({}, None))
+        service.process_snapshot(quote, NOW.date(), now=NOW + timedelta(seconds=2))
+        base = service.snapshot()["rows"][0]
+        assert {k: with_ev[k] for k in keys} == {k: base[k] for k in keys}
+        assert len(service.events(NOW.date())) == events_with
+        assert base["exchange_limit"]["status"] == "unknown"
+
+
+def test_exchange_limit_failure_falls_back(service, monkeypatch):
+    import app.services.meoz_limit_stream as ms
+
+    def boom(_data_dir):
+        raise RuntimeError("stream down")
+
+    monkeypatch.setattr(ms, "get_stream", boom)
+    service.process_snapshot(_broken(), NOW.date(), now=NOW)
+    row = service.snapshot()["rows"][0]
+    assert row["exchange_limit"]["status"] == "unknown" and row["exchange_limit"]["note"] is None
+    assert row["state"] == "broken"
+
+
+def test_restored_events_unknown_when_not_connected(service, monkeypatch):
+    _stream(service, monkeypatch, "opened", state="idle", open_times=1)
+    service.process_snapshot(_broken(), NOW.date(), now=NOW)
+    row = service.snapshot()["rows"][0]
+    assert row["exchange_limit"]["status"] == "unknown"
+    assert not any("交易所确认开板" in reason for reason in row["reasons"])

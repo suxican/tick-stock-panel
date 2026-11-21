@@ -21,6 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from pathlib import Path
+from typing import Literal
 
 from app.data_providers import custom as custom_sources
 from app.market_time import CN_TZ, cn_now
@@ -31,6 +32,8 @@ logger = logging.getLogger(__name__)
 ROOT = ("meoz_limit_events", "v1")
 OPEN_AT, CLOSE_AT = time(9, 20), time(15, 5)
 UP_EVENTS = {1: "touch", 2: "sealed", 3: "resealed"}  # 涨停方向的"进入涨停"类事件
+STATE_EVENTS = {1, 3, 4}  # 已核实可用于状态判断: 1 冲击涨停 / 3 涨停回封 / 4 涨停开板 (其余事件召回或语义未核实, 不用)
+TOUCHING_TTL_S = 60
 _TICKET_BODY = {"channel": "tick_stream", "stream_version": "stream_limit_event_v2", "ttl_seconds": 600,
                 "symbols": [], "event_types": list(range(1, 13))}
 _KEEP = ("symbol", "name", "time", "event", "servertime", "last_price", "limit_price", "amount",
@@ -41,6 +44,17 @@ _KEEP = ("symbol", "name", "time", "event", "servertime", "last_price", "limit_p
 class Touch:
     at: datetime
     source: str  # touch=冲击涨停事件(触板时刻) / sealed、resealed=封死/回封事件(晚于触板)
+
+
+@dataclass(frozen=True)
+class LimitState:
+    """事件流给出的涨停状态: 只是正向证据, 流有静默缺口, 没有事件不代表没开板。
+    status "none" 表示「没有证据」, 绝不是反向证据。"""
+    status: Literal["sealed_confirmed", "touching", "opened", "none"]
+    at: datetime | None          # 决定 status 的最近事件的交易所时间
+    touch_at: datetime | None    # 首次触板时间 (同 touch_times)
+    confirmed_opens: int         # 事件 4 的次数
+    pool_open_times: int | None  # 涨停池 open_times, 无则 None
 
 
 def parse_push(fields: list[str], message: dict, recv_ms: int) -> list[dict]:
@@ -64,7 +78,7 @@ class LimitStream:
                  ticket: Callable[[dict], dict] | None = None,
                  connect: Callable[[str], object] | None = None,
                  sleep: Callable[[float], bool] | None = None,
-                 pool: Callable[[date], list[tuple[str, str]]] | None = None) -> None:
+                 pool: Callable[[date], list[tuple]] | None = None) -> None:
         self._dir = Path(data_dir).joinpath(*ROOT)
         self._enabled, self._now = enabled, now
         self._is_trading_day = is_trading_day or _default_trading_day
@@ -79,6 +93,7 @@ class LimitStream:
         self._day: date | None = None
         self._events: list[dict] = []
         self._touch: dict[str, Touch] = {}
+        self._pool_opens: dict[str, int] = {}
         self._status = {"state": "idle", "connected_at": None, "last_message_at": None, "reconnects": 0,
                         "seq_gaps": 0, "last_error": None, "pool_at": None, "pool_error": None}
 
@@ -86,6 +101,36 @@ class LimitStream:
     def touch_times(self, day: date | None = None) -> dict[str, Touch]:
         with self._lock:
             return dict(self._touch) if (day or self._day) == self._day else {}
+
+    def limit_state(self, now: datetime | None = None, day: date | None = None) -> dict[str, LimitState]:
+        """按交易所时间取每只股最近一条 1/3/4 事件定状态 (同一毫秒 4 优先); 触板 60 秒后失效为 none。"""
+        now = now or self._now()
+        with self._lock:
+            if self._day is None:  # 刚重启尚无推送: 从当日留档恢复
+                self._roll(now.date())
+            if (day or self._day) != self._day:
+                return {}
+            latest: dict[str, tuple[tuple[int, int], int]] = {}
+            opens: dict[str, int] = {}
+            for e in self._events:
+                if e["event"] not in STATE_EVENTS:
+                    continue
+                sym, key = e["symbol"], (e["time"], 1 if e["event"] == 4 else 0)
+                opens[sym] = opens.get(sym, 0) + (e["event"] == 4)
+                if sym not in latest or key >= latest[sym][0]:
+                    latest[sym] = (key, e["event"])
+            out = {}
+            for sym, ((ms, _), event) in latest.items():
+                at = datetime.fromtimestamp(ms / 1000, CN_TZ)
+                if event == 4:
+                    status = "opened"
+                elif event == 3:
+                    status = "sealed_confirmed"
+                else:
+                    status = "touching" if (now - at).total_seconds() <= TOUCHING_TTL_S else "none"
+                touch = self._touch.get(sym)
+                out[sym] = LimitState(status, at, touch.at if touch else None, opens[sym], self._pool_opens.get(sym))
+            return out
 
     def events(self, symbol: str | None = None, day: date | None = None) -> list[dict]:
         with self._lock:
@@ -165,7 +210,10 @@ class LimitStream:
             return
         with self._lock:
             self._roll(now.date())
-            for symbol, first_time in rows:
+            for row in rows:
+                symbol, first_time = row[0], row[1]
+                if len(row) > 2 and isinstance(row[2], int):
+                    self._pool_opens[symbol] = row[2]
                 try:
                     at = datetime.combine(now.date(), time.fromisoformat(first_time), CN_TZ)
                 except (TypeError, ValueError):
@@ -221,7 +269,8 @@ class LimitStream:
         """调用方持锁。换日清空; 首次进入某日从留档恢复。"""
         if self._day == day:
             return
-        self._day, self._events, self._touch = day, [], {}
+        self._day, self._events, self._touch, self._pool_opens = day, [], {}, {}
+        self._status["seq_gaps"] = 0
         path = self._path(day)
         if path.exists():
             for line in path.read_text(encoding="utf-8").splitlines():
@@ -261,11 +310,12 @@ def _default_trading_day(now: datetime) -> bool | None:
     return is_trading_day(now)
 
 
-def _default_pool(day: date) -> list[tuple[str, str]]:
+def _default_pool(day: date) -> list[tuple[str, str, int | None]]:
     frame = custom_sources.get_provider("meoz").get_limit_events(day)
     # 只取涨停方向 (u 涨停 / ub 涨停炸板); 跌停池的 first_time 是触及跌停的时间
-    return [(row["symbol"], row["first_time"])
-            for row in frame.filter(frame["type"].is_in(["u", "ub"])).select("symbol", "first_time").iter_rows(named=True)
+    cols = ["symbol", "first_time"] + (["open_times"] if "open_times" in frame.columns else [])
+    return [(row["symbol"], row["first_time"], row.get("open_times"))
+            for row in frame.filter(frame["type"].is_in(["u", "ub"])).select(cols).iter_rows(named=True)
             if row["first_time"]]
 
 

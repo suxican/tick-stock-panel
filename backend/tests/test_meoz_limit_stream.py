@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 
 import httpx
 import pytest
@@ -113,6 +113,16 @@ def test_seq_gap_counted_and_non_stream_messages_ignored(tmp_path):
     assert stream.status()["seq_gaps"] == 1 and len(stream.events()) == 2
 
 
+def test_seq_gaps_reset_on_day_change(tmp_path):
+    stream, _, _ = make(tmp_path, [[SUB, push(1, row("000001.SZ", 1, _ms(9, 38, 0))),
+                                    push(4, row("000002.SZ", 1, _ms(9, 39, 0)))]])
+    stream._run()
+    assert stream.status()["seq_gaps"] == 1
+    next_day = datetime(2026, 11, 20, 10, 0, tzinfo=CN_TZ)
+    stream._ingest([{"symbol": "000003.SZ", "name": "x", "time": 1, "event": 1}], next_day)
+    assert stream.status()["seq_gaps"] == 0
+
+
 def test_reconnects_with_fresh_ticket_after_disconnect(tmp_path):
     stream, tickets, urls = make(tmp_path, [
         [SUB, push(1, row("000001.SZ", 1, _ms(9, 38, 0))), ConnectionError("wss://x?ticket=SECRET")],
@@ -213,4 +223,65 @@ def test_default_pool_ignores_limit_down_rows(monkeypatch):
     frame = pl.DataFrame({"symbol": ["a", "b", "c"], "type": ["u", "d", "ub"], "first_time": ["09:31:00", "09:32:00", "09:33:00"]})
     provider = type("P", (), {"get_limit_events": lambda self, day: frame})()
     monkeypatch.setattr(ls.custom_sources, "get_provider", lambda name: provider)
-    assert ls._default_pool(NOW.date()) == [("a", "09:31:00"), ("c", "09:33:00")]
+    assert ls._default_pool(NOW.date()) == [("a", "09:31:00", None), ("c", "09:33:00", None)]
+
+# ---- limit_state: 事件流正向证据 ----
+
+def _state_stream(tmp_path, *events, now=NOW):
+    stream = ls.LimitStream(tmp_path, now=lambda: now)
+    stream._ingest([{"symbol": sym, "name": "x", "time": ms, "event": ev} for sym, ev, ms in events], NOW)
+    return stream
+
+
+def test_limit_state_confirmed_seal(tmp_path):
+    stream = _state_stream(tmp_path, ("000001.SZ", 1, _ms(9, 40, 0)), ("000001.SZ", 3, _ms(9, 41, 0)))
+    st = stream.limit_state()["000001.SZ"]
+    assert st.status == "sealed_confirmed" and st.at.strftime("%H:%M:%S") == "09:41:00"
+    assert st.touch_at.strftime("%H:%M:%S") == "09:40:00" and st.confirmed_opens == 0 and st.pool_open_times is None
+
+
+def test_limit_state_touching_expires(tmp_path):
+    stream = _state_stream(tmp_path, ("000001.SZ", 1, _ms(9, 59, 30)))
+    assert stream.limit_state()["000001.SZ"].status == "touching"
+    later = datetime(2026, 11, 19, 10, 1, 0, tzinfo=CN_TZ)
+    assert stream.limit_state(now=later)["000001.SZ"].status == "none"
+
+
+def test_limit_state_opened_counts_confirmed_opens(tmp_path):
+    seq = [(1, (9, 31, 0)), (3, (9, 32, 1)), (4, (9, 35, 2)), (1, (9, 40, 7)), (3, (9, 41, 9)), (4, (9, 50, 3))]
+    stream = _state_stream(tmp_path, *[("600360.SH", ev, _ms(*t)) for ev, t in seq])
+    st = stream.limit_state()["600360.SH"]
+    assert st.status == "opened" and st.confirmed_opens == 2 and st.at.strftime("%H:%M:%S") == "09:50:03"
+
+
+def test_limit_state_same_millisecond_prefers_open(tmp_path):
+    stream = _state_stream(tmp_path, ("000001.SZ", 4, _ms(9, 50, 0)), ("000001.SZ", 1, _ms(9, 50, 0)))
+    assert stream.limit_state()["000001.SZ"].status == "opened"
+
+
+def test_limit_state_wrong_day_empty(tmp_path):
+    stream = _state_stream(tmp_path, ("000001.SZ", 1, _ms(9, 59, 30)))
+    assert stream.limit_state(day=date(2026, 11, 18)) == {}
+
+
+def test_limit_state_restored_from_archive(tmp_path):
+    first = _state_stream(tmp_path, ("000001.SZ", 1, _ms(9, 40, 0)), ("000001.SZ", 3, _ms(9, 41, 0)))
+    assert first.limit_state()
+    second = ls.LimitStream(tmp_path, now=lambda: NOW)
+    assert second.limit_state()["000001.SZ"].status == "sealed_confirmed"
+
+
+def test_limit_state_ignores_unverified_events(tmp_path):
+    stream = _state_stream(tmp_path, *[("000001.SZ", ev, _ms(9, 40, ev)) for ev in (2, 5, 6, 7)])
+    assert stream.limit_state() == {}
+
+
+def test_poll_pool_records_open_times(tmp_path):
+    stream = ls.LimitStream(tmp_path, now=lambda: NOW,
+                            pool=lambda day: [("600360.SH", "09:32:36", 4), ("X", "09:30:00")])
+    stream._ingest([{"symbol": "600360.SH", "name": "x", "time": _ms(9, 31, 0), "event": 1}], NOW)
+    stream.poll_pool()
+    state = stream.limit_state()
+    assert state["600360.SH"].pool_open_times == 4
+    assert "X" not in state and stream._pool_opens == {"600360.SH": 4}
+

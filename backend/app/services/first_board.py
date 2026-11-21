@@ -37,6 +37,7 @@ from app.services.first_board_context import (
 )
 from app.services.first_board_data_status import build_data_status, radar_clocks
 from app.services.first_board_feedback import FirstBoardFeedback, empty_feedback, expire_feedback
+from app.services.first_board_exchange_limit import exchange_limit_evidence
 from app.services.first_board_seal import load_sealed, polling_status, seal_quality
 from app.services.first_board_observations import FirstBoardObservationStore
 from app.services.first_board_portfolio import (
@@ -730,6 +731,17 @@ class FirstBoardService:
             logger.warning("交易所触板时间读取失败, 回退本地观测", exc_info=True)
             return {}
 
+    def _exchange_limit_states(self, now: datetime) -> tuple[dict, dict | None]:
+        """交易所事件流的今日涨停状态与连接状态; 仅作正向证据, 失败时返回空结果。"""
+        try:
+            from app.services.meoz_limit_stream import get_stream
+
+            stream = get_stream(self.repo.store.data_dir)
+            return stream.limit_state(now, day=now.date()), stream.status()
+        except Exception:  # noqa: BLE001 - 可选证据来源不得阻断原有评估
+            logger.warning("交易所涨停状态读取失败, 降级为未知", exc_info=True)
+            return {}, None
+
     def _attention(self, rows: list[dict], fresh: pl.DataFrame, now: datetime, live: bool) -> dict:
         symbols = sorted({row["symbol"] for row in rows})
         self._attention_input = {"minute_price_basis": "unknown", "minute_reason": "分钟输入尚未确认"}
@@ -897,6 +909,7 @@ class FirstBoardService:
             status_inputs = {"clocks": radar_clocks(radar), "minute": dict(self._attention_input),
                              "membership_reason": self._attention_data.reason}
             messages: list[dict] = []
+            exchange_limits, exchange_status = self._exchange_limit_states(now)
             with self._lock:
                 if self._stop.is_set() or config.revision != self._config.revision:
                     return
@@ -951,6 +964,13 @@ class FirstBoardService:
                                                amount=row["evidence"].get("amount"), live=live)
                         row["seal_quality"] = quality
                         row["evidence"]["seal_quality"] = quality
+                    # 交易所事件流只是正向证据: 不参与 state / can_buy / 阻断, 且每行独立副本。
+                    exchange_limit = exchange_limit_evidence(row["state"], exchange_limits.get(symbol),
+                                                             exchange_status, now=now)
+                    row["exchange_limit"] = exchange_limit
+                    row["evidence"]["exchange_limit"] = dict(exchange_limit)
+                    if exchange_limit["note"] and exchange_limit["note"] not in row["reasons"]:
+                        row["reasons"].append(exchange_limit["note"])
                     mainline = mainline_evidence(self._mainlines, self._mainline_members, symbol)
                     row["mainline"] = mainline
                     row["evidence"]["mainline"] = mainline
