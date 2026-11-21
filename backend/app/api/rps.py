@@ -9,7 +9,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.services import rps_rotation
+from app.services import rotation_reports, rps_rotation
 from app.services.concept_rotation_analyzer import analyze_rotation_stream
 from app.services.ndjson_heartbeat import with_heartbeat
 
@@ -62,11 +62,14 @@ async def analyze_rotation(request: Request, req: AnalyzeRequest):
     level = req.level if (kind == "industry" and req.level in (1, 2, 3)) else None
 
     async def stream_gen():
-        async for chunk in with_heartbeat(
+        # persist_stream 在 heartbeat 内层: 心跳行不进入累积, 流正常结束才自动落盘
+        persisted = rotation_reports.persist_stream(
             analyze_rotation_stream(
                 repo, days, req.focus, quote_service, depth_service, kind, level,
             ),
-        ):
+            kind=kind, level=level, days=days, focus=req.focus,
+        )
+        async for chunk in with_heartbeat(persisted):
             yield chunk + "\n"
 
     return StreamingResponse(
@@ -74,3 +77,21 @@ async def analyze_rotation(request: Request, req: AnalyzeRequest):
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ================================================================
+# 轮动分析历史报告(流结束时自动落盘, 这里只提供查/删)
+# ================================================================
+
+@router.get("/rotation-reports")
+def list_rotation_reports(
+    kind: str = Query("concept", pattern="concept|industry"),
+    level: int | None = Query(None, ge=1, le=3),
+) -> dict:
+    """某维度的历史报告(按时间降序); 行业可再按层级过滤。"""
+    return {"reports": rotation_reports.list_reports(kind, level)}
+
+
+@router.delete("/rotation-reports/{report_id}")
+def delete_rotation_report(report_id: str) -> dict:
+    return {"ok": rotation_reports.delete_report(report_id)}

@@ -259,6 +259,7 @@ export const QK = {
 
   // 概念涨幅轮动矩阵
   rpsRotation:          (days: number) => ['rps-rotation', days] as const,
+  rotationReports:      (kind: string, level?: number) => ['rotation-reports', kind, level ?? null] as const,
 
   // 市场环境(Regime) — 日级离线计算, 不进 SSE 刷新
   // 历史查询键 = 实际请求三元组 (影响结果的参数全部进键): 'all' 在 coverage

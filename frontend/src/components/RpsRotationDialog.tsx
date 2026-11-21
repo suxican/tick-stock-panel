@@ -1,8 +1,9 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Repeat, Sparkles, ArrowDownUp, RefreshCw, AlertCircle } from 'lucide-react'
-import { useQuery } from '@tanstack/react-query'
+import { X, Repeat, Sparkles, ArrowDownUp, RefreshCw, AlertCircle, History, Trash2 } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, friendlyStreamError } from '@/lib/api'
+import type { RotationReport } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
 import { fmtPct } from '@/lib/format'
@@ -62,6 +63,8 @@ export function RpsRotationDialog({ onClose, kind = 'concept' }: Props) {
   const [analysisError, setAnalysisError] = useState('')  // 错误信息
   const [analysisMeta, setAnalysisMeta] = useState<{ summary?: string } | null>(null)
   const [focus, setFocus] = useState('')                  // 用户追加的关注点
+  const [showHistory, setShowHistory] = useState(false)   // 历史报告列表展开
+  const queryClient = useQueryClient()
 
   const runAnalysis = useCallback(async (daysParam: number, focusParam: string) => {
     setAnalyzing(true)
@@ -80,11 +83,33 @@ export function RpsRotationDialog({ onClose, kind = 'concept' }: Props) {
       setAnalysisError(friendlyStreamError(e instanceof Error ? e.message : String(e)))
     } finally {
       setAnalyzing(false)
+      // 后端在流正常结束时自动落盘, 这里刷新历史列表
+      queryClient.invalidateQueries({ queryKey: ['rotation-reports'] })
     }
-  }, [kind, level])
+  }, [kind, level, queryClient])
+
+  // 历史报告: 按维度(行业再按层级)隔离
+  const lvParam = kind === 'industry' ? level : undefined
+  const { data: historyData } = useQuery({
+    queryKey: QK.rotationReports(kind, lvParam),
+    queryFn: () => api.rotationReportsList(kind, lvParam),
+  })
+  const historyReports = historyData?.reports ?? []
+
+  const openHistory = (r: RotationReport) => {
+    setAnalysis(r.content)
+    setAnalysisError('')
+    setAnalysisMeta({ summary: r.summary })
+    setFocus(r.focus)
+    setShowHistory(false)
+  }
+
+  const deleteHistory = async (id: string) => {
+    await api.rotationReportDelete(id)
+    queryClient.invalidateQueries({ queryKey: ['rotation-reports'] })
+  }
 
   // 数据请求: React Query 缓存, 同 (kind, level, days) 5 分钟内重开秒开
-  const lvParam = kind === 'industry' ? level : undefined
   const { data, isLoading, error } = useQuery({
     queryKey: [...QK.rpsRotation(days), kind, lvParam],
     queryFn: () => api.rpsRotation(days, kind, lvParam),
@@ -254,6 +279,18 @@ export function RpsRotationDialog({ onClose, kind = 'concept' }: Props) {
                 <span className="text-[11px] text-accent/80 truncate">{analysisMeta.summary}</span>
               )}
               <div className="flex items-center gap-1.5 ml-auto">
+                <button
+                  onClick={() => setShowHistory(v => !v)}
+                  disabled={analyzing}
+                  className={cn(
+                    'inline-flex items-center gap-1 px-2 py-0.5 rounded-btn text-[11px] transition-colors cursor-pointer border disabled:opacity-50 disabled:cursor-not-allowed',
+                    showHistory
+                      ? 'bg-accent/10 text-accent border-accent/30'
+                      : 'border-border text-muted hover:text-secondary hover:bg-elevated',
+                  )}
+                >
+                  <History className="h-3 w-3" />历史{historyReports.length > 0 ? ` (${historyReports.length})` : ''}
+                </button>
                 <input
                   type="text"
                   value={focus}
@@ -283,7 +320,33 @@ export function RpsRotationDialog({ onClose, kind = 'concept' }: Props) {
 
             {/* 报告内容区: 四态渲染 */}
             <div ref={analysisRef} className="flex-1 min-h-0 overflow-auto">
-              {analysisError ? (
+              {showHistory ? (
+                historyReports.length === 0 ? (
+                  <div className="px-4 py-4 text-center text-[11px] text-muted/60">暂无历史报告,生成分析后会自动保存</div>
+                ) : (
+                  <ul className="divide-y divide-border/40">
+                    {historyReports.map(r => (
+                      <li key={r.id} className="group flex items-center gap-2 px-4 py-1.5 hover:bg-elevated/40">
+                        <button onClick={() => openHistory(r)} className="flex-1 min-w-0 text-left cursor-pointer">
+                          <div className="flex items-center gap-2 text-[11px]">
+                            <span className="text-foreground tabular-nums shrink-0">{r.created_at.replace('T', ' ').slice(0, 16)}</span>
+                            <span className="text-muted shrink-0">{r.days} 天</span>
+                            {r.focus && <span className="text-accent/80 truncate">关注: {r.focus}</span>}
+                          </div>
+                          {r.summary && <div className="text-[10px] text-muted truncate">{r.summary}</div>}
+                        </button>
+                        <button
+                          aria-label="删除历史报告"
+                          onClick={() => deleteHistory(r.id)}
+                          className="p-1 rounded text-muted/60 hover:text-danger hover:bg-elevated cursor-pointer shrink-0"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )
+              ) : analysisError ? (
                 <div className="flex items-center gap-2 px-4 py-4 text-[11px] text-danger">
                   <AlertCircle className="h-3.5 w-3.5 shrink-0" />
                   <span>{analysisError}</span>
