@@ -134,7 +134,7 @@ export function FirstBoard() {
           <ErrorNotice error={snapshot.error ?? refresh.error} retry={() => refresh.mutate()} />
           {matrix.isError && <Notice error>行情能力状态读取失败。<a href="/settings?tab=data-sources" className="ml-2 underline">检查数据源配置</a></Notice>}
           {!!missing.length && <Notice>当前数据源缺少可用的{missing.map(item => item.label).join('、')}。<a href="/settings?tab=data-sources" className="ml-2 underline">配置数据源</a></Notice>}
-          {data && <LiveStatus data={data} retained={snapshot.isError || refresh.isError} />}
+          {data && <LiveStatus data={data} retained={snapshot.isError || refresh.isError} muted={snapshot.isError || refresh.isError || data.yesterday_feedback?.status === 'stale'} />}
           {data && <YesterdayFeedback data={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} onOpenStock={openList}>
             <OpeningDistribution feedback={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} />
           </YesterdayFeedback>}

@@ -1,5 +1,4 @@
 import { cn } from '@/lib/cn'
-import { fmtPct, priceColorClass } from '@/lib/format'
 import type { FirstBoardTemperature, FirstBoardTemperatureTier } from '@/lib/api'
 import { positiveBadgeClass } from './shared'
 
@@ -29,8 +28,6 @@ export function TemperatureBadge({ value }: { value?: FirstBoardTemperature }) {
   const stage = stageLabel(value)
   return <div data-first-board-temperature title={title} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
     <span className={cn('inline-flex shrink-0 items-center whitespace-nowrap rounded border px-2 py-0.5 text-sm font-medium', tierClasses[value.tier])}>首板温度 · {value.label}</span>
-    <span className="tabular-nums">封板率 {value.seal_rate == null ? '—' : `${Math.round(value.seal_rate * 100)}%`}</span>
-    <span className="tabular-nums">昨日首板均涨 <span className={priceColorClass(value.feedback_mean)}>{fmtPct(value.feedback_mean)}</span></span>
     {stage && <span className="text-secondary">{stage}</span>}
   </div>
 }

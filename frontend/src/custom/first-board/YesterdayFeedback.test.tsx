@@ -44,16 +44,15 @@ function metric(label: string) {
   return [...host.querySelectorAll('dt')].find(item => item.textContent === label)?.nextElementSibling
 }
 
-it('collapses to key indicators by default and remembers the expanded distribution', async () => {
+it('collapses to the header by default and remembers the expanded distribution', async () => {
   await render({ ...feedback(), opening_distribution: { sample_count: 12, open_count: 10, history_excluded_count: 0, up_count: 6, up_ratio: .6, mean_open_premium: .01, bins: [] } })
   const toggle = [...host.querySelectorAll('button')].find(item => item.textContent === '展开分布')!
   expect(toggle.getAttribute('aria-expanded')).toBe('false')
   expect(host.textContent).not.toContain('原盯盘状态')
   expect(metric('中位数')).toBeUndefined()
-  expect(metric('平均溢价')?.textContent).toBe('+1.56%')
-  expect(metric('平均溢价')?.classList.contains('text-bull')).toBe(true)
-  expect(metric('当前二板')?.textContent).toBe('8 / 40')
-  expect(metric('非一字涨停开盘上涨占比')?.textContent).toBe('60.00%')
+  expect(metric('平均溢价')).toBeUndefined()
+  expect(metric('当前二板')).toBeUndefined()
+  expect(metric('非一字涨停开盘上涨占比')).toBeUndefined()
   expect(host.textContent).toContain('样本 2026-10-26')
   await click('主板')
   await click('展开分布')
@@ -115,6 +114,7 @@ it('preserves selected scope and open details when quotes refresh', async () => 
 it('keeps missing values distinct from zero and does not invent a complete promotion rate', async () => {
   const data = feedback()
   await render({ ...data, status: 'partial', groups: { ...data.groups, all: { ...summary, quote_count: 30, coverage: .75, mean_change_pct: null, up_ratio: null, limit_known_count: 30, limit_up_ratio: null } } })
+  await click('展开分布')
   expect(metric('平均溢价')?.textContent).toBe('—')
   expect(metric('上涨占比')?.textContent).toContain('—')
   expect(metric('当前二板')?.textContent).toContain('8 / 40')
@@ -124,6 +124,7 @@ it('keeps missing values distinct from zero and does not invent a complete promo
 
 it('retains values with a refresh failure message and neutralizes stale price emphasis', async () => {
   await render(feedback(), true)
+  await click('展开分布')
   expect(metric('平均溢价')?.textContent).toBe('+1.56%')
   expect(metric('平均溢价')?.classList.contains('text-bull')).toBe(false)
   expect(host.textContent).toContain('刷新失败，保留上次快照')

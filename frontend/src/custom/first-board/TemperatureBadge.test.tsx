@@ -15,13 +15,13 @@ function render(value?: FirstBoardTemperature) {
 const node = (host: HTMLElement) => host.querySelector<HTMLElement>('[data-first-board-temperature]')!
 const badge = (host: HTMLElement) => [...host.querySelectorAll<HTMLElement>('span')].find(item => item.textContent?.startsWith('首板温度'))!
 
-it('shows tier, both inputs and stage', () => {
+it('shows tier and stage without repeating the key numbers', () => {
   const host = render(base)
   const text = node(host).textContent!
   expect(text).toContain('首板温度 · 进攻')
-  expect(text).toContain('封板率 72%')
-  expect(text).toContain('昨日首板均涨 +2.50%')
   expect(text).toContain('盘中')
+  expect(text).not.toContain('封板率')
+  expect(text).not.toContain('昨日首板均涨')
   expect(badge(host).className).toContain('blue')
   expect(node(host).title).toContain('只作显示，不影响买入提示与建议金额。')
 })
@@ -30,7 +30,6 @@ it('marks rest in amber with the close date', () => {
   const host = render({ ...base, tier: 'rest', label: '休息', seal_rate: .68, feedback_mean: -.0448, stage: 'close' })
   const text = node(host).textContent!
   expect(text).toContain('首板温度 · 休息')
-  expect(text).toContain('昨日首板均涨 -4.48%')
   expect(text).toContain('11/20 收盘')
   expect(badge(host).className).toContain('amber')
 })
@@ -41,10 +40,9 @@ it('flags the early reading', () => {
   expect(node(host).title).toContain('早盘参考性较弱。')
 })
 
-it('explains unknown and shows placeholders', () => {
+it('explains unknown in the tooltip', () => {
   const host = render({ ...base, tier: 'unknown', label: '待确认', seal_rate: null, reason: '封板率暂不可用（缺少炸板数据）' })
   expect(node(host).textContent).toContain('首板温度 · 待确认')
-  expect(node(host).textContent).toContain('封板率 —')
   expect(node(host).title).toContain('待确认原因：封板率暂不可用（缺少炸板数据）')
 })
 

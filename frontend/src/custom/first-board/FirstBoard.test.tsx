@@ -705,6 +705,7 @@ it('marks yesterday feedback as a retained snapshot when a manual refresh fails'
   calls.firstBoardRefresh.mockRejectedValue(new Error('刷新请求失败'))
   await render()
   await click('刷新')
+  await click('展开分布')
   const feedback = host.querySelector('[data-yesterday-feedback]')!
   expect(feedback.textContent).toContain('刷新失败，保留上次快照')
   const mean = [...feedback.querySelectorAll('dt')].find(item => item.textContent === '平均溢价')!.nextElementSibling!
@@ -926,8 +927,8 @@ it('keeps the market temperature collapsed by default, remembers expansion and p
   await render()
   const feedback = host.querySelector('[data-yesterday-feedback]')!
   expect(button('展开分布').getAttribute('aria-expanded')).toBe('false')
-  // 收起时只显示关键指标，不渲染开盘分布、完整指标与明细。
-  expect([...feedback.querySelectorAll('dt')].find(item => item.textContent === '平均溢价')?.nextElementSibling?.textContent).toBe('+7.00%')
+  // 收起时只显示标题行，数字已在页面顶部，不渲染开盘分布、完整指标与明细。
+  expect([...feedback.querySelectorAll('dt')].find(item => item.textContent === '平均溢价')).toBeUndefined()
   expect(feedback.textContent).not.toContain('中位数')
   expect(feedback.textContent).not.toContain('今日开盘涨幅分布')
   expect(button('查看明细')).toBeUndefined()
@@ -963,14 +964,14 @@ it('shows global blocking reasons once in the status gate and keeps only stock r
   const realtime = '全局实时行情未启用, 请在实时行情设置中开启后继续盯盘'
   const session = '当前不在有效盘中时段'
   const coverage = '剔除本股后行业同行行情覆盖率不足 80%（同行有效行情 0/84，覆盖率 0.0%）'
-  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), status: 'closed', message: '当前为非交易时段, 显示最近行情观察结果, 不触发买卖提示。',
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), status: 'stale', message: '缺少当日新鲜行情, 买入提示已暂停。',
     global_blocked_reasons: [realtime, session], rows: [
       candidate('A', { can_buy: false, change_pct: .09, blocked_reasons: [realtime, session, coverage] }),
       candidate('B', { can_buy: false, change_pct: .07, blocked_reasons: [realtime, session] }),
     ] })
   await render()
   const gate = host.querySelector('[aria-label="盯盘状态"]')!
-  expect(gate.textContent).toContain('当前为非交易时段')
+  expect(gate.textContent).toContain('缺少当日新鲜行情')
   expect(gate.textContent).toContain(realtime)
   expect(gate.textContent).toContain(session)
   const [first, second] = candidateRows()
@@ -1457,8 +1458,8 @@ it('puts the temperature first in the live status and hides it for old backends'
   calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), temperature })
   await render()
   const status = host.querySelector('section[aria-label="盯盘状态"]')!
-  expect(status.firstElementChild?.hasAttribute('data-first-board-temperature')).toBe(true)
-  expect(status.firstElementChild?.textContent).toContain('首板温度 · 休息')
+  expect(status.firstElementChild?.firstElementChild?.hasAttribute('data-first-board-temperature')).toBe(true)
+  expect(status.firstElementChild?.firstElementChild?.textContent).toContain('首板温度 · 休息')
   calls.firstBoardSnapshot.mockResolvedValue(snapshot())
   await click('刷新')
   await settle()
@@ -1466,4 +1467,95 @@ it('puts the temperature first in the live status and hides it for old backends'
   await settle()
   expect(host.querySelector('[data-first-board-temperature]')).toBeNull()
   expect(host.textContent).toContain('市场环境')
+})
+const alertNodes = () => [...host.querySelectorAll<HTMLElement>('section[aria-label="盯盘状态"] [data-first-board-alert]')]
+function blockedStatus(): NonNullable<FirstBoardSnapshot['data_status']> {
+  const ready = { status: 'ready', known: 1, total: 1, detail: '已核验一只股票' } as const
+  return { version: 1, trade_date: beijingDay(), observed_at: '2026-09-30T10:00:00+08:00', checked_at: '2026-09-30T10:00:05+08:00',
+    phase: 'live', monitor_enabled: true, realtime_status: 'blocked', realtime_reason: '全局实时行情未启用', in_session: true, same_day: true,
+    quote_max_age_seconds: 30, symbol_count: 1, sampling: { status: 'recorded', sample_count: 3, last_sample_at: '2026-09-30T09:55:00+08:00' },
+    metrics: { quotes: ready, industry: ready, concept: ready, minute: ready, popularity: ready, theme: ready, ma: ready, macd: ready, priority: ready } }
+}
+it('shows the environment block outside the fold', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), environment: { label: '偏弱', allowed: false, reason: '参考交易日市场环境不在允许范围' } })
+  await render()
+  const alert = alertNodes().find(node => node.textContent?.includes('暂不允许提示'))!
+  expect(alert.closest('[hidden]')).toBeNull()
+  expect(alert.textContent).toContain('市场环境：偏弱')
+})
+it('keeps the realtime block visible when closed', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), status: 'closed', message: '当前为非交易时段', data_status: blockedStatus() })
+  await render()
+  const alert = alertNodes().find(node => node.textContent?.includes('全局实时行情未启用'))!
+  expect(alert.closest('[hidden]')).toBeNull()
+  expect(alert.querySelector('a')?.getAttribute('href')).toBe('/settings?tab=data-sources')
+})
+it('shows a single line when closed', async () => {
+  const session = '当前不在有效盘中时段'
+  const message = '当前为非交易时段, 显示最近行情观察结果, 不触发买卖提示。'
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), status: 'closed', message, global_blocked_reasons: [session],
+    data_status: { ...blockedStatus(), realtime_status: 'available', realtime_reason: null },
+    rows: [candidate('A', { can_buy: false, blocked_reasons: [session] })] })
+  await render()
+  expect(host.querySelector('section[aria-label="盯盘状态"]')!.textContent).toContain(message)
+  expect(host.textContent).not.toContain(session)
+  expect(candidateRows()[0].textContent).toContain('受全局条件暂停')
+})
+it('folds environment, phase, ladder and dates until expanded', async () => {
+  const base = snapshot()
+  calls.firstBoardSnapshot.mockResolvedValue({ ...base,
+    environment: { ...base.environment, date: '2026-11-10', phase: 'repair', phase_label: '修复', ladder: { max_consecutive: 7, promo_rate: .36, seal_rate: .82 } },
+    market_ladder: { as_of: '2026-11-11', observed_at: '2026-11-11T10:00:00+08:00', live: true, sealed_corrected: false, limit_up: 51, broken: 23, limit_down: 1,
+      max_consecutive: 4, first_board: 35, ge2_count: 16, seal_rate: .6892, promo_rate: .25, promo_pool: 48 } })
+  await render()
+  const status = host.querySelector('section[aria-label="盯盘状态"]')!
+  const folded = (text: string) => [...status.querySelectorAll('*')].filter(node => node.textContent?.includes(text) && ![...node.children].some(child => child.textContent?.includes(text))).map(node => node.closest('[hidden]'))
+  for (const text of ['市场环境：强势', '情绪阶段（昨日）：修复', '盘中梯队：', '交易日期']) {
+    expect(folded(text).length, text).toBeGreaterThan(0)
+    expect(folded(text).every(node => node !== null), text).toBe(true)
+  }
+  expect(status.querySelector('dl[aria-label="关键数字"]')!.closest('[hidden]')).toBeNull()
+  const toggle = [...status.querySelectorAll('button')].find(node => node.textContent?.startsWith('数据与环境'))!
+  expect(toggle.getAttribute('aria-expanded')).toBe('false')
+  await act(async () => toggle.click())
+  expect(toggle.getAttribute('aria-expanded')).toBe('true')
+  expect(folded('情绪阶段（昨日）：修复').every(node => node === null)).toBe(true)
+})
+
+it('wires the key numbers to the snapshot and mutes the feedback mean when it is stale', async () => {
+  const feedback = yesterdayFeedback()
+  feedback.groups.all = { ...feedback.groups.all, mean_change_pct: -.0448, sample_count: 19, limit_up_count: 1, limit_known_count: 19 }
+  const ladder = { as_of: beijingDay(), observed_at: '2026-09-30T15:00:00+08:00', live: false, sealed_corrected: true, limit_up: 30, broken: 14, limit_down: 61,
+    max_consecutive: 4, first_board: 26, ge2_count: 4, seal_rate: .6818, promo_rate: .14, promo_pool: 28 }
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), market_ladder: ladder, yesterday_feedback: feedback })
+  await render()
+  const numbers = () => host.querySelector('dl[aria-label="关键数字"]')!
+  const mean = () => [...numbers().querySelectorAll('dt')].find(node => node.textContent === '昨日首板均涨')!.nextElementSibling!
+  expect([...numbers().querySelectorAll('dd')].map(node => node.textContent)).toEqual(['68%', '-4.48%', '1 / 19', '30:61', '4 板'])
+  expect(mean().className).toContain('text-bear')
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), market_ladder: ladder, yesterday_feedback: { ...feedback, status: 'stale' } })
+  await click('刷新')
+  await settle()
+  await act(async () => { await client.refetchQueries() })
+  await settle()
+  expect(mean().className).not.toContain('text-bear')
+})
+it('keeps the seal polling warning and the closed message outside the fold, without repeating the realtime reason', async () => {
+  const message = '当前为非交易时段, 显示最近行情观察结果, 不触发买卖提示。'
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), status: 'closed', message, seal_polling: { running: false, reason: '未开启连板梯队监控' },
+    global_blocked_reasons: ['全局实时行情未启用'], data_status: blockedStatus() })
+  await render()
+  const polling = alertNodes().find(node => node.textContent?.includes('盘中封单未开启'))!
+  expect(polling.closest('[hidden]')).toBeNull()
+  const line = [...host.querySelectorAll('section[aria-label="盯盘状态"] [role="status"]')].find(node => node.textContent?.includes(message))!
+  expect(line.closest('[hidden]')).toBeNull()
+  const reason = '全局实时行情未启用'
+  const visible = [...host.querySelectorAll('section[aria-label="盯盘状态"] *')].filter(node => !node.closest('[hidden]')
+    && node.textContent?.includes(reason) && ![...node.children].some(child => child.textContent?.includes(reason)))
+  expect(visible).toHaveLength(1)
+})
+it('still lists the global reasons when a closed snapshot has no data status (older backend)', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), status: 'closed', message: '当前为非交易时段', global_blocked_reasons: ['全局实时行情未启用'] })
+  await render()
+  expect(host.querySelector('section[aria-label="盯盘状态"]')!.textContent).toContain('全局实时行情未启用')
 })
