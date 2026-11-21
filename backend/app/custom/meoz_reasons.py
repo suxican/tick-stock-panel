@@ -15,6 +15,7 @@ from app.services.meoz_strongest_vent import StrongestVentUnavailableError
 from app.services.meoz_strongest_vent import read as read_strongest_vent
 from app.services.meoz_theme_reasons import ThemeReasonsUnavailableError
 from app.services.meoz_theme_reasons import read as read_theme_reasons
+from app.services.meoz_theme_reasons import read_latest as read_latest_theme_reasons
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +38,11 @@ def limit_reasons(request: Request, date: date) -> dict:
 
 
 @router.get("/theme-reasons")
-def theme_reasons(request: Request, date: date) -> dict:
+def theme_reasons(request: Request, date: date, latest: bool = False) -> dict:
+    """latest=true: 当日无数据 (休市日等) 时回退到最近有数据的交易日, 包内 date 为实际日期。"""
     try:
-        return read_theme_reasons(request.app.state.repo.store.data_dir, date)
+        data_dir = request.app.state.repo.store.data_dir
+        return (read_latest_theme_reasons if latest else read_theme_reasons)(data_dir, date)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except ThemeReasonsUnavailableError as exc:

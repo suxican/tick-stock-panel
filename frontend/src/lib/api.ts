@@ -372,6 +372,17 @@ export interface AiStockReport {
   created_at: string
 }
 
+export interface RotationReport {
+  id: string
+  kind: 'concept' | 'industry'
+  level: number | null
+  days: number
+  focus: string
+  content: string
+  summary?: string
+  created_at: string
+}
+
 // ===== Kline =====
 export interface MinuteKlineRow {
   datetime: string
@@ -1238,7 +1249,7 @@ export interface MeozHotRank {
   themes: { available: boolean; rows: MeozHotTheme[] }
 }
 
-/** èצ��ǿ��� (fengk_kp ���ɰ�, �Ѱ�ǿ�Ƚ���); pct_chg ��С���� (0.1003 = 10.03%), ��λԪ */
+/** 猫爪最强风口 (fengk_kp 个股榜, 已按强度降序); pct_chg 是小数制 (0.1003 = 10.03%), 金额单位元 */
 export interface MeozStrongestVentRow {
   symbol: string
   name: string
@@ -1247,18 +1258,18 @@ export interface MeozStrongestVentRow {
   main_net_amount: number | null
   main_buy_amount: number | null
   main_sell_amount: number | null
-  /** �ź�ʱ�� (����ʱ�� ISO) */
+  /** 信号时间 (北京时间 ISO) */
   signal_at: string | null
   themes: string[]
 }
 export interface MeozStrongestVent {
   fetched_at: string
-  /** �ؿ�����; ʵʱΪ null */
+  /** 回看日期; 实时为 null */
   trade_date: string | null
   rows: MeozStrongestVentRow[]
 }
 
-/** èצ���� (news): ֻ����չʾ�ֶ�, ����ͼƬ������; display_at Ϊ����ʱ�� ISO */
+/** 猫爪新闻 (news): 只保留展示字段, 不含图片与正文; display_at 为北京时间 ISO */
 export interface MeozNewsRow {
   id: string
   published_at: string | null
@@ -4282,7 +4293,7 @@ export const api = {
   meozLimitReasons: (date: string) =>
     request<MeozLimitReasons>(`/api/meoz/limit-reasons?date=${date}`, { quiet: true, timeoutMs: 60_000 }),
   meozThemeReasons: (date: string) =>
-    request<MeozThemeReasons>(`/api/meoz/theme-reasons?date=${date}`, { quiet: true, timeoutMs: 60_000 }),
+    request<MeozThemeReasons>(`/api/meoz/theme-reasons?date=${date}&latest=true`, { quiet: true, timeoutMs: 60_000 }),
   meozHotRank: () => request<MeozHotRank>('/api/meoz/hot-rank', { quiet: true, timeoutMs: 60_000 }),
   meozStrongestVent: (date?: string) =>
     request<MeozStrongestVent>(date ? `/api/meoz/strongest-vent?date=${date}` : '/api/meoz/strongest-vent',
@@ -4542,6 +4553,12 @@ export const api = {
       '/api/zzshare/limit-reasons/sync',
       { method: 'POST', body: JSON.stringify({ date }), quiet: true, timeoutMs: extPullTimeoutMs() },
     ),
+  zzshareReasonsSchedule: () =>
+    request<ZzshareReasonsSchedule>('/api/zzshare/limit-reasons/schedule', { quiet: true }),
+  setZzshareReasonsSchedule: (enabled: boolean, time: string) =>
+    request<ZzshareReasonsSchedule>('/api/zzshare/limit-reasons/schedule', {
+      method: 'PUT', body: JSON.stringify({ enabled, time }), quiet: true,
+    }),
   zzshareResearch: (kind: ZzshareResearchKind, date: string, code?: string, plateType?: 14 | 15 | 17) => {
     const qs = new URLSearchParams({ date })
     if (code) qs.set('code', code)
@@ -4586,12 +4603,6 @@ export const api = {
       },
     ),
 
-  zzshareReasonsSchedule: () =>
-    request<ZzshareReasonsSchedule>('/api/zzshare/limit-reasons/schedule', { quiet: true }),
-  setZzshareReasonsSchedule: (enabled: boolean, time: string) =>
-    request<ZzshareReasonsSchedule>('/api/zzshare/limit-reasons/schedule', {
-      method: 'PUT', body: JSON.stringify({ enabled, time }), quiet: true,
-    }),
   /** 分时批量响应 gzip 压缩开关 (网络设置) — 逐请求即时生效 */
   updateMinuteBatchCompress: (enabled: boolean) =>
     request<Pick<Preferences, 'minute_batch_compress'>>('/api/settings/preferences/minute-batch-compress', {
@@ -5283,6 +5294,12 @@ export const api = {
   // 概念涨幅轮动矩阵: 每列(日期)各自把所有概念按当天涨幅从高到低排序
   rpsRotation: (days: number, kind?: 'concept' | 'industry', level?: number) =>
     request<RpsRotationData>(`/api/rps/rotation?days=${days}${kind ? `&kind=${kind}` : ''}${level ? `&level=${level}` : ''}`),
+
+  // 轮动分析历史报告(后端在流结束时自动落盘)
+  rotationReportsList: (kind: 'concept' | 'industry', level?: number) =>
+    request<{ reports: RotationReport[] }>(`/api/rps/rotation-reports?kind=${kind}${level ? `&level=${level}` : ''}`),
+  rotationReportDelete: (reportId: string) =>
+    request<{ ok: boolean }>(`/api/rps/rotation-reports/${encodeURIComponent(reportId)}`, { method: 'DELETE' }),
 
   // 市场环境(Regime)
   regimeHistory: (start?: string, end?: string, limit?: number) => {

@@ -203,6 +203,34 @@ def test_hot_rank_missing_plugin_is_unavailable(monkeypatch):
         hot.read()
 
 
+def test_latest_falls_back_over_weekend_to_last_day_with_data(env, monkeypatch):
+    sat = date(2026, 11, 21)
+    monkeypatch.setattr(svc, "cn_now", lambda: datetime(2026, 11, 21, 9, 0, tzinfo=CN_TZ))
+    env.fetch.side_effect = lambda day: {"rows": env.rows if day == DAY else [], "failed": []}
+    out = svc.read_latest(env.data_dir, sat)
+    assert (out["date"], out["rows"], out["final"]) == ("2026-11-19", env.rows, True)
+    assert date(2026, 11, 22) not in [c.args[0] for c in env.fetch.call_args_list]
+    assert date(2026, 11, 20) in [c.args[0] for c in env.fetch.call_args_list]  # 周五无数据继续回退
+
+
+def test_latest_on_weekday_keeps_polling_and_prefers_today(env, monkeypatch):
+    today = date(2026, 11, 20)
+    monkeypatch.setattr(svc, "cn_now", lambda: datetime(2026, 11, 20, 8, 0, tzinfo=CN_TZ))
+    env.fetch.side_effect = lambda day: {"rows": env.rows if day == DAY else [], "failed": []}
+    out = svc.read_latest(env.data_dir, today)
+    assert (out["date"], out["final"]) == ("2026-11-19", False)
+    monkeypatch.setattr(svc, "LIVE_TTL_S", -1)
+    env.fetch.side_effect = lambda day: {"rows": env.rows, "failed": []}
+    assert svc.read_latest(env.data_dir, today)["date"] == "2026-11-20"
+
+
+def test_latest_does_not_fall_back_when_a_source_failed(env, monkeypatch):
+    monkeypatch.setattr(svc, "cn_now", lambda: datetime(2026, 11, 21, 9, 0, tzinfo=CN_TZ))
+    env.fetch.side_effect = lambda day: {"rows": [], "failed": ["xgb"]}
+    out = svc.read_latest(env.data_dir, date(2026, 11, 21))
+    assert (out["date"], out["unavailable_sources"]) == ("2026-11-21", ["xgb"])
+
+
 # ---------------- routes ----------------
 
 def test_routes_map_errors(monkeypatch, tmp_path):

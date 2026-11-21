@@ -61,6 +61,13 @@ it('按题材合并两个来源的原因, 同名概念可跳转, 热搜显示', 
   expect([...host.querySelectorAll('button')].length).toBe(1) // 「养猪」无同名概念, 无跳转
 })
 
+it('当日无数据时后端回退到最近交易日, 页面标明实际日期', async () => {
+  calls.reasons.mockResolvedValue({ ...reasons, date: '2000-01-04' })
+  await render()
+  expect(calls.reasons.mock.calls[0][0]).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  expect(host.textContent).toContain('最近有数据的交易日 2000-01-04')
+})
+
 it('来源失败显示不可用, 不当作无题材', async () => {
   calls.reasons.mockRejectedValue(new ApiError('未就绪', 503))
   calls.hot.mockRejectedValue(new ApiError('x', 502))

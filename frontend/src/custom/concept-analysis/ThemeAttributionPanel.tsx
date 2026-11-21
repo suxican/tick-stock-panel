@@ -1,9 +1,13 @@
 import { useMemo } from 'react'
 import { cnToday } from '@/lib/cnTime'
+import { cn } from '@/lib/cn'
 import type { MeozThemeReason } from '@/lib/api'
-import { useMeozHotRank, useMeozThemeReasons } from '@/lib/useMeozThemeAttribution'
+import { hotThemeByName, useMeozHotRank, useMeozThemeReasons } from '@/lib/useMeozThemeAttribution'
 
 const SOURCE_LABELS = { xgb: '选股宝', jygs: '韭菜公社' } as const
+
+/** 来源配色: 避开涨跌红绿, 用琥珀/蓝区分两个来源 */
+const SOURCE_TONE = { xgb: 'bg-amber-400/15 text-amber-300', jygs: 'bg-blue-400/15 text-blue-300' } as const
 
 function clock(iso: string | null | undefined) {
   const m = iso?.match(/T(\d{2}:\d{2})/)
@@ -32,6 +36,7 @@ export function ThemeAttributionPanel({ conceptKeys, onSelectConcept }: {
   const failed = data?.unavailable_sources ?? []
   const unavailable = reasons.isFetched && !data
   const themes = hot.data?.themes
+  const fallbackDate = data && data.date !== date ? data.date : null // 当日无数据 (休市等) 时后端回退到最近有数据的日期
 
   let summary: string
   if (reasons.isLoading) summary = '加载中…'
@@ -55,6 +60,7 @@ export function ThemeAttributionPanel({ conceptKeys, onSelectConcept }: {
         )}
       </summary>
       <div className="mt-3 space-y-2">
+        {fallbackDate && <p className="text-secondary">{date} 暂无板块原因，以下为最近有数据的交易日 {fallbackDate}。</p>}
         {unavailable && <p className="text-secondary">猫爪板块原因暂不可用（未配置或上游异常），不代表当日没有题材。</p>}
         {!unavailable && grouped.length === 0 && reasons.isFetched && !failed.length && (
           <p className="text-secondary">{date} 暂无板块原因。</p>
@@ -63,25 +69,33 @@ export function ThemeAttributionPanel({ conceptKeys, onSelectConcept }: {
           <p className="text-amber-500">{failed.map(s => SOURCE_LABELS[s]).join('、')}本次取数失败，下列结果不完整。</p>
         )}
         <ul className="grid grid-cols-1 gap-2 md:grid-cols-2 2xl:grid-cols-3">
-          {grouped.map(([name, items]) => (
-            <li key={name} data-theme-card className="flex flex-col gap-1.5 rounded-lg border border-border bg-elevated/40 p-3">
-              <p className="flex items-center justify-between gap-2 text-sm font-medium">
-                <span className="min-w-0 truncate" title={name}>{name}</span>
-                {conceptKeys.has(name) && (
-                  <button type="button" className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[11px] font-normal text-accent hover:bg-elevated"
-                    onClick={() => onSelectConcept(name)}>概念榜同名</button>
-                )}
-              </p>
-              <ul className="space-y-1.5">
-                {items.map(item => (
-                  <li key={`${item.source}-${item.theme_id}`} className="flex items-start gap-2 leading-relaxed text-secondary">
-                    <span className="mt-0.5 shrink-0 rounded bg-surface px-1.5 py-px text-[11px] text-foreground">{SOURCE_LABELS[item.source]}</span>
-                    <span className="min-w-0">{item.reason || '（无原文）'}</span>
-                  </li>
-                ))}
-              </ul>
-            </li>
-          ))}
+          {grouped.map(([name, items]) => {
+            const heat = hotThemeByName(hot.data, name)
+            return (
+              <li key={name} data-theme-card
+                className={cn('flex flex-col gap-2 rounded-xl border border-l-2 bg-base/35 p-3 transition-colors hover:bg-elevated/30',
+                  heat ? 'border-amber-400/30 border-l-amber-400/80' : 'border-border/60 border-l-accent/60')}>
+                <p className="flex items-center justify-between gap-2 text-sm font-semibold">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate text-foreground" title={name}>{name}</span>
+                    {heat && <span className="shrink-0 rounded bg-amber-400/15 px-1.5 py-px text-[10px] font-normal text-amber-300">热搜 {heat.rank}</span>}
+                  </span>
+                  {conceptKeys.has(name) && (
+                    <button type="button" className="shrink-0 rounded-md border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[11px] font-normal text-accent hover:bg-accent/20"
+                      onClick={() => onSelectConcept(name)}>概念榜同名</button>
+                  )}
+                </p>
+                <ul className="space-y-1.5">
+                  {items.map(item => (
+                    <li key={`${item.source}-${item.theme_id}`} className="flex items-start gap-2 leading-relaxed text-secondary">
+                      <span className={cn('mt-0.5 shrink-0 rounded px-1.5 py-px text-[10px]', SOURCE_TONE[item.source])}>{SOURCE_LABELS[item.source]}</span>
+                      <span className="min-w-0">{item.reason || '（无原文）'}</span>
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            )
+          })}
         </ul>
         {(data?.fetched_at || themes?.rows[0]?.available_at) && (
           <p className="text-[11px] text-secondary">

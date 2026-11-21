@@ -93,6 +93,34 @@ def read(data_dir: Path, day: date) -> dict:
     return _packet(day, "archive", True, saved.select(list(FIELDS)).to_dicts(), [], saved["fetched_at"][0])
 
 
+LATEST_LOOKBACK_DAYS = 10
+
+
+def read_latest(data_dir: Path, day: date) -> dict:
+    """当日无板块原因 (休市日 / 开盘前尚未生成) 时, 向前回退到最近一个有数据的日期。
+
+    返回包的 date 字段即实际日期; 任一来源失败时不回退 (残缺结果不能当作「当日没有」)。
+    周末直接跳过, 法定休市日靠「空结果」自然跳过。
+    """
+    packet = read(data_dir, day)
+    probe = day
+    for _ in range(LATEST_LOOKBACK_DAYS):
+        if packet["rows"] or packet["unavailable_sources"]:
+            break
+        probe = date.fromordinal(probe.toordinal() - 1)
+        if probe < HISTORY_START:
+            break
+        if probe.weekday() >= 5:
+            continue
+        packet = read(data_dir, probe)
+    if not packet["rows"]:
+        return read(data_dir, day)
+    if packet["date"] != day.isoformat() and day.weekday() < 5:
+        # 工作日回退: 可能只是今天还没出数据, 保持非定版让前端继续轮询, 出数后自动切回今天
+        return {**packet, "final": False}
+    return packet
+
+
 def reset_for_tests() -> None:
     with _lock:
         _live.clear()
