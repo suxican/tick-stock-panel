@@ -1120,6 +1120,7 @@ it('saves the observed stock roles and returns to all when the last role is clea
   await toggleExact('中军')
   await numberInput('中军取前', '5')
   expect(host.textContent).toContain('历史验证不包含此过滤')
+  expect(host.textContent).toContain('龙头为概念内今日最先触板')
   await click('保存为新版本')
   expect(calls.firstBoardSaveConfig.mock.calls[0][0]).toMatchObject({ stock_roles: ['leader', 'core'], core_top_n: 5 })
 })
@@ -1558,4 +1559,23 @@ it('still lists the global reasons when a closed snapshot has no data status (ol
   calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), status: 'closed', message: '当前为非交易时段', global_blocked_reasons: ['全局实时行情未启用'] })
   await render()
   expect(host.querySelector('section[aria-label="盯盘状态"]')!.textContent).toContain('全局实时行情未启用')
+})
+it('explains the leader tag with the board, its limit-up count and the first touch time', async () => {
+  const base = snapshot()
+  const match = (name: string, count: number, at: string) => ({ id: name, kind: 'concept' as const, name, change_rank: 1, cap_rank: null, amount_rank: null,
+    roles: ['leader' as const], limit_up_count: count, touch_at: at })
+  calls.firstBoardSnapshot.mockResolvedValue({ ...base, rows: base.rows.map(row => ({ ...row, stock_role: { leader: true, core: null, reason: '', matches: [
+    match('小概念', 3, '2026-09-30T09:40:05+08:00'), match('先进封装', 8, '2026-09-30T09:31:12+08:00'),
+    match('概念三', 5, '2026-09-30T09:35:00+08:00'), match('概念四', 4, '2026-09-30T09:36:00+08:00')] } })) })
+  await render()
+  const tag = [...host.querySelectorAll('span')].find(item => item.textContent === '龙头')!
+  expect(tag.title).toBe('龙头：先进封装（今日 8 只涨停，09:31:12 最先触板）；概念三（今日 5 只涨停，09:35:00 最先触板）；概念四（今日 4 只涨停，09:36:00 最先触板）')
+})
+it('explains in the evidence why no leader tag is shown when the event stream is unavailable', async () => {
+  const base = snapshot()
+  calls.firstBoardSnapshot.mockResolvedValue({ ...base, rows: base.rows.map(row => ({ ...row, stock_role: { leader: null, core: false, matches: [], reason: '交易所事件流不可用或有缺口，龙头待确认' } })) })
+  await render()
+  expect([...host.querySelectorAll('span')].some(item => item.textContent === '龙头')).toBe(false)
+  await expandEvidence()
+  expect(evidenceRows()[0].textContent).toContain('角色：交易所事件流不可用或有缺口，龙头待确认')
 })

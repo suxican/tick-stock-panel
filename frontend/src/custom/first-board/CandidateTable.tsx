@@ -185,6 +185,7 @@ function CandidateEvidence({ row, current, day, stockReasons }: { row: FirstBoar
         {row.sector_confirmation?.reason && !stockReasons.includes(row.sector_confirmation.reason) && <li>{row.sector_confirmation.reason}</li>}
         <SealQuality row={row} detail />
         {row.mainline && <li>{row.mainline.reason}</li>}
+        {row.stock_role?.reason && <li>角色：{row.stock_role.reason}</li>}
         <li>形态参考日期：{String(row.evidence.reference_date ?? '—')}</li>
         {typeof row.evidence.breakout_price_raw === 'number' && <li>原价突破参考：{money(row.evidence.breakout_price_raw)} 元</li>}
       </ul>
@@ -208,8 +209,14 @@ export function RoleTags({ row }: { row: FirstBoardCandidate }) {
   if (!role) return null
   const hits = (Object.keys(roleLabels) as (keyof typeof roleLabels)[]).filter(name => role[name] === true)
   return <>{hits.map(name => {
-    const boards = role.matches.filter(match => match.roles.includes(name)).map(match => match.name)
-    return <span key={name} title={`${roleLabels[name]}：${boards.join('、')}`} className={cn('ml-1 inline-flex shrink-0 items-center rounded border px-1 text-[10px] leading-4', roleClasses[name])}>{roleLabels[name]}</span>
+    const matched = role.matches.filter(match => match.roles.includes(name))
+    // 龙头说明写明依据：概念今日涨停成员数与该股最先触板的时间；旧后端没有这些字段时只列名称。
+    const detailed = name === 'leader' && matched.some(match => match.touch_at)
+    const boards = detailed
+      ? [...matched].sort((a, b) => (b.limit_up_count ?? 0) - (a.limit_up_count ?? 0)).slice(0, 3)
+        .map(match => `${match.name}${match.touch_at ? `（今日 ${match.limit_up_count ?? '—'} 只涨停，${stamp(match.touch_at).slice(-8)} 最先触板）` : ''}`).join('；')
+      : matched.map(match => match.name).join('、')
+    return <span key={name} title={`${roleLabels[name]}：${boards}`} className={cn('ml-1 inline-flex shrink-0 items-center rounded border px-1 text-[10px] leading-4', roleClasses[name])}>{roleLabels[name]}</span>
   })}</>
 }
 

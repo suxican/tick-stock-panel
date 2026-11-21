@@ -1,6 +1,9 @@
+from datetime import datetime, timedelta
+
 import polars as pl
 import pytest
 
+from app.market_time import CN_TZ
 from app.services.first_board_role import classify_roles, float_shares_map, role_gate
 
 SYMBOL = "600000.SH"
@@ -20,14 +23,19 @@ def group(members=None, gid="g1", kind="industry"):
     return {"id": gid, "kind": kind, "name": gid, "members": members or [SYMBOL, *PEERS]}
 
 
-def classify(quotes, groups, shares=None, top_n=1):
-    return classify_roles(quotes, groups, shares or {}, {SYMBOL}, core_top_n=top_n)[SYMBOL]
+def classify(quotes, groups, shares=None, top_n=1, **facts):
+    return classify_roles(quotes, groups, shares or {}, {SYMBOL}, core_top_n=top_n, **facts)[SYMBOL]
 
 
-def test_leader_is_first_by_change_and_ties_count_as_first():
-    assert classify(frame([.08, .02, .03, .01, 0., -.01]), [group()])["leader"] is True
-    assert classify(frame([.08, .08, .03, .01, 0., -.01]), [group()])["leader"] is True
-    assert classify(frame([.08, .09, .03, .01, 0., -.01]), [group()])["leader"] is False
+T0 = datetime(2026, 10, 16, 9, 31, 12, tzinfo=CN_TZ)
+
+
+def at(seconds):
+    return T0 + timedelta(seconds=seconds)
+
+
+def concept(members=None):
+    return group(members, gid="概念A", kind="concept")
 
 
 def test_insufficient_coverage_is_unknown_not_false():
@@ -53,19 +61,9 @@ def test_core_by_float_cap_or_amount_any_hit():
     assert classify(frame(changes, amounts=small_amount), [group()], low_cap)["core"] is False
 
 
-def test_any_concept_hit_counts_and_matches_name_the_board():
-    concept = group([SYMBOL, *[f"30000{i}.SZ" for i in range(1, 6)]], gid="概念A", kind="concept")
-    quotes = pl.concat([frame([.08, .09, .03, .01, 0., -.01]), pl.DataFrame({
-        "symbol": [f"30000{i}.SZ" for i in range(1, 6)], "change_pct": [.01] * 5,
-        "raw_close": [10.0] * 5, "amount": [1e8] * 5})])
-    role = classify(quotes, [group(), concept])
-    assert role["leader"] is True
-    assert [m["name"] for m in role["matches"] if "leader" in m["roles"]] == ["概念A"]
-
-
 def test_duplicate_or_missing_quotes_are_not_counted():
     quotes = pl.concat([frame([.08, .02, .03, .01, 0., -.01]), frame([.01])])
-    assert classify(quotes, [group()])["leader"] is None
+    assert classify(quotes, [group()])["core"] is None
 
 
 def test_no_membership_is_unknown():
@@ -91,3 +89,76 @@ def test_role_gate(role, selected, expected):
     matched, excluded, reason = role_gate(role, selected)
     assert (matched, excluded) == expected
     assert (reason is None) is matched
+
+
+def test_leader_is_the_earliest_touch_in_a_concept_with_three_limit_up_members():
+    touch = {SYMBOL: at(0), PEERS[0]: at(5), PEERS[1]: at(9)}
+    role = classify(frame([.1] * 6), [concept()], touch=touch, touch_reliable=True)
+    assert role["leader"] is True
+    match = next(m for m in role["matches"] if "leader" in m["roles"])
+    assert match["name"] == "概念A" and match["limit_up_count"] == 3 and match["touch_at"] == at(0).isoformat()
+    later = {SYMBOL: at(7), PEERS[0]: at(5), PEERS[1]: at(9)}
+    assert classify(frame([.1] * 6), [concept()], touch=later, touch_reliable=True)["leader"] is False
+
+
+def test_two_limit_up_members_is_not_a_board_effect():
+    touch = {SYMBOL: at(0), PEERS[0]: at(5)}
+    assert classify(frame([.1] * 6), [concept()], touch=touch, touch_reliable=True)["leader"] is False
+
+
+def test_simultaneous_touch_ties_count_as_leader():
+    touch = {SYMBOL: at(3), PEERS[0]: at(3), PEERS[1]: at(9)}
+    assert classify(frame([.1] * 6), [concept()], touch=touch, touch_reliable=True)["leader"] is True
+
+
+def test_opened_members_are_not_limit_up_members():
+    # 最早触板的同伴已开板: 剩下 SYMBOL、P2、P3 共 3 只, SYMBOL 最早 → 龙头。
+    touch = {SYMBOL: at(5), PEERS[0]: at(0), PEERS[1]: at(6), PEERS[2]: at(7)}
+    assert classify(frame([.1] * 6), [concept()], touch=touch, opened={PEERS[0]}, touch_reliable=True)["leader"] is True
+    # 候选股自己已开板: 不是龙头。
+    earliest = {SYMBOL: at(0), PEERS[0]: at(5), PEERS[1]: at(9), PEERS[2]: at(11)}
+    assert classify(frame([.1] * 6), [concept()], touch=earliest, touch_reliable=True)["leader"] is True
+    assert classify(frame([.1] * 6), [concept()], touch=earliest, opened={SYMBOL}, touch_reliable=True)["leader"] is False
+
+
+def test_industry_membership_alone_never_makes_a_leader():
+    touch = {SYMBOL: at(0), PEERS[0]: at(5), PEERS[1]: at(9)}
+    role = classify(frame([.1] * 6), [group()], touch=touch, touch_reliable=True)
+    assert role["leader"] is None and "待确认" in role["reason"]
+
+
+def test_keys_are_normalized_and_core_only_matches_have_no_touch_details():
+    touch = {SYMBOL.lower(): at(0), f" {PEERS[0].lower()} ": at(5), PEERS[1]: at(9)}
+    role = classify(frame([.1] * 6, amounts=[9e9, 1e8, 1e8, 1e8, 1e8, 1e8]), [concept(), group(gid="行业B")], touch=touch, touch_reliable=True)
+    assert role["leader"] is True
+    by_name = {m["name"]: m for m in role["matches"]}
+    assert by_name["概念A"]["limit_up_count"] == 3 and by_name["行业B"]["touch_at"] is None
+    assert by_name["行业B"]["roles"] == ["core"]
+
+
+def test_reason_names_why_the_leader_is_unknown_even_when_core_does_not_match():
+    low_cap = dict.fromkeys([SYMBOL, *PEERS], 1e8) | {SYMBOL: 1e7}
+    role = classify(frame([.1] * 6, amounts=[1e7, 9e8, 8e8, 7e8, 6e8, 5e8]), [concept()], low_cap)
+    assert role["leader"] is None and role["core"] is False
+    assert "事件流不可用或有缺口，龙头待确认" in role["reason"]
+
+
+def test_no_membership_reason_is_marked_unconfirmed():
+    assert "待确认" in classify(frame([.1]), [])["reason"]
+
+
+def test_unreliable_stream_or_untouched_candidate_is_unknown():
+    touch = {SYMBOL: at(0), PEERS[0]: at(5), PEERS[1]: at(9)}
+    unreliable = classify(frame([.1] * 6), [concept()], touch=touch)
+    assert unreliable["leader"] is None and "待确认" in unreliable["reason"]
+    others = {PEERS[0]: at(5), PEERS[1]: at(9), PEERS[2]: at(11)}
+    role = classify(frame([.1] * 6), [concept()], touch=others, touch_reliable=True)
+    assert role["leader"] is None and "待确认" in role["reason"]
+
+
+def test_leader_in_one_concept_is_enough_and_industry_still_counts_for_core():
+    touch = {SYMBOL: at(0), PEERS[0]: at(5), PEERS[1]: at(9)}
+    other = concept([SYMBOL, *[f"30000{i}.SZ" for i in range(1, 6)]])
+    role = classify(frame([.1] * 6), [other, concept()], touch=touch, touch_reliable=True)
+    assert role["leader"] is True
+    assert classify(frame([.1] * 6, amounts=[9e9, 1e8, 1e8, 1e8, 1e8, 1e8]), [group()])["core"] is True

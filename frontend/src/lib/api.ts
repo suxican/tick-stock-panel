@@ -7472,8 +7472,11 @@ export interface FirstBoardRoleMatch {
   cap_rank: number | null
   amount_rank: number | null
   roles: FirstBoardStockRole[]
+  /** 龙头命中项：该概念今日涨停成员数与该股触板时间；旧后端缺省。 */
+  limit_up_count?: number | null
+  touch_at?: string | null
 }
-/** leader/core 为 null 表示板块行情或股本覆盖不足，角色待确认。 */
+/** leader/core 为 null 表示待确认：板块行情或股本覆盖不足；龙头还包括事件流不可用或有缺口、该股尚无触板记录。原因见 reason。 */
 export interface FirstBoardRole {
   leader: boolean | null
   core: boolean | null

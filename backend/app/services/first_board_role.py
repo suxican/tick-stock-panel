@@ -1,20 +1,23 @@
 """首板候选在所属行业/概念中的角色: 龙头与中军。
 
-龙头 = 板块内当日涨幅排名第一 (并列也算); 中军 = 板块内流通市值或当日成交额
-排名进入前 N。成员沿用首板联动的当前归属 (AttentionData.groups), 只服务盘中
-观察过滤, 不得注入历史研究。任一板块命中即算; 行情覆盖不足的板块既不判是也
+龙头 = 某个概念内今日最先触板 (并列也算), 且该概念今日涨停成员不少于 3 只, 依据交易所
+事件流的触板时间, 事件流不可靠时待确认, 行业不参与龙头; 中军 = 板块内流通市值或当日
+成交额排名进入前 N (行业与概念都算)。成员沿用首板联动的当前归属 (AttentionData.groups),
+只服务盘中观察过滤, 不得注入历史研究。任一板块命中即算; 行情覆盖不足的板块既不判是也
 不判否, 由调用方按待确认处理。
 """
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable, Mapping
+from datetime import datetime
 
 import polars as pl
 
 ROLE_LABELS = {"leader": "龙头", "core": "中军"}
 MIN_VALID_MEMBERS = 5
 MIN_COVERAGE = 0.8
+MIN_LIMIT_UP_MEMBERS = 3  # 概念内涨停成员至少这么多才算有板块效应, 才可能有龙头
 
 
 def _number(value: object) -> float | None:
@@ -68,13 +71,21 @@ def _unknown(reason: str) -> dict:
 
 
 def classify_roles(current: pl.DataFrame, groups: list[dict], float_shares: dict[str, float],
-                   symbols: Iterable[str], *, core_top_n: int) -> dict[str, dict]:
-    """返回 {symbol: {leader, core, matches, reason}}, leader/core 为 True/False/None。"""
+                   symbols: Iterable[str], *, core_top_n: int,
+                   touch: Mapping[str, datetime] | None = None, opened: Collection[str] = (),
+                   touch_reliable: bool = False) -> dict[str, dict]:
+    """返回 {symbol: {leader, core, matches, reason}}, leader/core 为 True/False/None。
+
+    touch 为今日首次触板时间, opened 为最近状态是开板的股票, touch_reliable 表示事件流今日有数据且无缺口;
+    不可靠时龙头一律待确认, 不退回涨幅排名。
+    """
     wanted = {str(symbol).strip().upper() for symbol in symbols}
-    output = {symbol: _unknown("缺少可确认的行业或概念归属") for symbol in wanted}
+    output = {symbol: _unknown("缺少可确认的行业或概念归属，角色待确认") for symbol in wanted}
     if not wanted or not groups:
         return output
     quotes = _quote_map(current)
+    touched = {str(symbol).strip().upper(): at for symbol, at in (touch or {}).items()}
+    opened_set = {str(symbol).strip().upper() for symbol in opened}
     by_symbol: dict[str, list[dict]] = {symbol: [] for symbol in wanted}
     for group in groups:
         members = group.get("members") or []
@@ -87,33 +98,55 @@ def classify_roles(current: pl.DataFrame, groups: list[dict], float_shares: dict
                 if quote["price"] is not None and member in float_shares}
         amounts = {member: quote["amount"] for member, quote in member_quotes.items() if quote["amount"] is not None}
         size = len(members)
+        limit_up = [member for member in members if member in touched and member not in opened_set]
         for symbol in hits:
             change_rank = _rank(changes, symbol, size)
             cap_rank, amount_rank = _rank(caps, symbol, size), _rank(amounts, symbol, size)
             ranks = [rank for rank in (cap_rank, amount_rank) if rank is not None]
             core = (True if any(rank <= core_top_n for rank in ranks)
                     else False if len(ranks) == 2 else None)
+            leader, touch_at = None, None
+            if group.get("kind") == "concept" and touch_reliable and symbol in touched:
+                # 龙头 = 概念内今日最先触板, 且该概念涨停成员够多; 已开板的成员不计入, 也不能当基准。
+                leader = (symbol in limit_up and len(limit_up) >= MIN_LIMIT_UP_MEMBERS
+                          and touched[symbol] <= min(touched[member] for member in limit_up))
+                touch_at = touched[symbol].isoformat() if leader else None
             by_symbol[symbol].append({
                 "id": group.get("id"), "kind": group.get("kind"), "name": group.get("name"),
                 "member_count": size, "valid_count": len(changes),
-                "leader": None if change_rank is None else change_rank == 1, "core": core,
+                "leader": leader, "core": core, "limit_up_count": len(limit_up) if leader is not None else None,
+                "touch_at": touch_at,
                 "change_rank": change_rank, "cap_rank": cap_rank, "amount_rank": amount_rank,
             })
     for symbol, evidence in by_symbol.items():
         if not evidence:
             continue
-        result = {}
-        for role in ("leader", "core"):
-            values = [item[role] for item in evidence]
-            result[role] = True if True in values else None if None in values else False
+        concepts = [item for item in evidence if item["kind"] == "concept"]
+        leader_reason = None
+        if not touch_reliable:
+            leader, leader_reason = None, "交易所事件流不可用或有缺口，龙头待确认"
+        elif symbol not in touched:
+            leader, leader_reason = None, "该股尚无触板记录，龙头待确认"
+        elif not concepts:
+            leader, leader_reason = None, "缺少可确认的概念归属，龙头待确认"
+        else:
+            leader = any(item["leader"] for item in concepts)
+        cores = [item["core"] for item in evidence]
+        core = True if True in cores else None if None in cores else False
         matches = [{key: item[key] for key in ("id", "kind", "name", "change_rank", "cap_rank", "amount_rank")}
-                   | {"roles": [role for role in ("leader", "core") if item[role] is True]}
+                   | {"roles": [role for role in ("leader", "core") if item[role] is True],
+                      "limit_up_count": item["limit_up_count"] if item["leader"] is True else None,
+                      "touch_at": item["touch_at"] if item["leader"] is True else None}
                    for item in evidence if item["leader"] is True or item["core"] is True]
-        unknown = sum(item["leader"] is None or item["core"] is None for item in evidence)
-        reason = (f"在 {len(matches)} 个板块中命中龙头或中军" if matches else
-                  f"{len(evidence)} 个所属板块中有 {unknown} 个行情或股本覆盖不足，角色待确认" if unknown else
-                  f"{len(evidence)} 个所属板块中均不是龙头或中军")
-        output[symbol] = {**result, "matches": matches, "reason": reason}
+        if matches:
+            reason = f"在 {len(matches)} 个板块中命中龙头或中军" + (f"；{leader_reason}" if leader_reason else "")
+        else:
+            unknown = sum(item["core"] is None for item in evidence)
+            parts = [leader_reason] if leader_reason else []
+            if unknown:
+                parts.append(f"{len(evidence)} 个所属板块中有 {unknown} 个行情或股本覆盖不足，角色待确认")
+            reason = "；".join(parts) if parts else f"{len(evidence)} 个所属板块中均不是龙头或中军"
+        output[symbol] = {"leader": leader, "core": core, "matches": matches, "reason": reason}
     return output
 
 

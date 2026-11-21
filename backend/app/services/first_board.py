@@ -739,6 +739,30 @@ class FirstBoardService:
             logger.warning("交易所涨停状态读取失败, 降级为未知", exc_info=True)
             return {}, None
 
+    def _limit_touch_facts(self, now: datetime, day: date) -> tuple[dict[str, datetime], frozenset[str], bool]:
+        """交易所事件流的今日触板时间、最近状态为开板的股票, 以及是否可靠。
+
+        可靠 = 今日有触板记录、没有 seq 缺口、涨停池轮询没有失败, 且事件流在开盘 (09:30) 前就已连上
+        (重连会刷新连接时间, 所以重连或重启后当天一律不可靠): 任何一项不满足, 都可能漏掉更早的触板,
+        把别人误判为最先。读取失败按不可靠处理, 不得抛出。
+        """
+        try:
+            from app.services.meoz_limit_stream import get_stream
+
+            stream = get_stream(self.repo.store.data_dir)
+            # 先取状态: 重启后第一次读取会在此处恢复当日留档, 之后触板时间才完整。
+            opened = frozenset(symbol for symbol, state in stream.limit_state(now, day=day).items()
+                               if state.status == "opened")
+            touch = {symbol: item.at for symbol, item in stream.touch_times(day).items()}
+            status = stream.status()
+            connected = datetime.fromisoformat(status["connected_at"]) if status.get("connected_at") else None
+            early = (connected is not None and connected.date() == day
+                     and connected.astimezone(CN_TZ).time() <= day_time(9, 30))
+            return touch, opened, bool(touch) and status.get("seq_gaps", 0) == 0 and not status.get("pool_error") and early
+        except Exception:  # noqa: BLE001 - 可选证据来源不得阻断原有评估
+            logger.warning("交易所触板时间读取失败, 龙头待确认", exc_info=True)
+            return {}, frozenset(), False
+
     def _attention(self, rows: list[dict], fresh: pl.DataFrame, now: datetime, live: bool) -> dict:
         symbols = sorted({row["symbol"] for row in rows})
         self._attention_input = {"minute_price_basis": "unknown", "minute_reason": "分钟输入尚未确认"}
@@ -874,8 +898,10 @@ class FirstBoardService:
             attention = self._attention(rows, fresh, now, live)
             try:
                 # 盯盘时只用新鲜报价; 非盯盘时段沿用页面展示的最近行情标注角色, 此时不会触发买入或事件。
+                touch, opened, touch_reliable = self._limit_touch_facts(now, as_of)
                 roles = classify_roles(fresh if live else current, self._attention_data.groups, self._float_shares,
-                                       {row["symbol"] for row in rows}, core_top_n=config.core_top_n)
+                                       {row["symbol"] for row in rows}, core_top_n=config.core_top_n,
+                                       touch=touch, opened=opened, touch_reliable=touch_reliable)
             except Exception:  # noqa: BLE001 - 角色未知时按待确认阻断, 不放行
                 logger.warning("首板龙头/中军判定失败", exc_info=True)
                 roles = {}

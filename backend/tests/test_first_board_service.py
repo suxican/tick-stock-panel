@@ -683,6 +683,14 @@ def _role_service(service, monkeypatch, roles):
     monkeypatch.setattr(service, "_prepare", prepare)
 
 
+def _touch_facts(service, monkeypatch, *, candidate_first, reliable=True, candidate_touched=True):
+    base = datetime(2026, 10, 16, 9, 31, 0, tzinfo=CN_TZ)
+    touch = {peer: base + timedelta(seconds=10 + i) for i, peer in enumerate(ROLE_PEERS[:3])}
+    if candidate_touched:
+        touch[SYMBOL] = base if candidate_first else base + timedelta(seconds=30)
+    monkeypatch.setattr(service, "_limit_touch_facts", lambda now, day: (touch, frozenset(), reliable))
+
+
 def _role_quotes(top_peer_change):
     return pl.concat([quotes(), *[quotes(symbol=symbol, change_pct=change, amount=1e9)
                                   for symbol, change in zip(ROLE_PEERS, [top_peer_change, 0., 0., 0., 0.], strict=True)]])
@@ -699,6 +707,7 @@ def test_config_without_role_fields_observes_all_and_rejects_empty_roles(service
 
 def test_all_roles_keep_existing_behaviour_but_label_the_role(service, monkeypatch):
     _role_service(service, monkeypatch, None)
+    _touch_facts(service, monkeypatch, candidate_first=False)
     service.process_snapshot(_role_quotes(.09), NOW.date(), now=NOW)
     snapshot = service.snapshot()
     row = snapshot["rows"][0]
@@ -711,6 +720,7 @@ def test_leader_filter_allows_sector_leader(service, monkeypatch):
     published = []
     service._publish = published.extend
     _role_service(service, monkeypatch, ["leader"])
+    _touch_facts(service, monkeypatch, candidate_first=True)
     service.process_snapshot(_role_quotes(.01), NOW.date(), now=NOW)
     row = service.snapshot()["rows"][0]
     assert row["can_buy"] is True and row["stock_role"]["leader"] is True
@@ -722,6 +732,7 @@ def test_non_leader_is_hidden_without_events(service, monkeypatch):
     published = []
     service._publish = published.extend
     _role_service(service, monkeypatch, ["leader"])
+    _touch_facts(service, monkeypatch, candidate_first=False)
     service.process_snapshot(_role_quotes(.09), NOW.date(), now=NOW)
     snapshot = service.snapshot()
     assert snapshot["rows"] == []
@@ -731,6 +742,7 @@ def test_non_leader_is_hidden_without_events(service, monkeypatch):
 
 def test_core_or_leader_any_selected_role_matches(service, monkeypatch):
     _role_service(service, monkeypatch, ["leader", "core"])
+    _touch_facts(service, monkeypatch, candidate_first=False)
     # 非龙头, 但成交额 (8000 万 vs 同行 10 亿) 也不在前 1, 缺流通股本 → 中军待确认, 保留并阻断。
     service.process_snapshot(_role_quotes(.09), NOW.date(), now=NOW)
     row = service.snapshot()["rows"][0]
@@ -747,7 +759,9 @@ def test_alerted_stock_that_loses_leadership_stays_visible_and_blocked(service, 
     published = []
     service._publish = published.extend
     _role_service(service, monkeypatch, ["leader"])
+    _touch_facts(service, monkeypatch, candidate_first=True)
     service.process_snapshot(_role_quotes(.01), NOW.date(), now=NOW)
+    _touch_facts(service, monkeypatch, candidate_first=False)
     service.process_snapshot(_role_quotes(.09), NOW.date(), now=NOW)
     row = service.snapshot()["rows"][0]
     assert row["can_buy"] is False
@@ -756,6 +770,7 @@ def test_alerted_stock_that_loses_leadership_stays_visible_and_blocked(service, 
 
 def test_closed_session_labels_roles_from_latest_displayed_quotes(service, monkeypatch):
     _role_service(service, monkeypatch, None)
+    _touch_facts(service, monkeypatch, candidate_first=True)
     closed = NOW.replace(hour=18)
     monkeypatch.setattr(fb, "_now", lambda: closed)
     last = closed.replace(hour=15)  # 收盘后报价已超过有效时间
@@ -978,3 +993,60 @@ def test_closed_snapshot_reports_close_temperature(service, monkeypatch):
 
 def test_empty_snapshot_has_unknown_temperature(service):
     assert service.snapshot()["temperature"]["tier"] == "unknown"
+
+
+def test_untouched_candidate_is_unknown_and_blocked_under_the_leader_filter(service, monkeypatch):
+    _role_service(service, monkeypatch, ["leader"])
+    _touch_facts(service, monkeypatch, candidate_first=False, candidate_touched=False)
+    service.process_snapshot(_role_quotes(.01), NOW.date(), now=NOW)
+    snapshot = service.snapshot()
+    row = snapshot["rows"][0]
+    assert row["stock_role"]["leader"] is None and row["can_buy"] is False
+    assert "该股尚无触板记录" in row["stock_role"]["reason"]
+    assert any("待确认" in reason for reason in row["blocked_reasons"])
+    assert snapshot["coverage"]["role_hidden_count"] == 0
+
+
+def test_touch_facts_are_unreliable_with_gaps_or_no_touches(service, monkeypatch):
+    from app.services import meoz_limit_stream as stream_module
+    touch = {SYMBOL: SimpleNamespace(at=NOW)}
+
+    days = []
+
+    def fake(gaps=0, touches=touch, opened=(), connected="2026-10-16T09:20:05+08:00", pool_error=None):
+        states = {symbol: SimpleNamespace(status="opened") for symbol in opened}
+
+        def touch_times(day):
+            days.append(day)
+            return touches
+        return SimpleNamespace(touch_times=touch_times, limit_state=lambda now, day: states,
+                               status=lambda: {"seq_gaps": gaps, "connected_at": connected, "pool_error": pool_error})
+    monkeypatch.setattr(stream_module, "get_stream", lambda data_dir: fake())
+    assert service._limit_touch_facts(NOW, NOW.date()) == ({SYMBOL: NOW}, frozenset(), True)
+    assert days == [NOW.date()]
+    # 连接晚于开盘 (早盘的触板可能没收到)、涨停池轮询失败、没有连接时间: 都不可靠。
+    for late in ({"connected": "2026-10-16T09:45:03+08:00"}, {"connected": "2026-10-15T09:20:05+08:00"},
+                 {"connected": None}, {"pool_error": "RuntimeError"}):
+        monkeypatch.setattr(stream_module, "get_stream", lambda data_dir, late=late: fake(**late))
+        assert service._limit_touch_facts(NOW, NOW.date())[2] is False
+    monkeypatch.setattr(stream_module, "get_stream", lambda data_dir: fake())
+    monkeypatch.setattr(stream_module, "get_stream", lambda data_dir: fake(opened=("600001.SH",)))
+    assert service._limit_touch_facts(NOW, NOW.date())[1] == frozenset({"600001.SH"})
+    monkeypatch.setattr(stream_module, "get_stream", lambda data_dir: fake(gaps=1))
+    assert service._limit_touch_facts(NOW, NOW.date())[2] is False
+    monkeypatch.setattr(stream_module, "get_stream", lambda data_dir: fake(touches={}))  # 非当日或没有触板
+    assert service._limit_touch_facts(NOW, NOW.date()) == ({}, frozenset(), False)
+    monkeypatch.setattr(stream_module, "get_stream", lambda data_dir: (_ for _ in ()).throw(RuntimeError("x")))
+    assert service._limit_touch_facts(NOW, NOW.date()) == ({}, frozenset(), False)
+
+
+def test_leader_label_never_changes_buying(service, monkeypatch):
+    _role_service(service, monkeypatch, None)
+    _touch_facts(service, monkeypatch, candidate_first=True)
+    service.process_snapshot(_role_quotes(.01), NOW.date(), now=NOW)
+    first = service.snapshot()["rows"][0]
+    _touch_facts(service, monkeypatch, candidate_first=False, reliable=False)
+    service.process_snapshot(_role_quotes(.01), NOW.date(), now=NOW)
+    second = service.snapshot()["rows"][0]
+    for key in ("can_buy", "blocked_reasons", "suggested_amount", "event_id"):
+        assert first[key] == second[key]
