@@ -9,6 +9,7 @@ import { QK } from '@/lib/queryKeys'
 import { FirstBoard } from './FirstBoard'
 import extension from './extension'
 import { validateDraft } from './RulesPanel'
+import { MAINLINE_RISK_NOTE } from './mainlineNote'
 import { beijingDay } from './shared'
 
 const calls = vi.hoisted(() => ({
@@ -1163,7 +1164,7 @@ it('labels matched roles and reports stocks hidden by the role filter', async ()
   const tag = [...host.querySelectorAll<HTMLElement>('table[aria-label="首板实时候选"] span')].find(item => item.textContent === '龙头')!
   expect(tag.title).toBe('龙头：概念A')
 })
-it('shows the reference-day sentiment phase and mainlines, and filters candidates by mainline', async () => {
+it('shows the reference-day sentiment phase and mainlines', async () => {
   const base = snapshot()
   const item = { kind: 'concept' as const, name: '机器人', rank: 1, limit_up_count: 9, max_boards: 4 }
   calls.firstBoardSnapshot.mockResolvedValue({ ...base,
@@ -1183,9 +1184,8 @@ it('shows the reference-day sentiment phase and mainlines, and filters candidate
   // 临近涨停卡片也会带主线标签；这里只核对候选表里的标签。
   const tags = [...host.querySelectorAll<HTMLElement>('table[aria-label="首板实时候选"] span')].filter(node => node.textContent === '主线')
   expect(tags).toHaveLength(1)
-  expect(tags[0].title).toBe('2026-09-29 主线：机器人（第 1）')
-  await toggleExact('只看主线')
-  expect(candidateNames()).toEqual(['主线股票'])
+  expect(tags[0].title).toBe(`2026-09-29 主线：机器人（第 1）
+${MAINLINE_RISK_NOTE}`)
 })
 it('shows seal quality only for candidates at the limit price and keeps unknown amounts blank', async () => {
   const base = snapshot()
@@ -1254,6 +1254,8 @@ it('saves the sentiment phase and mainline gates and returns to unrestricted whe
   await toggleExact('不限阶段')
   await toggleExact('只提示主线内个股')
   expect(host.textContent).toContain('历史验证不包含这两项过滤')
+  expect(host.textContent).toContain(MAINLINE_RISK_NOTE)
+  expect(host.textContent).toContain('开启后会拦下所有非主线候选')
   await click('保存为新版本')
   expect(calls.firstBoardSaveConfig.mock.calls[0][0]).toMatchObject({ allowed_market_phases: ['ignite', 'rally'], require_mainline: true })
 })
@@ -1737,7 +1739,7 @@ it('shows only approaching candidates, can-buy first, capped at three', async ()
 it('is not affected by the table filters', async () => {
   calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [near('A', .01)] })
   await render()
-  await toggleExact('只看主线')
+  await toggleExact('只看可提示候选')
   expect(candidateNames()).toEqual([])
   expect(cardNames()).toEqual(['A'])
 })
@@ -2046,4 +2048,73 @@ it('keeps the date picker and shows the opportunities for the chosen date', asyn
   await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '2026-09-29'); input.dispatchEvent(new Event('input', { bubbles: true })) })
   await settle()
   expect(calls.firstBoardOpportunities).toHaveBeenCalledWith('2026-09-29', false)
+})
+const mainlineHit = { hit: true as const, date: '2026-09-29', reason: '属于参考交易日主线：机器人', matches: [{ kind: 'concept' as const, name: '机器人', rank: 1, limit_up_count: 9, max_boards: 4 }] }
+const tableTag = () => [...host.querySelectorAll<HTMLElement>('table[aria-label="首板实时候选"] span')].filter(node => node.textContent === '主线')
+it('shows the risk note only for mainline hits', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [
+    themedRow('A', { mainline: mainlineHit }),
+    themedRow('B', { mainline: { hit: false, date: '2026-09-29', matches: [], reason: '不属于参考交易日概念或行业主线前 5' } }),
+    themedRow('C', { mainline: { hit: null, date: null, matches: [], reason: '主线数据暂不可用' } })] })
+  await render()
+  const tags = tableTag()
+  expect(tags).toHaveLength(1)
+  expect(tags[0].title).toBe(`2026-09-29 主线：机器人（第 1）
+${MAINLINE_RISK_NOTE}`)
+  expect(tags[0].className).toContain('text-secondary')
+  expect(tags[0].className).not.toContain('accent')
+  await expandEvidence()
+  const notes = evidenceRows().map(row => [...row.querySelectorAll('li')].find(item => item.textContent?.startsWith('风险提示：')))
+  expect(notes[0]?.textContent).toBe(`风险提示：${MAINLINE_RISK_NOTE}`)
+  expect(notes[0]?.className).toContain('text-amber')
+  expect(notes[1]).toBeUndefined()
+  expect(notes[2]).toBeUndefined()
+})
+it('no longer offers the mainline filter', async () => {
+  await render()
+  const labels = [...host.querySelectorAll('label')].map(item => item.textContent?.trim())
+  expect(labels).not.toContain('只看主线')
+  expect(labels).toContain('只看可提示候选')
+  expect(labels).toContain('按题材分组')
+})
+it('keeps buying unaffected by the mainline risk note', async () => {
+  const buyable = { can_buy: true, event_id: 'e', suggested_amount: 25000, state: 'watch' as const }
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [
+    candidate('A', { ...buyable, mainline: mainlineHit }),
+    candidate('B', { ...buyable, mainline: { hit: false, date: '2026-09-29', matches: [], reason: '不属于主线' } })] })
+  await render()
+  const [a, b] = candidateRows()
+  const buy = (row: Element) => [...row.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === '模拟买入')!
+  expect(buy(a).disabled).toBe(false)
+  expect(buy(b).disabled).toBe(false)
+  expect(a.children[9].textContent).toBe(b.children[9].textContent)
+  expect(a.children[8].textContent).toBe(b.children[8].textContent)
+})
+it('shows the neutral mainline tag on imminent cards', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [near('A', .01, { mainline: mainlineHit })] })
+  await render()
+  const tag = [...cards()[0].querySelectorAll<HTMLElement>('span')].find(node => node.textContent === '主线')!
+  expect(tag.className).not.toContain('accent')
+  expect(tag.title).toContain(MAINLINE_RISK_NOTE)
+})
+it('shows the note on the top mainline line and keeps the group badge neutral', async () => {
+  const base = snapshot()
+  const item = { kind: 'concept' as const, name: '机器人', rank: 1, limit_up_count: 9, max_boards: 4 }
+  calls.firstBoardSnapshot.mockResolvedValue({ ...base, mainlines: { date: '2026-09-29', status: 'ready', top_n: 5, items: [item] },
+    rows: [themed('A', [['机器人', 20]], { mainline: mainlineHit })] })
+  await render()
+  const line = [...host.querySelectorAll<HTMLElement>('section[aria-label="盯盘状态"] p')].find(node => node.textContent?.startsWith('昨日主线'))!
+  expect(line.title).toContain(MAINLINE_RISK_NOTE)
+  await toggleExact('按题材分组')
+  const badge = [...headers()[0].querySelectorAll<HTMLElement>('span')].find(node => node.textContent === '昨日主线第 1')!
+  expect(badge.className).not.toContain('accent')
+})
+it('explains the mainline gate only when it is switched on and never claims it leaves buying unchanged', async () => {
+  expect(MAINLINE_RISK_NOTE).not.toContain('不影响买入判断')
+  await render('rules')
+  await toggleExact('不限阶段')
+  expect(host.textContent).not.toContain(MAINLINE_RISK_NOTE)
+  await toggleExact('只提示主线内个股')
+  expect(host.textContent).toContain(MAINLINE_RISK_NOTE)
+  expect(host.textContent).toContain('开启后会拦下所有非主线候选，留下的正是回测中表现偏弱的一组。')
 })

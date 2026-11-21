@@ -8,6 +8,7 @@ import { fmtBigNum, fmtPct, fmtPrice, priceColorClass } from '@/lib/format'
 import { boardTag } from '@/components/stock-table/primitives'
 import { useTableSort } from '@/components/stock-table/useTableSort'
 import { applyFrozenOrder } from './frozenOrder'
+import { MAINLINE_RISK_NOTE } from './mainlineNote'
 import { groupCandidatesByTheme, type ThemeGroup } from './themeGroups'
 import { storage } from '@/lib/storage'
 import { AttentionCell, AttentionSummary, attentionPriority, matchesAttention, type AttentionFilter } from './AttentionCell'
@@ -61,7 +62,6 @@ export function useCandidateView(all: FirstBoardCandidate[] | undefined, current
   const [filter, setFilter] = useState<FirstBoardPattern | 'all'>('all')
   const [stateFilter, setStateFilter] = useState<FirstBoardState | 'all'>('all')
   const [onlyActionable, setOnlyActionable] = useState(false)
-  const [onlyMainline, setOnlyMainline] = useState(false)
   const [attentionFilter, setAttentionFilter] = useState<AttentionFilter>('all')
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('all')
   const [boardId, setBoardId] = useState('')
@@ -96,7 +96,6 @@ export function useCandidateView(all: FirstBoardCandidate[] | undefined, current
     // 状态分段的计数基于除状态外的其余筛选，切换状态时数字不跳动。
     const base = (all ?? []).filter(row =>
       (filter === 'all' || row.pattern === filter) && (!onlyActionable || row.can_buy)
-      && (!onlyMainline || row.mainline?.hit === true)
       && matchesAttention(row.attention_context, attentionFilter, current) && inPriorityFilter(row))
     const counts = Object.fromEntries(states.map(state => [state, 0])) as Record<FirstBoardState, number>
     for (const row of base) if (row.state in counts) counts[row.state] += 1
@@ -107,10 +106,10 @@ export function useCandidateView(all: FirstBoardCandidate[] | undefined, current
       sorted.sort((a, b) => tier(a) - tier(b))
     }
     return { liveRows: markedFirst(sorted, marks, 'focused'), stateCounts: counts, stateTotal: base.length }
-  }, [all, filter, stateFilter, onlyActionable, onlyMainline, attentionFilter, priorityFilter, boardIndex, boardId, current, sortRows, sort?.key, marks])
+  }, [all, filter, stateFilter, onlyActionable, attentionFilter, priorityFilter, boardIndex, boardId, current, sortRows, sort?.key, marks])
   const focused = Object.keys(marks).filter(symbol => marks[symbol]?.focused).sort().join(',')
   // 用 userSort 而不是生效的 sort: 评分失效时默认排序会从评分切到涨幅，这不是用户操作，不应触发重排。
-  const signature = JSON.stringify([userSort === undefined ? 'default' : userSort, filter, stateFilter, onlyActionable, onlyMainline, attentionFilter, priorityFilter, boardId, focused, reorderCount, active, groupByTheme])
+  const signature = JSON.stringify([userSort === undefined ? 'default' : userSort, filter, stateFilter, onlyActionable, attentionFilter, priorityFilter, boardId, focused, reorderCount, active, groupByTheme])
   const shown = useMemo(() => {
     const state = frozen.current
     // 首批数据到达前显示为空: 此时也按重排处理, 否则首批可提示的行都会被算成“新提示”。
@@ -132,7 +131,6 @@ export function useCandidateView(all: FirstBoardCandidate[] | undefined, current
   const rows = useMemo(() => groups ? groups.flatMap(group => group.rows) : shown.rows, [groups, shown.rows])
   return {
     rows, groups, groupByTheme, setGroupByTheme, orderChanged: shown.orderChanged, newBuyCount: shown.newBuyCount, reorder, stateCounts, stateTotal, sort, toggleSort, boardIndex, filter, setFilter, stateFilter, setStateFilter, onlyActionable, setOnlyActionable,
-    onlyMainline, setOnlyMainline,
     attentionFilter, setAttentionFilter, priorityFilter, setPriorityFilter, boardId, setBoardId,
   }
 }
@@ -157,9 +155,6 @@ function CandidateFilters({ view }: { view: CandidateView }) {
       </div>
       <label className={cn(chipClass, 'cursor-pointer', view.onlyActionable ? 'border-accent/50 bg-accent/10 text-foreground' : 'border-border text-secondary hover:text-foreground')}>
         <input type="checkbox" className="accent-[hsl(var(--accent))]" checked={view.onlyActionable} onChange={event => view.setOnlyActionable(event.target.checked)} />只看可提示候选
-      </label>
-      <label className={cn(chipClass, 'cursor-pointer', view.onlyMainline ? 'border-accent/50 bg-accent/10 text-foreground' : 'border-border text-secondary hover:text-foreground')}>
-        <input type="checkbox" className="accent-[hsl(var(--accent))]" checked={view.onlyMainline} onChange={event => view.setOnlyMainline(event.target.checked)} />只看主线
       </label>
       <label className={cn(chipClass, 'cursor-pointer', view.groupByTheme ? 'border-accent/50 bg-accent/10 text-foreground' : 'border-border text-secondary hover:text-foreground')}>
         <input type="checkbox" className="accent-[hsl(var(--accent))]" checked={view.groupByTheme} onChange={event => view.setGroupByTheme(event.target.checked)} />按题材分组
@@ -187,7 +182,6 @@ function emptyMessage(view: CandidateView) {
   if (view.priorityFilter !== 'all') return '当前评分筛选下暂无候选。可选择全部候选查看缺失证据或最近盘中评分。'
   if (view.stateFilter !== 'all') return '当前筛选条件下暂无候选，可切换状态或调整其他筛选条件。'
   if (view.attentionFilter !== 'all') return '当前筛选下没有满足重点关注条件的候选。数据不足或过期的候选不计入重点筛选，可选择全部候选查看联动依据。'
-  if (view.onlyMainline) return '当前没有属于参考交易日主线的候选。主线数据缺失的候选不计入，可取消筛选查看全部。'
   if (view.onlyActionable) return '当前没有通过全部确认条件的候选，可取消筛选查看阻断原因。'
   return '暂无匹配的首板候选。系统需要完成日线建立观察池，并等待有效盘中报价；没有候选时不会生成买入提示。'
 }
@@ -236,6 +230,7 @@ function CandidateEvidence({ row, current, day, stockReasons }: { row: FirstBoar
         {row.sector_confirmation?.reason && !stockReasons.includes(row.sector_confirmation.reason) && <li>{row.sector_confirmation.reason}</li>}
         <SealQuality row={row} detail />
         {row.mainline && <li>{row.mainline.reason}</li>}
+        {row.mainline?.hit === true && <li className="text-amber-700 dark:text-amber-400">风险提示：{MAINLINE_RISK_NOTE}</li>}
         {row.stock_role?.reason && <li>角色：{row.stock_role.reason}</li>}
         <li>形态参考日期：{String(row.evidence.reference_date ?? '—')}</li>
         {typeof row.evidence.breakout_price_raw === 'number' && <li>原价突破参考：{money(row.evidence.breakout_price_raw)} 元</li>}
@@ -287,7 +282,7 @@ export function SealQuality({ row, detail = false }: { row: FirstBoardCandidate;
 export function MainlineTag({ row }: { row: FirstBoardCandidate }) {
   const matches = row.mainline?.hit === true ? row.mainline.matches : []
   if (!matches.length) return null
-  return <span title={`${row.mainline?.date ?? ''} 主线：${matches.map(match => `${match.name}（第 ${match.rank}）`).join('、')}`} className="ml-1 inline-flex shrink-0 items-center rounded border border-accent/40 bg-accent/10 px-1 text-[10px] leading-4 text-foreground">主线</span>
+  return <span title={`${row.mainline?.date ?? ''} 主线：${matches.map(match => `${match.name}（第 ${match.rank}）`).join('、')}\n${MAINLINE_RISK_NOTE}`} className="ml-1 inline-flex shrink-0 items-center rounded border border-border bg-elevated px-1 text-[10px] leading-4 text-secondary">主线</span>
 }
 
 /** 「模拟买入」按钮与建议金额：候选表和临近涨停卡片共用，按钮的可用条件只有这一处。 */
@@ -310,7 +305,7 @@ function ThemeHeader({ group, collapsed, onToggle }: { group: ThemeGroup; collap
           <Icon className="h-4 w-4 text-secondary" aria-hidden="true" />{group.name}
         </button>
         <span className="text-secondary">候选 {group.stockCount} 只</span>
-        {group.mainlineRank !== null && <span className={cn('inline-flex items-center rounded border px-1.5 py-0.5', 'border-accent/40 bg-accent/10 text-foreground')}>昨日主线第 {group.mainlineRank}</span>}
+        {group.mainlineRank !== null && <span className={cn('inline-flex items-center rounded border px-1.5 py-0.5', 'border-border bg-elevated text-secondary')}>昨日主线第 {group.mainlineRank}</span>}
         {group.kind === 'concept' && <>
           <span className="tabular-nums">同行均涨 <span className={priceColorClass(stats?.meanChangePct)}>{fmtPct(stats?.meanChangePct)}</span></span>
           <span className="tabular-nums">上涨占比 {pct(stats?.upRatio)}</span>

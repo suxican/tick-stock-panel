@@ -1,5 +1,6 @@
 import type { FormEvent } from 'react'
 import type { FirstBoardConfig, FirstBoardPhase, FirstBoardRules, FirstBoardStockRole, PaperAccountSummary } from '@/lib/api'
+import { MAINLINE_RISK_NOTE } from './mainlineNote'
 import { buttonClass, ErrorNotice, inputClass, marketStates, Notice, panelClass, patternLabels, phaseLabels, roleLabels, stamp, universeLabels } from './shared'
 
 const phases = Object.keys(phaseLabels) as FirstBoardPhase[]
@@ -100,7 +101,7 @@ export function RulesPanel({ config, draft, onDraft, onSave, versions, accounts,
             <label className="flex items-center gap-2"><input type="checkbox" checked={!draft.allowed_market_phases?.length} onChange={e => onDraft({ ...draft, allowed_market_phases: e.target.checked ? null : ['ignite', 'rally'] })} />不限阶段</label>
             {phases.map(phase => <label key={phase} className="flex items-center gap-2"><input type="checkbox" checked={!!draft.allowed_market_phases?.includes(phase)} onChange={e => onDraft({ ...draft, allowed_market_phases: togglePhase(draft.allowed_market_phases, phase, e.target.checked) })} />{phaseLabels[phase]}</label>)}
           </div>
-          {(!!draft.allowed_market_phases?.length || draft.require_mainline) && <p className="max-w-prose text-xs leading-relaxed text-secondary">情绪阶段与主线取自上一完成交易日的连板梯队，口径同市场环境页；阶段未知或主线数据缺失时暂停提示。主线为概念、行业各自排名前 5，成分为当前快照。历史验证不包含这两项过滤。</p>}
+          {(!!draft.allowed_market_phases?.length || draft.require_mainline) && <p className="max-w-prose text-xs leading-relaxed text-secondary">情绪阶段与主线取自上一完成交易日的连板梯队，口径同市场环境页；阶段未知或主线数据缺失时暂停提示。主线为概念、行业各自排名前 5，成分为当前快照。历史验证不包含这两项过滤。{draft.require_mainline && `${MAINLINE_RISK_NOTE}开启后会拦下所有非主线候选，留下的正是回测中表现偏弱的一组。`}</p>}
         </fieldset>
         <fieldset className="space-y-2"><legend className="mb-2 text-xs text-secondary">启用形态</legend><div className="flex flex-wrap gap-x-5 gap-y-2 text-sm">{(Object.keys(patternLabels) as (keyof typeof patternLabels)[]).map(pattern => <label key={pattern} className="flex items-center gap-2"><input type="checkbox" checked={draft.rules.enabled_patterns.includes(pattern)} onChange={e => onDraft({ ...draft, rules: { ...draft.rules, enabled_patterns: e.target.checked ? [...draft.rules.enabled_patterns, pattern] : draft.rules.enabled_patterns.filter(value => value !== pattern) } })} />{patternLabels[pattern]}</label>)}</div></fieldset>
         <fieldset className="space-y-2"><legend className="mb-2 text-xs text-secondary">观察个股角色</legend>

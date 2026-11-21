@@ -5,6 +5,7 @@ import type { FirstBoardSnapshot } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { DataStatus, dataStatusSummary } from './DataStatus'
 import { KeyNumbers } from './KeyNumbers'
+import { MAINLINE_RISK_NOTE } from './mainlineNote'
 import { TemperatureBadge } from './TemperatureBadge'
 import { panelClass, stamp } from './shared'
 
@@ -53,6 +54,10 @@ export function LiveStatus({ data, retained, muted }: { data: FirstBoardSnapshot
   const ratio = (value?: number | null) => value == null ? '—' : `${(value * 100).toFixed(0)}%`
   const mainlines = data.mainlines?.items ?? []
   const conceptLines = mainlines.filter(item => item.kind === 'concept')
+  const mainlineList = mainlines.length
+    ? mainlines.map(item => `${item.kind === 'industry' ? '行业' : '概念'}第 ${item.rank}：${item.name}（涨停 ${whole(item.limit_up_count)} 家，最高 ${whole(item.max_boards)} 板）`).join('；')
+    : data.mainlines?.reason
+  const mainlineTitle = [mainlineList, MAINLINE_RISK_NOTE].filter(Boolean).join('\n')
   const envText = `市场环境：${env.label || '待确认'}${env.date ? `（${env.date}）` : ''}`
   return <section aria-label="盯盘状态" className={cn(panelClass, 'space-y-3 py-3')}>
     <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
@@ -64,7 +69,7 @@ export function LiveStatus({ data, retained, muted }: { data: FirstBoardSnapshot
       </button>
     </div>
     <KeyNumbers ladder={live} feedback={data.yesterday_feedback} muted={muted} />
-    {data.mainlines && <p className="text-xs" title={mainlines.length ? mainlines.map(item => `${item.kind === 'industry' ? '行业' : '概念'}第 ${item.rank}：${item.name}（涨停 ${whole(item.limit_up_count)} 家，最高 ${whole(item.max_boards)} 板）`).join('；') : data.mainlines.reason}>
+    {data.mainlines && <p className="text-xs" title={mainlineTitle}>
       <span className="text-secondary">昨日主线：</span>{mainlines.length ? (conceptLines.length ? conceptLines : mainlines).slice(0, 3).map(item => item.name).join('、') : '待确认'}
     </p>}
     {(!env.allowed || realtimeBlocked || (polling && !polling.running)) && <div className="flex flex-wrap items-center gap-2">
