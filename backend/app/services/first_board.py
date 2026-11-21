@@ -1301,8 +1301,9 @@ class FirstBoardService:
         audit = None
         if account and alerted:
             try:
+                # 信号只取当日事件; 归因截止日取今天, T+1 之后的退出成交才算得进已平仓。
                 audit = build_paper_trade_audit(self.repo.store.data_dir, account, events=records,
-                                                start=day, end=day, revision=revision)
+                                                start=day, end=now.date(), revision=revision)
             except (OSError, ValueError):
                 audit = None
         apply_verification(report, close_results(daily, symbols, day, closed=closed),

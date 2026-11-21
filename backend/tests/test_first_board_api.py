@@ -341,7 +341,8 @@ def test_opportunities_verify_is_off_by_default(client, monkeypatch):
 
 
 def test_opportunities_verify_adds_close_and_paper(client, monkeypatch):
-    service = _seed_opportunities(client, monkeypatch, datetime(2026, 10, 16, 16, tzinfo=CN_TZ))
+    # 复盘发生在信号日之后: 归因截止日取今天, 否则 T+1 才能卖出的退出成交永远算不进已平仓。
+    service = _seed_opportunities(client, monkeypatch, datetime(2026, 10, 19, 16, tzinfo=CN_TZ))
     service._versions.append({"revision": 4, "paper_account_id": "acc1"})
     service.repo.get_daily_batch = lambda *_args, **_kwargs: _daily([("600001.SH", 11.0)])
     seen = {}
@@ -360,7 +361,7 @@ def test_opportunities_verify_adds_close_and_paper(client, monkeypatch):
     assert second["paper"]["status"] == "no_signal"
     assert report["summary"]["close_sealed_count"] == 1 and report["summary"]["close_checked_count"] == 1
     assert report["summary"]["paper_filled_count"] == 1 and report["summary"]["paper_checked_count"] == 1
-    assert seen == {"account_id": "acc1", "start": datetime(2026, 10, 16).date(), "end": datetime(2026, 10, 16).date(), "revision": 4}
+    assert seen == {"account_id": "acc1", "start": datetime(2026, 10, 16).date(), "end": datetime(2026, 10, 19).date(), "revision": 4}
 
 
 def test_opportunities_verify_without_account_skips_audit(client, monkeypatch):
