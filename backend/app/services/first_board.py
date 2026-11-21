@@ -1249,6 +1249,34 @@ class FirstBoardService:
         # 写时复制保证已发布的列表不再变化, 复制放在锁外不阻塞行情评估。
         return copy.deepcopy(current[::-1])
 
+    @staticmethod
+    def _select_revision(records: list[dict], revision: int | None, fallback: int) -> tuple[int, list[int]]:
+        """首次提示排名与机会记录共用的版本选择: 默认取有买入候选的最新版本, 否则当天最新版本。"""
+        available = sorted({r["revision"] for r in records}, reverse=True)
+        if revision is None:
+            selected = max((r["revision"] for r in records if r["event_type"] == "buy_candidate"),
+                           default=available[0] if available else fallback)
+        elif revision in available or (not available and revision == fallback):
+            selected = revision
+        else:
+            raise ValueError("所选日期没有这个规则版本的记录")
+        return selected, available
+
+    def opportunities(self, day: date, *, revision: int | None = None) -> dict:
+        """按股票聚合当日事件档案; 只读已保存事件, 不读行情、日线和账本。"""
+        from app.services.first_board_opportunities import aggregate_opportunities
+
+        if type(day) is not date or day > _beijing(_now()).date():
+            raise ValueError("机会记录只支持当日及历史日期")
+        if revision is not None and (type(revision) is not int or revision < 0):
+            raise ValueError("机会记录的规则版本无效")
+        path = self._validation_path("events", f"{day}.json")
+        records = self._read_day(path, day)["events"] if self._file_signature(path) is not None else []
+        selected, available = self._select_revision(records, revision, self._config.revision)
+        report = aggregate_opportunities(records, day=day, revision=selected)
+        report["available_revisions"] = available
+        return report
+
     def first_alert_rankings(self, day: date, *, revision: int | None = None,
                              top_n: int | None = None, offset: int = 0, limit: int = 100) -> dict:
         """Read one immutable event-ledger snapshot, then filter and page its global seats."""
@@ -1272,14 +1300,7 @@ class FirstBoardService:
                 report = self._rankings_cache[1]
             else:
                 records = self._read_day(path, day)["events"] if signature is not None else []
-                available = sorted({r["revision"] for r in records}, reverse=True)
-                if revision is None:
-                    selected = max((r["revision"] for r in records if r["event_type"] == "buy_candidate"),
-                                   default=available[0] if available else fallback)
-                elif revision in available or (not available and revision == fallback):
-                    selected = revision
-                else:
-                    raise ValueError("所选日期没有这个规则版本的记录")
+                selected, available = self._select_revision(records, revision, fallback)
                 try:
                     sessions = load_market_calendar(BUNDLED_CALENDAR_PATH, start=day - timedelta(days=32), end=day)
                 except (ValueError, TypeError, OSError, OverflowError):

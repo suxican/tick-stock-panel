@@ -246,3 +246,73 @@ def test_snapshot_exposes_industry_coverage_and_block_reason(client):
     assert row["sector_confirmation"]["confirmed"] is False
     assert row["sector_confirmation"]["excludes_candidate"] is True
     assert "覆盖率" in row["blocked_reasons"][0]
+
+
+def _opportunity_events(service, clock):
+    def make(symbol, pattern, event_type, minutes, rev=4):
+        row = {"symbol": symbol, "name": f"名{symbol}", "pattern": pattern, "pattern_label": pattern, "state": "approaching",
+               "price": 10.0, "evidence": {}, "blocked_reasons": []}
+        return service._event(row, event_type, fb.FirstBoardConfig(revision=rev), clock + timedelta(minutes=minutes))
+
+    return [make("600001.SH", "platform", "buy_candidate", 0), make("600001.SH", "trend", "buy_candidate", 1),
+            make("600001.SH", "platform", "sealed", 2), make("600002.SH", "oversold", "approaching", 1),
+            make("600002.SH", "oversold", "sealed", 3), make("600003.SH", "platform", "buy_candidate", 2, rev=5),
+            make("600003.SH", "platform", "buy_candidate", 4, rev=6), make("600003.SH", "platform", "watch", 5, rev=7)]
+
+
+def test_opportunities_endpoint_aggregates_one_row_per_stock_and_is_read_only(client, monkeypatch):
+    clock = datetime(2026, 10, 16, 10, tzinfo=CN_TZ)
+    monkeypatch.setattr(fb, "_now", lambda: clock + timedelta(hours=1))
+    service = client.app.state.first_board_service
+    day = clock.date()
+    service._write_day(day, {"schema_version": 1, "date": str(day), "last": {}, "events": _opportunity_events(service, clock)})
+    path = service.root / "events" / f"{day}.json"
+    saved = path.read_bytes()
+    response = client.get(f"/api/first-board/opportunities?day={day}&revision=4")
+    assert response.status_code == 200, response.text
+    report = response.json()
+    assert [row["symbol"] for row in report["rows"]] == ["600001.SH", "600002.SH"]
+    first, second = report["rows"]
+    assert [item["pattern"] for item in first["patterns"]] == ["platform", "trend"] and first["event_count"] == 3
+    assert first["first_alert"]["at"] == clock.isoformat() and first["first_touch"]["at"] == (clock + timedelta(minutes=2)).isoformat()
+    assert second["sealed_unalerted"] is True and second["first_record"]["event_type"] == "approaching"
+    assert report["summary"] == {"stock_count": 2, "alerted_count": 1, "touched_count": 2,
+                                 "sealed_unalerted_count": 1, "skipped_count": 0}
+    assert report["available_revisions"] == [7, 6, 5, 4]
+    assert path.read_bytes() == saved
+
+
+def test_opportunities_default_revision_matches_rankings(client, monkeypatch):
+    clock = datetime(2026, 10, 16, 10, tzinfo=CN_TZ)
+    monkeypatch.setattr(fb, "_now", lambda: clock + timedelta(hours=1))
+    service = client.app.state.first_board_service
+    day = clock.date()
+    service._write_day(day, {"schema_version": 1, "date": str(day), "last": {}, "events": _opportunity_events(service, clock)})
+    ranking = client.get(f"/api/first-board/first-alert-rankings?day={day}").json()
+    report = client.get(f"/api/first-board/opportunities?day={day}").json()
+    assert report["revision"] == ranking["revision"] == 6
+    assert report["available_revisions"] == ranking["available_revisions"]
+    assert client.get(f"/api/first-board/opportunities?day={day}&revision=2").status_code == 400
+
+
+def test_opportunities_first_alert_time_matches_rankings_signal_at(client, monkeypatch):
+    clock = datetime(2026, 10, 16, 10, tzinfo=CN_TZ)
+    monkeypatch.setattr(fb, "_now", lambda: clock + timedelta(hours=1))
+    service = client.app.state.first_board_service
+    day = clock.date()
+    service._write_day(day, {"schema_version": 1, "date": str(day), "last": {}, "events": _opportunity_events(service, clock)})
+    ranking = {row["symbol"]: row["signal_at"] for row in client.get(f"/api/first-board/first-alert-rankings?day={day}&revision=4").json()["rows"]}
+    report = client.get(f"/api/first-board/opportunities?day={day}&revision=4").json()
+    alerted = {row["symbol"]: row["first_alert"]["at"] for row in report["rows"] if row["first_alert"]}
+    assert alerted == ranking and alerted
+
+
+def test_opportunities_reports_empty_future_and_invalid_queries(client, monkeypatch):
+    monkeypatch.setattr(fb, "_now", lambda: datetime(2026, 10, 16, 10, tzinfo=CN_TZ))
+    base = "/api/first-board/opportunities?day=2026-10-16"
+    empty = client.get(base)
+    assert empty.status_code == 200
+    assert empty.json()["rows"] == [] and empty.json()["available_revisions"] == []
+    assert client.get(base.replace("10-16", "10-17")).status_code == 400
+    assert client.get("/api/first-board/opportunities").status_code == 422
+    assert client.get(base + "&revision=-1").status_code == 422

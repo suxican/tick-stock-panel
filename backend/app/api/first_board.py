@@ -136,6 +136,14 @@ def first_alert_rankings(
         raise HTTPException(400, str(exc)) from exc
 
 
+@router.get("/opportunities")
+def opportunities(request: Request, day: date, revision: int | None = Query(None, ge=0)):
+    try:
+        return _service(request).opportunities(day, revision=revision)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.post("/research")
 def research(request: Request, body: ResearchRequest):
     try:
