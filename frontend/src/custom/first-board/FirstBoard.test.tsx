@@ -1451,3 +1451,19 @@ it('validates meaningful cross-field bounds without imposing an extra sector cap
   expect(validateDraft({ ...config(), max_stock_weight: .6 })).toContain('单股仓位')
   expect(validateDraft({ ...config(), max_sector_weight: .8 })).toBeNull()
 })
+it('puts the temperature first in the live status and hides it for old backends', async () => {
+  const temperature = { version: 'temperature-v1', tier: 'rest', label: '休息', seal_rate: .68, touch_count: 44, feedback_mean: -.0448, feedback_sample: 19,
+    stage: 'close', as_of: '2026-11-20', observed_at: '2026-11-20T15:00:00+08:00', reason: '' } as const
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), temperature })
+  await render()
+  const status = host.querySelector('section[aria-label="盯盘状态"]')!
+  expect(status.firstElementChild?.hasAttribute('data-first-board-temperature')).toBe(true)
+  expect(status.firstElementChild?.textContent).toContain('首板温度 · 休息')
+  calls.firstBoardSnapshot.mockResolvedValue(snapshot())
+  await click('刷新')
+  await settle()
+  await act(async () => { await client.refetchQueries() })
+  await settle()
+  expect(host.querySelector('[data-first-board-temperature]')).toBeNull()
+  expect(host.textContent).toContain('市场环境')
+})

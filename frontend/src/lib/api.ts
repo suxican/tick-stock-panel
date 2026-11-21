@@ -7725,6 +7725,13 @@ export interface FirstBoardFeedback {
   /** 封板信息来源: 昨日归档日期与覆盖 (有封板信息的样本数 / 样本数) */
   seal_source?: { date: string; matched: number; sample: number } | null
 }
+export type FirstBoardTemperatureTier = 'attack' | 'probe' | 'rest' | 'unknown'
+/** 今日首板温度：只作显示的出手强度，不影响买入提示；比例为小数制，缺失为 null。 */
+export interface FirstBoardTemperature {
+  version: string; tier: FirstBoardTemperatureTier; label: string
+  seal_rate: number | null; touch_count: number | null; feedback_mean: number | null; feedback_sample: number | null
+  stage: 'early' | 'session' | 'close' | null; as_of: string | null; observed_at: string | null; reason: string
+}
 export interface FirstBoardSnapshot {
   data_status?: FirstBoardDataStatus
   status: 'disabled' | 'waiting' | 'ready' | 'stale' | 'closed' | 'error'
@@ -7737,6 +7744,8 @@ export interface FirstBoardSnapshot {
   rows: FirstBoardCandidate[]
   attention_sampling?: FirstBoardAttentionSampling
   yesterday_feedback?: FirstBoardFeedback
+  /** 旧后端缺省。 */
+  temperature?: FirstBoardTemperature
   /** phase 与 ladder 取自参考交易日；比例为小数制，缺失为 null。旧后端缺省。 */
   environment: {
     date?: string | null; state?: string | null; label?: string; allowed: boolean; reason?: string

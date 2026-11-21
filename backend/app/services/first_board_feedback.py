@@ -17,6 +17,7 @@ import polars as pl
 
 from app.market_time import CN_TZ
 from app.services.first_board_attention_data import AttentionData
+from app.services.first_board_context import SECTOR_MIN_QUOTE_COVERAGE
 from app.services.index_const import CORE_INDEX_SYMBOLS
 from app.strategy.first_board import _UNIVERSE_PATTERNS
 
@@ -165,6 +166,29 @@ def _seal_layers(rows: list[dict]) -> dict:
         "unopened": _summary(pick(lambda s: s["opened"] is False)),
         "reopened": _summary(pick(lambda s: s["opened"] is True)),
     }
+
+
+def _finite(value: object) -> bool:
+    return isinstance(value, (float, int)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def feedback_problem(feedback: dict | None, as_of: str | None, *, require_live: bool) -> str | None:
+    """昨日首板整体反馈是否足以下结论: 可用返回 None, 否则返回第一个不满足项的原因。"""
+    if not feedback or feedback.get("status") not in {"ready", "partial"}:
+        return "昨日首板反馈未就绪"
+    if require_live and feedback.get("quote_mode") != "live":
+        return "昨日首板反馈不是盘中实测"
+    if feedback.get("as_of") != as_of:
+        return "昨日首板反馈不是当日数据"
+    summary = (feedback.get("groups") or {}).get("all") or {}
+    if summary.get("small_sample") is not False:
+        return "昨日首板样本少于 10 只"
+    mean, ratio, coverage = (summary.get(key) for key in ("mean_change_pct", "up_ratio", "coverage"))
+    if not all(_finite(value) for value in (mean, ratio, coverage)):
+        return "昨日首板反馈缺少有效统计"
+    if coverage < SECTOR_MIN_QUOTE_COVERAGE:
+        return "昨日首板行情覆盖不足 80%"
+    return None
 
 
 def expire_feedback(result: dict, *, now: datetime, max_quote_age_seconds: float = 30) -> None:

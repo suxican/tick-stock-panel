@@ -5,7 +5,7 @@ import polars as pl
 import pytest
 
 from app.market_time import CN_TZ
-from app.services.first_board_feedback import FirstBoardFeedback, expire_feedback
+from app.services.first_board_feedback import FirstBoardFeedback, expire_feedback, feedback_problem
 
 DAY = date(2026, 10, 26)
 PREVIOUS = date(2026, 10, 23)
@@ -517,3 +517,28 @@ def test_auction_attached_only_when_injected_and_does_not_change_summary(setup):
     assert result["groups"] == plain["groups"]  # 只展示, 不改变任何统计
     service._auction = lambda day: (_ for _ in ()).throw(RuntimeError("502"))
     assert service.evaluate(quotes(), DAY, now=NOW, live=True)["auction"] is None
+
+
+def _fp_feedback(**summary_overrides):
+    summary = {"sample_count": 12, "coverage": 1., "mean_change_pct": .02, "up_ratio": .6, "small_sample": False}
+    summary.update(summary_overrides)
+    return {"status": "ready", "quote_mode": "live", "as_of": "2026-10-16", "groups": {"all": summary}}
+
+
+def test_feedback_problem_accepts_measured_live_sample():
+    assert feedback_problem(_fp_feedback(), "2026-10-16", require_live=True) is None
+    assert feedback_problem({**_fp_feedback(), "status": "partial"}, "2026-10-16", require_live=True) is None
+    assert feedback_problem({**_fp_feedback(), "quote_mode": "snapshot"}, "2026-10-16", require_live=False) is None
+
+
+@pytest.mark.parametrize(("feedback", "require_live", "reason"), [
+    (None, False, "昨日首板反馈未就绪"),
+    ({**_fp_feedback(), "status": "stale"}, False, "昨日首板反馈未就绪"),
+    ({**_fp_feedback(), "quote_mode": "snapshot"}, True, "昨日首板反馈不是盘中实测"),
+    ({**_fp_feedback(), "as_of": "2026-10-15"}, False, "昨日首板反馈不是当日数据"),
+    (_fp_feedback(small_sample=True), False, "昨日首板样本少于 10 只"),
+    (_fp_feedback(mean_change_pct=None), False, "昨日首板反馈缺少有效统计"),
+    (_fp_feedback(coverage=.79), False, "昨日首板行情覆盖不足 80%"),
+])
+def test_feedback_problem_names_the_missing_piece(feedback, require_live, reason):
+    assert feedback_problem(feedback, "2026-10-16", require_live=require_live) == reason

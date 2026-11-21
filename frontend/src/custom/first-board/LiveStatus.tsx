@@ -4,6 +4,7 @@ import { AlertTriangle, Check, ChevronDown, ChevronUp, Clock, X } from 'lucide-r
 import type { FirstBoardSnapshot } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { DataStatus, dataStatusSummary } from './DataStatus'
+import { TemperatureBadge } from './TemperatureBadge'
 import { panelClass, stamp } from './shared'
 
 type Tone = 'ok' | 'bad' | 'warn' | 'neutral'
@@ -49,6 +50,7 @@ export function LiveStatus({ data, retained }: { data: FirstBoardSnapshot; retai
   const mainlines = data.mainlines?.items ?? []
   const conceptLines = mainlines.filter(item => item.kind === 'concept')
   return <section aria-label="盯盘状态" className={cn(panelClass, 'space-y-3 py-3')}>
+    <TemperatureBadge value={data.temperature} />
     <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
       <div className="flex flex-wrap items-center gap-2">
         {realtime && <Chip tone={realtime[0]} title={status?.realtime_reason ?? undefined}>{realtime[1]}</Chip>}

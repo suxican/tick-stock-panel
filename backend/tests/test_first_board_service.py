@@ -921,3 +921,60 @@ def test_restored_events_unknown_when_not_connected(service, monkeypatch):
     row = service.snapshot()["rows"][0]
     assert row["exchange_limit"]["status"] == "unknown"
     assert not any("交易所确认开板" in reason for reason in row["reasons"])
+
+
+def _live_feedback(mean, mode="live"):
+    summary = {"sample_count": 12, "coverage": 1., "mean_change_pct": mean, "up_ratio": .6, "small_sample": False}
+    return {"status": "ready", "quote_mode": mode, "as_of": str(NOW.date()), "observed_at": NOW.isoformat(),
+            "groups": {"all": summary}, "rows": []}
+
+
+def _fix_inputs(service, monkeypatch, *, seal, mean, mode="live"):
+    monkeypatch.setattr(fb, "live_ladder", lambda *a, **k: {"limit_up": 8, "broken": 2, "seal_rate": seal})
+    monkeypatch.setattr(service._feedback, "evaluate", lambda *a, **k: _live_feedback(mean, mode))
+
+
+def test_temperature_is_display_only_and_recorded_on_signals(service, monkeypatch):
+    _fix_inputs(service, monkeypatch, seal=.5, mean=-.03)
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    rest = service.snapshot()
+    assert rest["temperature"]["tier"] == "rest" and rest["temperature"]["stage"] == "session"
+    rest_row = rest["rows"][0]
+    assert rest_row["evidence"]["temperature"]["tier"] == "rest"
+    assert service.events(NOW.date())[0]["evidence"]["temperature"]["tier"] == "rest"
+    _fix_inputs(service, monkeypatch, seal=.8, mean=.03)
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    attack = service.snapshot()
+    assert attack["temperature"]["tier"] == "attack"
+    attack_row = attack["rows"][0]
+    for key in ("can_buy", "blocked_reasons", "suggested_amount", "event_id"):
+        assert attack_row[key] == rest_row[key]
+    assert attack["global_blocked_reasons"] == rest["global_blocked_reasons"]
+
+
+def test_temperature_turns_unknown_when_only_the_feedback_expires(service, monkeypatch):
+    _fix_inputs(service, monkeypatch, seal=.8, mean=.03)
+    old = _live_feedback(.03)
+    old["observed_at"] = (NOW - timedelta(seconds=25)).isoformat()
+    monkeypatch.setattr(service._feedback, "evaluate", lambda *a, **k: json.loads(json.dumps(old)))
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    assert service.snapshot()["temperature"]["tier"] == "attack"
+    # 候选行情仍新鲜(10 秒), 只有反馈观测已超过 30 秒。
+    monkeypatch.setattr(fb, "_now", lambda: NOW + timedelta(seconds=10))
+    result = service.snapshot()
+    assert result["status"] == "ready"
+    assert result["temperature"]["tier"] == "unknown" and result["temperature"]["reason"] == "昨日首板反馈未就绪"
+
+
+def test_closed_snapshot_reports_close_temperature(service, monkeypatch):
+    closed_at = NOW.replace(hour=16)
+    monkeypatch.setattr(fb, "_now", lambda: closed_at)
+    _fix_inputs(service, monkeypatch, seal=.5, mean=-.03, mode="snapshot")
+    service.process_snapshot(quotes(now=closed_at), NOW.date(), now=closed_at)
+    result = service.snapshot()
+    assert result["status"] == "closed"
+    assert result["temperature"]["stage"] == "close" and result["temperature"]["tier"] == "rest"
+
+
+def test_empty_snapshot_has_unknown_temperature(service):
+    assert service.snapshot()["temperature"]["tier"] == "unknown"

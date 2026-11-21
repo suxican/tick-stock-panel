@@ -36,8 +36,9 @@ from app.services.first_board_context import (
     previous_boards,
 )
 from app.services.first_board_data_status import build_data_status, radar_clocks
-from app.services.first_board_feedback import FirstBoardFeedback, empty_feedback, expire_feedback
+from app.services.first_board_feedback import FirstBoardFeedback, empty_feedback, expire_feedback, feedback_problem
 from app.services.first_board_exchange_limit import exchange_limit_evidence
+from app.services.first_board_temperature import first_board_temperature
 from app.services.first_board_seal import load_sealed, polling_status, seal_quality
 from app.services.first_board_observations import FirstBoardObservationStore
 from app.services.first_board_portfolio import (
@@ -187,11 +188,7 @@ def _feedback_gate(feedback: dict, config: FirstBoardConfig, as_of: date) -> dic
     gate = {"allowed": False, "mean_change_pct": mean, "up_ratio": ratio, "coverage": coverage,
             "sample_count": summary.get("sample_count"), "min_mean_change_pct": config.feedback_min_mean_change,
             "min_up_ratio": config.feedback_min_up_ratio}
-    measured = all(isinstance(value, (float, int)) and not isinstance(value, bool) and math.isfinite(value)
-                   for value in (mean, ratio, coverage))
-    if (feedback.get("status") not in {"ready", "partial"} or feedback.get("quote_mode") != "live"
-            or feedback.get("as_of") != str(as_of) or summary.get("small_sample") is not False
-            or not measured or coverage < SECTOR_MIN_QUOTE_COVERAGE):
+    if feedback_problem(feedback, str(as_of), require_live=True):
         gate["reason"] = "昨日首板反馈样本不足或行情覆盖不足, 无法确认赚钱效应"
     elif mean < config.feedback_min_mean_change or ratio < config.feedback_min_up_ratio:
         gate["reason"] = f"昨日首板今日均涨 {mean:.2%}、上涨占比 {ratio:.0%}, 未达到反馈门槛"
@@ -906,6 +903,11 @@ class FirstBoardService:
                                  if sealed["ready"] else None,
                                  fake_down=fake_down)
             ladder.update(as_of=str(as_of), observed_at=now.isoformat(), live=live)
+            status = ("disabled" if not config.enabled else "closed" if not _continuous(now)
+                      else "waiting" if realtime_blocked
+                      else "stale" if as_of != now.date() or not times else "ready")
+            # 只作显示的出手强度: 随信号一起记录, 不参与 can_buy 与阻断。
+            temperature = first_board_temperature(ladder, feedback, status=status, as_of=str(as_of), now=now)
             status_inputs = {"clocks": radar_clocks(radar), "minute": dict(self._attention_input),
                              "membership_reason": self._attention_data.reason}
             messages: list[dict] = []
@@ -946,6 +948,7 @@ class FirstBoardService:
                         blocked.append("行情时间缺失、重复或已过期")
                     if not self._environment.get("allowed"):
                         blocked.append(self._environment.get("reason") or "市场环境未通过")
+                    row["evidence"]["temperature"] = dict(temperature)
                     if feedback_gate is not None:
                         row["evidence"]["feedback_gate"] = feedback_gate
                         if not feedback_gate["allowed"]:
@@ -1065,9 +1068,6 @@ class FirstBoardService:
                 self._latest_prices = prices
                 self._latest_quote_times = times
                 self._latest_limits = limits
-                status = ("disabled" if not config.enabled else "closed" if not _continuous(now)
-                          else "waiting" if realtime_blocked
-                          else "stale" if as_of != now.date() or not times else "ready")
                 message = {"disabled": "自动盯盘已暂停, 当前结果仅供观察。",
                            "closed": "当前为非交易时段, 显示最近行情观察结果, 不触发买卖提示。",
                            "stale": "缺少当日新鲜行情, 买入提示已暂停。",
@@ -1165,6 +1165,9 @@ class FirstBoardService:
             result.update(status="waiting", message=realtime_blocked)
         elif result.get("as_of") is not None and (not same_day or not fresh_count):
             result.update(status="stale", message="缺少当日新鲜行情, 买入提示已暂停。")
+        result["temperature"] = first_board_temperature(
+            result.get("market_ladder"), result.get("yesterday_feedback"),
+            status=result["status"], as_of=result.get("as_of"), now=now)
         fresh_candidates = set()
         stop_reason = realtime_blocked or "行情已过期或当前不在连续竞价时段"
         global_blocked = result.setdefault("global_blocked_reasons", [])
