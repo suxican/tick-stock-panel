@@ -1292,7 +1292,8 @@ class FirstBoardService:
             try:
                 daily = self.repo.get_daily_batch(symbols, day, day, columns=[
                     "date", "symbol", "raw_close", "raw_high", "raw_prev_close", "limit_up", "limit_up_price"])
-            except (OSError, ValueError, pl.exceptions.PolarsError):
+            except (OSError, ValueError, RuntimeError, pl.exceptions.PolarsError):
+                # 日线健康检查失败(EnrichedGenerationUnavailableError 等)按待核验处理, 不让核验整体失败。
                 daily = pl.DataFrame()
         alerted = [row["symbol"] for row in rows if row["alerted"]]
         with self._lock:

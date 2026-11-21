@@ -392,3 +392,18 @@ def test_opportunities_verify_survives_daily_read_failure(client, monkeypatch):
     response = client.get("/api/first-board/opportunities?day=2026-10-16&revision=4&verify=true")
     assert response.status_code == 200
     assert {row["close"]["status"] for row in response.json()["rows"]} == {"unverified"}
+
+
+def test_opportunities_verify_survives_unavailable_daily_generation(client, monkeypatch):
+    # 日线健康检查失败抛 EnrichedGenerationUnavailableError(RuntimeError), 核验不能因此整体 500。
+    from app.enriched_generation import EnrichedGenerationUnavailableError
+
+    service = _seed_opportunities(client, monkeypatch, datetime(2026, 10, 16, 16, tzinfo=CN_TZ))
+
+    def unavailable(*_args, **_kwargs):
+        raise EnrichedGenerationUnavailableError("日线暂不可用")
+
+    service.repo.get_daily_batch = unavailable
+    response = client.get("/api/first-board/opportunities?day=2026-10-16&revision=4&verify=true")
+    assert response.status_code == 200, response.text
+    assert {row["close"]["status"] for row in response.json()["rows"]} == {"unverified"}
