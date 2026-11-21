@@ -1050,3 +1050,33 @@ def test_leader_label_never_changes_buying(service, monkeypatch):
     second = service.snapshot()["rows"][0]
     for key in ("can_buy", "blocked_reasons", "suggested_amount", "event_id"):
         assert first[key] == second[key]
+
+
+def test_float_cap_is_price_times_float_shares(service):
+    service._float_shares = {SYMBOL: 1_000_000_000.0}
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    row = service.snapshot()["rows"][0]
+    assert row["float_cap"] == pytest.approx(10.8 * 1_000_000_000.0)
+
+
+def test_float_cap_is_null_without_shares_or_price(service):
+    service._float_shares = {}
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    assert service.snapshot()["rows"][0]["float_cap"] is None
+    service._float_shares = {SYMBOL: -5.0}
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    assert service.snapshot()["rows"][0]["float_cap"] is None
+    service._float_shares = {SYMBOL: 1_000_000_000.0}
+    service.process_snapshot(quotes(raw_close=None, close=None), NOW.date(), now=NOW)
+    assert service.snapshot()["rows"][0]["float_cap"] is None
+
+
+def test_float_cap_never_changes_buying(service):
+    service._float_shares = {}
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    without = service.snapshot()["rows"][0]
+    service._float_shares = {SYMBOL: 1_000_000_000.0}
+    service.process_snapshot(quotes(), NOW.date(), now=NOW)
+    with_cap = service.snapshot()["rows"][0]
+    for key in ("can_buy", "blocked_reasons", "suggested_amount", "event_id"):
+        assert with_cap[key] == without[key]

@@ -7585,6 +7585,8 @@ export interface FirstBoardCandidate {
   mainline?: FirstBoardMainline
   /** 仅到涨停价的候选有此项；旧后端缺省。 */
   seal_quality?: FirstBoardSealQuality
+  /** 流通市值（元）= 现价 × 流通股本，缺失为 null；旧后端缺省。只作展示。 */
+  float_cap?: number | null
   priority_score?: FirstBoardPriority
   last_priority?: { score: number; known_max: number; as_of: string; status: string; version: string; source?: 'event' } | null
   suggested_amount: number | null

@@ -961,6 +961,10 @@ class FirstBoardService:
                     symbol = row["symbol"]
                     row.update(quote_time=times.get(symbol), sector=self._sectors.get(symbol), event_id=None,
                                suggested_amount=None, can_buy=False, blocked_reasons=[])
+                    # 流通市值只作展示 (元): 现价 × 流通股本, 缺失或非正时为 None, 不参与任何判定。
+                    price, shares = row.get("price"), self._float_shares.get(symbol)
+                    row["float_cap"] = (float(price) * float(shares) if isinstance(price, (int, float)) and isinstance(shares, (int, float))
+                                        and math.isfinite(price) and math.isfinite(shares) and price > 0 and shares > 0 else None)
                     context = attention[symbol]
                     if not live or symbol not in times:
                         self._expire_attention(context, "个股行情已过期或当前未启用有效盘中观察")

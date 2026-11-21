@@ -748,9 +748,11 @@ it.each([
   calls.firstBoardSnapshot.mockResolvedValue(data)
   await render()
   const cells = host.querySelectorAll('table[aria-label="首板实时候选"] tbody tr td')
-  expect(cells[3].classList.contains(color as string)).toBe(true)
-  expect(cells[4].classList.contains(color as string)).toBe(true)
-  expect(cells[4].textContent).toBe(formatted)
+  // 现价和涨幅合并在同一个单元格的两个块里。
+  const [priceBlock, changeBlock] = cells[3].children
+  expect(priceBlock.classList.contains(color as string)).toBe(true)
+  expect(changeBlock.classList.contains(color as string)).toBe(true)
+  expect(changeBlock.textContent).toBe(formatted)
   expect(cells[0].textContent).not.toContain('创')
   expect(cells[0].textContent).not.toContain('科')
 })
@@ -760,9 +762,10 @@ it('keeps a missing price neutral even when change is positive', async () => {
   calls.firstBoardSnapshot.mockResolvedValue(data)
   await render()
   const cells = host.querySelectorAll('table[aria-label="首板实时候选"] tbody tr td')
-  expect(cells[3].textContent).toBe('—')
-  expect(cells[3].classList.contains('text-muted')).toBe(true)
-  expect(cells[4].classList.contains('text-bull')).toBe(true)
+  const [priceBlock, changeBlock] = cells[3].children
+  expect(priceBlock.textContent).toBe('—')
+  expect(priceBlock.classList.contains('text-muted')).toBe(true)
+  expect(changeBlock.classList.contains('text-bull')).toBe(true)
 })
 it('defaults to descending change, keeps missing values last and reorders refreshed quotes', async () => {
   const data = { ...snapshot(), rows: [
@@ -801,7 +804,8 @@ it.each([
   const cached = client.getQueryData<FirstBoardSnapshot>(QK.firstBoardSnapshot)!
   const originalRows = [...cached.rows]
   expect(candidateNames()).toEqual(['C', 'E', 'A', 'D', 'B'])
-  expect(sortButton(label)?.closest('th')?.getAttribute('aria-sort')).toBe('none')
+  // 现价与涨幅同在一个表头单元格，默认生效的是涨幅，所以该单元格的 aria-sort 反映涨幅。
+  expect(sortButton(label)?.closest('th')?.getAttribute('aria-sort')).toBe(label === '现价' ? 'descending' : 'none')
   await sortBy(label)
   expect(candidateNames()).toEqual(ascending)
   expect(sortButton(label).closest('th')?.getAttribute('aria-sort')).toBe('ascending')
@@ -833,7 +837,10 @@ it('starts a newly selected column in ascending order and clears the previous in
   expect(candidateNames()).toEqual(['A', 'B'])
   await sortBy('涨幅')
   expect(candidateNames()).toEqual(['A', 'B'])
-  expect(sortButton('现价').closest('th')?.getAttribute('aria-sort')).toBe('none')
+  // 现价按钮的生效标记已清除；它与涨幅同在一个 th，th 的 aria-sort 反映生效的涨幅。
+  expect(sortButton('现价').getAttribute('title')).toBe('点击升序排列')
+  expect(sortButton('现价').className).not.toContain('font-medium')
+  expect(sortButton('涨幅').className).toContain('font-medium')
   expect(sortButton('涨幅').closest('th')?.getAttribute('aria-sort')).toBe('ascending')
 })
 it('filters each candidate state using the displayed state labels', async () => {
@@ -1953,4 +1960,59 @@ it('counts distinct stocks in the group header', async () => {
   await render()
   await toggleExact('按题材分组')
   expect(headers()[0].textContent).toContain('候选 1 只')
+})
+const themedRow = (name: string, values: Partial<FirstBoardCandidate>) => candidate(name, { state: 'watch', can_buy: false, ...values })
+const sizeCell = (name: string) => rowOf(name).children[5]
+it('shows the merged price and change cell and the size cell', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [themedRow('A', { price: 18, change_pct: .2, float_cap: 3_560_000_000, evidence: { amount: 123_000_000 } })] })
+  await render()
+  const [price, change] = rowOf('A').children[3].children
+  expect([price.textContent, change.textContent]).toEqual(['18.00', '+20.00%'])
+  const [amount, cap] = sizeCell('A').children
+  expect([amount.textContent, amount.getAttribute('title')]).toEqual(['1.23亿', '成交额'])
+  expect([cap.textContent, cap.getAttribute('title')]).toEqual(['35.60亿', '流通市值'])
+})
+it('shows placeholders for missing amount and market cap', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [themedRow('A', { float_cap: null, evidence: {} }), themedRow('B', { evidence: { amount: null } })] })
+  await render()
+  for (const name of ['A', 'B']) expect([...sizeCell(name).children].map(block => block.textContent)).toEqual(['—', '—'])
+})
+it('keeps four independent sort buttons in the merged headers', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [
+    themedRow('A', { price: 30, change_pct: .05, float_cap: 5e9, evidence: { amount: 3e8 } }),
+    themedRow('B', { price: 20, change_pct: .09, float_cap: 9e9, evidence: { amount: 1e8 } }),
+    themedRow('C', { price: 10, change_pct: .07, float_cap: null, evidence: { amount: 2e8 } })] })
+  await render()
+  for (const label of ['现价', '涨幅', '成交额', '流通市值']) expect(sortButton(label), label).not.toBeNull()
+  await sortBy('成交额')
+  expect(candidateNames()).toEqual(['B', 'C', 'A'])
+  expect(sortButton('成交额').closest('th')?.getAttribute('aria-sort')).toBe('ascending')
+  await sortBy('流通市值')
+  expect(candidateNames()).toEqual(['A', 'B', 'C'])
+  expect(sortButton('流通市值').closest('th')?.getAttribute('aria-sort')).toBe('ascending')
+  await sortBy('现价')
+  expect(candidateNames()).toEqual(['C', 'B', 'A'])
+  expect(sortButton('现价').closest('th')?.getAttribute('aria-sort')).toBe('ascending')
+  expect(sortButton('成交额').closest('th')?.getAttribute('aria-sort')).toBe('none')
+})
+it('expands the evidence row across all display columns', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [themedRow('A', {})] })
+  await render()
+  await expandEvidence()
+  const headCount = host.querySelectorAll('table[aria-label="首板实时候选"] thead th').length
+  expect(headCount).toBe(11)
+  expect(evidenceRows()[0].querySelector('td')!.getAttribute('colspan')).toBe(String(headCount))
+})
+it('keeps missing amount and market cap last in both directions', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [
+    themedRow('A', { float_cap: 5e9, evidence: { amount: 3e8 } }), themedRow('B', { float_cap: null, evidence: {} }), themedRow('C', { float_cap: 9e9, evidence: { amount: 1e8 } })] })
+  await render()
+  await sortBy('成交额')
+  expect(candidateNames()).toEqual(['C', 'A', 'B'])
+  await sortBy('成交额')
+  expect(candidateNames()).toEqual(['A', 'C', 'B'])
+  await sortBy('流通市值')
+  expect(candidateNames()).toEqual(['A', 'C', 'B'])
+  await sortBy('流通市值')
+  expect(candidateNames()).toEqual(['C', 'A', 'B'])
 })

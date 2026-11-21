@@ -1,4 +1,4 @@
-import { useCallback, useId, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useId, useMemo, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ChevronRight, ChevronUp, SlidersHorizontal, Star } from 'lucide-react'
 import type { FirstBoardCandidate, FirstBoardPattern, FirstBoardState } from '@/lib/api'
 import type { ColumnConfig } from '@/lib/list-columns'
@@ -17,9 +17,16 @@ import { ErrorNotice, inputClass, LoadingRows, money, panelClass, PatternBadge, 
 
 const candidateColumns: ColumnConfig[] = [
   ['symbol', '股票 / 行业'], ['pattern', '形态'], ['state', '状态'], ['price', '现价'], ['change_pct', '涨幅'],
-  ['distance_to_limit_pct', '距涨停'], ['priority_score', '首板优先分'], ['attention_context', '板块联动'], ['conclusion', '结论'], ['actions', '模拟操作'], ['details', '依据'],
+  ['distance_to_limit_pct', '距涨停'], ['amount', '成交额'], ['float_cap', '流通市值'], ['priority_score', '首板优先分'], ['attention_context', '板块联动'], ['conclusion', '结论'], ['actions', '模拟操作'], ['details', '依据'],
 ].map(([id, label]) => ({ id, label, source: { type: 'builtin', key: id }, visible: true }))
-const sortableColumns = new Set(['pattern', 'state', 'price', 'change_pct', 'distance_to_limit_pct', 'priority_score', 'attention_context'])
+/** 表头显示的列：一列里可以有多个排序按钮（现价 / 涨幅、成交额 / 流通市值），排序键仍是 candidateColumns 里的单个字段。 */
+const displayColumns: { id: string; label: string; sorts: string[] }[] = [
+  { id: 'symbol', label: '股票 / 行业', sorts: [] }, { id: 'pattern', label: '形态', sorts: ['pattern'] }, { id: 'state', label: '状态', sorts: ['state'] },
+  { id: 'price_change', label: '现价 / 涨幅', sorts: ['price', 'change_pct'] }, { id: 'distance_to_limit_pct', label: '距涨停', sorts: ['distance_to_limit_pct'] },
+  { id: 'size', label: '成交额 / 流通市值', sorts: ['amount', 'float_cap'] }, { id: 'priority_score', label: '首板优先分', sorts: ['priority_score'] },
+  { id: 'attention_context', label: '板块联动', sorts: ['attention_context'] }, { id: 'conclusion', label: '结论', sorts: [] },
+  { id: 'actions', label: '模拟操作', sorts: [] }, { id: 'details', label: '依据', sorts: [] },
+]
 const scoreDescending = { key: 'priority_score', dir: 'desc' } as const
 const changeDescending = { key: 'change_pct', dir: 'desc' } as const
 const categoryOrder = { pattern: Object.keys(patternLabels), state: Object.keys(stateLabels) }
@@ -39,7 +46,7 @@ function candidateSortValue(row: FirstBoardCandidate, column: ColumnConfig) {
     const index = categoryOrder[column.id].indexOf(row[column.id])
     return index < 0 ? null : index
   }
-  const value = row[column.id as keyof FirstBoardCandidate]
+  const value = column.id === 'amount' ? row.evidence?.amount : row[column.id as keyof FirstBoardCandidate]
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
@@ -187,13 +194,19 @@ function emptyMessage(view: CandidateView) {
 
 function CandidateHeader({ view }: { view: CandidateView }) {
   const { sort, toggleSort } = view
-  return <thead><tr className="text-secondary">{candidateColumns.map(column => {
-    const sortable = sortableColumns.has(column.id)
-    const active = sort?.key === column.id
-    const Icon = active ? sort.dir === 'asc' ? ArrowUp : ArrowDown : ArrowUpDown
-    const action = active ? sort.dir === 'asc' ? '当前升序，点击降序' : '当前降序，点击恢复默认顺序' : '点击升序排列'
-    return <th key={column.id} scope="col" aria-sort={sortable ? active ? sort.dir === 'asc' ? 'ascending' : 'descending' : 'none' : undefined} className="sticky top-0 z-10 whitespace-nowrap bg-surface px-3 py-2.5 font-normal first:pl-3">
-      {sortable ? <button type="button" aria-label={`按${column.id === 'attention_context' ? '板块联动关注优先级' : column.label}排序`} title={[action, categorySortHints[column.id]].filter(Boolean).join('；')} className={cn('inline-flex min-h-8 items-center gap-1 rounded hover:text-foreground focus-visible:outline focus-visible:outline-accent', active && 'font-medium text-foreground')} onClick={() => toggleSort(column.id)}>{column.label}<Icon className={cn('h-3 w-3', active && 'text-accent')} aria-hidden="true" /></button> : column.label}
+  return <thead><tr className="text-secondary">{displayColumns.map(column => {
+    const activeKey = column.sorts.find(key => sort?.key === key)
+    return <th key={column.id} scope="col" aria-sort={column.sorts.length ? activeKey && sort ? sort.dir === 'asc' ? 'ascending' : 'descending' : 'none' : undefined} className="sticky top-0 z-10 whitespace-nowrap bg-surface px-3 py-2.5 font-normal first:pl-3">
+      {column.sorts.length ? column.sorts.map((key, index) => {
+        const label = candidateColumns.find(item => item.id === key)!.label
+        const active = sort?.key === key
+        const Icon = active ? sort.dir === 'asc' ? ArrowUp : ArrowDown : ArrowUpDown
+        const action = active ? sort.dir === 'asc' ? '当前升序，点击降序' : '当前降序，点击恢复默认顺序' : '点击升序排列'
+        return <Fragment key={key}>
+          {index > 0 && <span className="px-0.5 text-muted" aria-hidden="true">/</span>}
+          <button type="button" aria-label={`按${key === 'attention_context' ? '板块联动关注优先级' : label}排序`} title={[action, categorySortHints[key]].filter(Boolean).join('；')} className={cn('inline-flex min-h-8 items-center gap-1 rounded hover:text-foreground focus-visible:outline focus-visible:outline-accent', active && 'font-medium text-foreground')} onClick={() => toggleSort(key)}>{label}<Icon className={cn('h-3 w-3', active && 'text-accent')} aria-hidden="true" /></button>
+        </Fragment>
+      }) : column.label}
     </th>
   })}</tr></thead>
 }
@@ -290,7 +303,7 @@ function ThemeHeader({ group, collapsed, onToggle }: { group: ThemeGroup; collap
   const stats = group.stats
   const Icon = collapsed ? ChevronRight : ChevronDown
   return <tr data-theme-header className="border-t border-border bg-elevated/40">
-    <th scope="rowgroup" colSpan={candidateColumns.length} className="px-3 py-2 text-left font-normal">
+    <th scope="rowgroup" colSpan={displayColumns.length} className="px-3 py-2 text-left font-normal">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
         <button type="button" aria-expanded={!collapsed} aria-label={`题材 ${group.name}`}
           className="inline-flex min-h-7 items-center gap-1 text-left text-sm font-medium focus-visible:outline focus-visible:outline-accent" onClick={onToggle}>
@@ -334,9 +347,15 @@ function CandidateRow({ row, current, day, focused, canOrder, globalReasons, exp
       </td>
       <td className="px-3 py-2.5"><PatternBadge pattern={row.pattern} label={row.pattern_label} /></td>
       <td className="px-3 py-2.5"><StateBadge state={row.state} /><SealQuality row={row} /></td>
-      <td className={cn('px-3 py-2.5 tabular-nums', priceColorClass(row.price ? row.change_pct : null))}>{fmtPrice(row.price)}</td>
-      <td className={cn('px-3 py-2.5 tabular-nums', priceColorClass(row.change_pct))}>{fmtPct(row.change_pct)}</td>
+      <td className="px-3 py-2.5 tabular-nums">
+        <div className={priceColorClass(row.price ? row.change_pct : null)}>{fmtPrice(row.price)}</div>
+        <div className={priceColorClass(row.change_pct)}>{fmtPct(row.change_pct)}</div>
+      </td>
       <td className="px-3 py-2.5 tabular-nums">{pct(row.distance_to_limit_pct)}</td>
+      <td className="whitespace-nowrap px-3 py-2.5 tabular-nums">
+        <div title="成交额">{fmtBigNum(typeof row.evidence?.amount === 'number' && Number.isFinite(row.evidence.amount) ? row.evidence.amount : null)}</div>
+        <div title="流通市值" className="text-secondary">{fmtBigNum(row.float_cap)}</div>
+      </td>
       <td className="min-w-40 px-3 py-2.5"><PrioritySummary row={row} current={current} /></td>
       <td className="px-3 py-2.5"><AttentionSummary context={row.attention_context} snapshotCurrent={current} /></td>
       <td className="min-w-40 max-w-52 px-3 py-2.5 leading-snug"><Conclusion row={row} current={current} stockReasons={stockReasons} globalOnly={globalOnly} /></td>
@@ -349,7 +368,7 @@ function CandidateRow({ row, current, day, focused, canOrder, globalReasons, exp
       </td>
     </tr>
     {expanded && <tr data-evidence-row id={evidenceId}>
-      <td colSpan={candidateColumns.length} className="border-t border-dashed border-border bg-elevated/30 px-3 py-3"><CandidateEvidence row={row} current={current} day={day} stockReasons={stockReasons} /></td>
+      <td colSpan={displayColumns.length} className="border-t border-dashed border-border bg-elevated/30 px-3 py-3"><CandidateEvidence row={row} current={current} day={day} stockReasons={stockReasons} /></td>
     </tr>}
   </>
 }
