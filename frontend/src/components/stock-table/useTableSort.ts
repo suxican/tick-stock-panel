@@ -51,5 +51,6 @@ export function useTableSort<T>(getSortValue: (r: T, col: ColumnConfig) => any =
     })
   }, [sort, getSortValue])
 
-  return { sort, toggle, sortRows }
+  /** userSort 只反映用户的选择（undefined 表示沿用默认），默认排序随数据切换时不变。 */
+  return { sort, userSort: selection, toggle, sortRows }
 }

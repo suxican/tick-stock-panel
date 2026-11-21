@@ -7,6 +7,7 @@ import { cn } from '@/lib/cn'
 import { fmtBigNum, fmtPct, fmtPrice, priceColorClass } from '@/lib/format'
 import { boardTag } from '@/components/stock-table/primitives'
 import { useTableSort } from '@/components/stock-table/useTableSort'
+import { applyFrozenOrder } from './frozenOrder'
 import { AttentionCell, AttentionSummary, attentionPriority, matchesAttention, type AttentionFilter } from './AttentionCell'
 import { TechnicalEvidence } from './TechnicalEvidence'
 import { PriorityCell, PrioritySummary, currentPriority, matchesPriority, priorityFilters, strongBoards, type PriorityFilter } from './PriorityCell'
@@ -40,8 +41,14 @@ function candidateSortValue(row: FirstBoardCandidate, column: ColumnConfig) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
-/** 筛选与排序留在页面级，股票预览的上下翻页沿用同一份可见顺序。 */
-export function useCandidateView(all: FirstBoardCandidate[] | undefined, current: boolean, marks: StockMarks) {
+const candidateKey = (row: FirstBoardCandidate) => `${row.symbol}-${row.pattern}`
+
+/**
+ * 筛选与排序留在页面级，股票预览的上下翻页沿用同一份可见顺序。
+ * 盘中快照每 5 秒刷新，显示顺序在用户操作（排序、筛选、星标、点重排、切回本页签）之前保持不变，
+ * 数值仍是最新的；顺序与最新排序不同时由 orderChanged 提示。
+ */
+export function useCandidateView(all: FirstBoardCandidate[] | undefined, current: boolean, marks: StockMarks, active = true) {
   const [filter, setFilter] = useState<FirstBoardPattern | 'all'>('all')
   const [stateFilter, setStateFilter] = useState<FirstBoardState | 'all'>('all')
   const [onlyActionable, setOnlyActionable] = useState(false)
@@ -49,12 +56,14 @@ export function useCandidateView(all: FirstBoardCandidate[] | undefined, current
   const [attentionFilter, setAttentionFilter] = useState<AttentionFilter>('all')
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('all')
   const [boardId, setBoardId] = useState('')
+  const [reorderCount, setReorderCount] = useState(0)
+  const frozen = useRef<{ signature: string; keys: string[] | null; buyable: Set<string> }>({ signature: '', keys: null, buyable: new Set() })
   const sortValue = useCallback((row: FirstBoardCandidate, column: ColumnConfig) => {
     if (column.id === 'priority_score') return currentPriority(row, current)
     return column.id === 'attention_context' && !current ? null : candidateSortValue(row, column)
   }, [current])
   const hasScores = all?.some(row => currentPriority(row, current) !== null)
-  const { sort, toggle: toggleSort, sortRows } = useTableSort<FirstBoardCandidate>(sortValue, hasScores ? scoreDescending : changeDescending)
+  const { sort, userSort, toggle: toggleSort, sortRows } = useTableSort<FirstBoardCandidate>(sortValue, hasScores ? scoreDescending : changeDescending)
   const boardIndex = useMemo(() => {
     if (priorityFilter !== 'industry' && priorityFilter !== 'concept') return null
     const byRow = new Map<FirstBoardCandidate, Map<string, string>>()
@@ -67,7 +76,7 @@ export function useCandidateView(all: FirstBoardCandidate[] | undefined, current
     }
     return { byRow, choices: [...choices].sort((a, b) => a[1].localeCompare(b[1], 'zh-CN')) }
   }, [priorityFilter, all, current])
-  const { rows, stateCounts, stateTotal } = useMemo(() => {
+  const { liveRows, stateCounts, stateTotal } = useMemo(() => {
     const inPriorityFilter = (row: FirstBoardCandidate) => {
       if (!boardIndex) return matchesPriority(row, priorityFilter, current)
       const boards = boardIndex.byRow.get(row)
@@ -86,10 +95,26 @@ export function useCandidateView(all: FirstBoardCandidate[] | undefined, current
       const tier = (row: FirstBoardCandidate) => currentPriority(row, current) === null ? 2 : row.can_buy ? 0 : 1
       sorted.sort((a, b) => tier(a) - tier(b))
     }
-    return { rows: markedFirst(sorted, marks, 'focused'), stateCounts: counts, stateTotal: base.length }
+    return { liveRows: markedFirst(sorted, marks, 'focused'), stateCounts: counts, stateTotal: base.length }
   }, [all, filter, stateFilter, onlyActionable, onlyMainline, attentionFilter, priorityFilter, boardIndex, boardId, current, sortRows, sort?.key, marks])
+  const focused = Object.keys(marks).filter(symbol => marks[symbol]?.focused).sort().join(',')
+  // 用 userSort 而不是生效的 sort: 评分失效时默认排序会从评分切到涨幅，这不是用户操作，不应触发重排。
+  const signature = JSON.stringify([userSort === undefined ? 'default' : userSort, filter, stateFilter, onlyActionable, onlyMainline, attentionFilter, priorityFilter, boardId, focused, reorderCount, active])
+  const shown = useMemo(() => {
+    const state = frozen.current
+    // 首批数据到达前显示为空: 此时也按重排处理, 否则首批可提示的行都会被算成“新提示”。
+    const reset = state.signature !== signature || !state.keys?.length
+    const buyable = (row: FirstBoardCandidate) => current && row.can_buy
+    if (reset) state.buyable = new Set(liveRows.filter(buyable).map(candidateKey))
+    const result = applyFrozenOrder(liveRows, reset || !active ? null : state.keys, candidateKey)
+    state.signature = signature
+    state.keys = result.keys
+    return { rows: result.rows, orderChanged: result.changed,
+      newBuyCount: liveRows.filter(row => buyable(row) && !state.buyable.has(candidateKey(row))).length }
+  }, [liveRows, signature, current, active])
+  const reorder = useCallback(() => setReorderCount(count => count + 1), [])
   return {
-    rows, stateCounts, stateTotal, sort, toggleSort, boardIndex, filter, setFilter, stateFilter, setStateFilter, onlyActionable, setOnlyActionable,
+    rows: shown.rows, orderChanged: shown.orderChanged, newBuyCount: shown.newBuyCount, reorder, stateCounts, stateTotal, sort, toggleSort, boardIndex, filter, setFilter, stateFilter, setStateFilter, onlyActionable, setOnlyActionable,
     onlyMainline, setOnlyMainline,
     attentionFilter, setAttentionFilter, priorityFilter, setPriorityFilter, boardId, setBoardId,
   }
@@ -307,7 +332,12 @@ export function CandidateTable({ view, loading, current, day, marks, globalReaso
   })
   const { rows } = view
   return <section className={panelClass}>
-    <div className="mb-3 flex flex-wrap items-start justify-between gap-3"><h2 className="pt-1.5 text-sm font-semibold">今日候选 <span className="font-normal text-secondary">{rows.length} 条{roleHidden > 0 && ` · 非所选角色未列出 ${roleHidden} 只`}</span></h2><CandidateFilters view={view} /></div>
+    <div className="mb-3 flex flex-wrap items-start justify-between gap-3"><div className="flex min-h-8 flex-wrap items-center gap-2"><h2 className="text-sm font-semibold">今日候选 <span className="font-normal text-secondary">{rows.length} 条{roleHidden > 0 && ` · 非所选角色未列出 ${roleHidden} 只`}</span></h2>
+      {/* 隐藏的占位撑开最长文案的宽高，提示条出现或消失时表格不会位移。 */}
+      <span aria-live="polite" className="relative inline-flex"><span aria-hidden="true" className={cn(chipClass, 'invisible border-transparent')}>排序有变化 · 新提示 99 只 · 点击重排</span>
+        {view.orderChanged && <button type="button" onClick={() => { view.reorder(); viewport.current?.focus() }}
+          className={cn(chipClass, 'absolute left-0 top-0', view.newBuyCount > 0 ? 'border-accent/50 bg-accent/10 text-foreground' : 'border-border bg-surface text-secondary hover:text-foreground')}>
+          排序有变化{view.newBuyCount > 0 && ` · 新提示 ${view.newBuyCount} 只`} · 点击重排</button>}</span></div><CandidateFilters view={view} /></div>
     <ErrorNotice error={marks.error} retry={marks.retry} />
     <div ref={viewport} role="region" aria-label="今日候选列表" tabIndex={0} className="h-[560px] max-h-[70vh] overflow-auto overscroll-contain scrollbar-gutter-stable focus-visible:outline focus-visible:outline-accent">
       {loading ? <LoadingRows /> : rows.length ? <table aria-label="首板实时候选" className="w-full min-w-[1040px] text-left text-xs">

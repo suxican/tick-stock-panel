@@ -66,7 +66,7 @@ export function FirstBoard() {
   const [draft, setDraft] = useState<FirstBoardConfig | null>(null)
   const stockMarks = useStockMarks(storage.firstBoardStockMarks)
   const attentionCurrent = !snapshot.isError && snapshot.data?.status === 'ready'
-  const view = useCandidateView(snapshot.data?.rows, attentionCurrent, stockMarks.marks)
+  const view = useCandidateView(snapshot.data?.rows, attentionCurrent, stockMarks.marks, tab === 'live')
   const { rows } = view
   const [stock, setStock] = useState<{ symbol: string; name: string; navList?: { symbol: string; name: string }[] } | null>(null)
   const [feedback, setFeedback] = useState('')
