@@ -1,16 +1,25 @@
 import type { FirstBoardCandidate } from '@/lib/api'
 
 export const MAX_IMMINENT_CARDS = 3
-const keyOf = (row: FirstBoardCandidate) => `${row.symbol}-${row.pattern}`
+const keyOf = (row: FirstBoardCandidate) => row.symbol
 
 /**
- * 选出“临近涨停”焦点卡片：可提示的在前，其次距涨停近的在前；已显示且仍入选的卡片保持原位，
+ * 选出“临近涨停”焦点卡片：同一只股票的多个形态合并为一张卡（取其中可提示、距涨停最近的一条为代表，各形态名称见 patternLabels）。
+ * 可提示的在前，其次距涨停近的在前；已显示且仍入选的卡片保持原位，
  * 空位由排序最靠前的候选补上，避免盘中刷新时卡片互相换位造成误点；新变为可提示的候选会顶替已显示的最靠后的不可提示卡片。
  */
-export function pickImminent(rows: FirstBoardCandidate[], previous: string[], max = MAX_IMMINENT_CARDS): { cards: FirstBoardCandidate[]; keys: string[]; total: number } {
-  const approaching = rows.filter(row => row.state === 'approaching')
+export function pickImminent(rows: FirstBoardCandidate[], previous: string[], max = MAX_IMMINENT_CARDS): { cards: FirstBoardCandidate[]; keys: string[]; total: number; patternLabels: Record<string, string[]> } {
   const distance = (row: FirstBoardCandidate) => row.distance_to_limit_pct ?? Infinity
-  const ranked = [...approaching].sort((a, b) => Number(b.can_buy) - Number(a.can_buy) || distance(a) - distance(b) || keyOf(a).localeCompare(keyOf(b)))
+  const better = (a: FirstBoardCandidate, b: FirstBoardCandidate) => Number(b.can_buy) - Number(a.can_buy) || distance(a) - distance(b) || a.pattern.localeCompare(b.pattern)
+  const variants = new Map<string, FirstBoardCandidate[]>()
+  for (const row of rows.filter(item => item.state === 'approaching')) variants.set(keyOf(row), [...variants.get(keyOf(row)) ?? [], row])
+  const patternLabels: Record<string, string[]> = {}
+  const approaching = [...variants].map(([key, group]) => {
+    const sorted = [...group].sort(better)
+    patternLabels[key] = sorted.map(item => item.pattern_label)
+    return sorted[0]
+  })
+  const ranked = [...approaching].sort((a, b) => better(a, b) || keyOf(a).localeCompare(keyOf(b)))
   const byKey = new Map(approaching.map(row => [keyOf(row), row]))
   const kept = [...new Set(previous)].filter(key => byKey.has(key)).slice(0, max).map(key => byKey.get(key)!)
   const keptKeys = new Set(kept.map(keyOf))
@@ -25,5 +34,5 @@ export function pickImminent(rows: FirstBoardCandidate[], previous: string[], ma
     cards[victim] = buyable
     shownKeys.add(keyOf(buyable))
   }
-  return { cards, keys: cards.map(keyOf), total: approaching.length }
+  return { cards, keys: cards.map(keyOf), total: approaching.length, patternLabels }
 }

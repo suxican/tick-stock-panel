@@ -24,20 +24,21 @@ export function ImminentCards({ rows, current, globalReasons, canOrder, onOpen, 
   }, [rows, current])
   const globalSet = useMemo(() => new Set(globalReasons), [globalReasons])
   if (!current) return null
-  const { cards, total } = picked
+  const { cards, total, patternLabels } = picked
   return <section aria-label="临近涨停" className={cn(panelClass, 'space-y-3')}>
     <h2 className="text-sm font-semibold">临近涨停 <span className="font-normal text-secondary">{total} 只{total > cards.length && ` · 另有 ${total - cards.length} 只，见下表`}</span></h2>
     <div data-imminent-body className="flex h-64 gap-3 overflow-auto">
       {cards.length ? cards.map(row => {
         const stockReasons = row.blocked_reasons.filter(reason => !globalSet.has(reason))
         const globalOnly = row.blocked_reasons.some(reason => globalSet.has(reason))
-        return <article key={`${row.symbol}-${row.pattern}`} data-imminent-card aria-label={`${row.name} ${row.symbol} 临近涨停`}
+        return <article key={row.symbol} data-imminent-card aria-label={`${row.name} ${row.symbol} 临近涨停`}
           className={cn('flex min-w-[17rem] flex-1 flex-col gap-2 rounded-card border p-3 text-xs', row.can_buy ? 'border-accent/50 bg-accent/5' : 'border-border opacity-80')}>
           <div className="flex flex-wrap items-center gap-1">
             <button type="button" className="text-left text-sm font-medium hover:underline focus-visible:outline focus-visible:outline-accent" onClick={() => onOpen(row.symbol, row.name)}>{row.name}</button>
             <RoleTags row={row} /><MainlineTag row={row} />
             <span className="text-secondary">{row.symbol}</span>
           </div>
+          <div className="text-secondary" data-imminent-patterns>{(patternLabels[row.symbol] ?? [row.pattern_label]).join(' · ')}</div>
           <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 tabular-nums">
             <span className={cn('text-base font-medium', priceColorClass(row.price ? row.change_pct : null))}>{fmtPrice(row.price)}</span>
             <span className={priceColorClass(row.change_pct)}>{fmtPct(row.change_pct)}</span>
