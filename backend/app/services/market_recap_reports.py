@@ -27,7 +27,8 @@ from __future__ import annotations
 
 from app.services.json_report_store import JsonReportStore
 
-MAX_REPORTS = 20
+# 临时解除上限(原为 20): 取一个实际不会触达的大值; 需要恢复裁剪时改回 20 即可。
+MAX_REPORTS = 10_000
 
 _store = JsonReportStore(
     "ai_market_recaps.json", MAX_REPORTS, id_prefix="mkr", id_with_symbol=False,
