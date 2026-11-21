@@ -111,6 +111,8 @@ async function numberInput(label: string, value: string) {
 function candidate(name: string, values: Partial<FirstBoardCandidate> = {}): FirstBoardCandidate {
   return { ...snapshot().rows[0], name, symbol: `60000${name.charCodeAt(0) - 65}.SH`, ...values }
 }
+// 默认候选是临近涨停且可提示，临近涨停卡片里也有同样的按钮；断言表格自己的接线时用这个。
+function tableBuy() { return [...candidateRows()[0].querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === '模拟买入')! }
 function candidateRows() { return [...host.querySelectorAll('table[aria-label="首板实时候选"] tbody tr[data-candidate-row]')] }
 function evidenceRows() { return [...host.querySelectorAll('table[aria-label="首板实时候选"] tbody tr[data-evidence-row]')] }
 function candidateNames() {
@@ -450,7 +452,7 @@ it.each([
 it('shows attention evidence with explicit decimal units without granting a simulated buy', async () => {
   calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [candidate('A', { can_buy: false, attention_context: attention() })] })
   await render()
-  expect(host.querySelector('[data-attention-summary]')?.textContent).toContain('同板块双条件')
+  expect(host.querySelector('table[aria-label="首板实时候选"] [data-attention-summary]')?.textContent).toContain('同板块双条件')
   await expandEvidence()
   const cell = host.querySelector('[data-attention-cell]')!
   expect(cell.textContent).toContain('同板块双条件')
@@ -506,7 +508,7 @@ it('does not highlight or filter cached positive attention outside continuous tr
   calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), status: 'closed', rows: [candidate('A', { attention_context: attention() })] })
   await render()
   expect(host.querySelector('[data-attention-positive="true"]')).toBeNull()
-  expect(host.querySelector('[data-attention-summary]')?.textContent).toContain('联动数据已过期')
+  expect(host.querySelector('table[aria-label="首板实时候选"] [data-attention-summary]')?.textContent).toContain('联动数据已过期')
   expect(button('模拟买入').disabled).toBe(true)
   await filterAttention('strong')
   expect(candidateNames()).toEqual([])
@@ -565,7 +567,7 @@ it('keeps the market context in the monitor header and omits the old notes', asy
 
 it('keeps legacy responses usable and labels missing attention data as unconfirmed', async () => {
   await render()
-  expect(host.querySelector('[data-attention-summary]')?.textContent).toContain('待确认')
+  expect(host.querySelector('table[aria-label="首板实时候选"] [data-attention-summary]')?.textContent).toContain('待确认')
   expect(button('模拟买入').disabled).toBe(false)
   await filterAttention('strong')
   expect(candidateNames()).toEqual([])
@@ -578,7 +580,7 @@ it('treats an unsupported attention schema as unknown without breaking candidate
   const unsupported = { schema_version: 2, status: 'ready' } as unknown as FirstBoardAttention
   calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [candidate('A', { attention_context: unsupported })] })
   await render()
-  expect(host.querySelector('[data-attention-summary]')?.textContent).toContain('联动数据待确认')
+  expect(host.querySelector('table[aria-label="首板实时候选"] [data-attention-summary]')?.textContent).toContain('联动数据待确认')
   expect(button('模拟买入').disabled).toBe(false)
   await filterAttention('strong')
   expect(candidateNames()).toEqual([])
@@ -1023,10 +1025,11 @@ it('shows decimal percentages correctly, permits quote-based alerts without minu
   await expandEvidence()
   expect(host.textContent).toContain('换手率 4.00%')
   expect(button('模拟买入').disabled).toBe(false)
-  const stockButton = [...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent?.startsWith('测试股票'))!
+  const stockButton = [...candidateRows()[0].querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent?.startsWith('测试股票'))!
   await act(async () => stockButton.click())
   expect(host.querySelector('[role="dialog"]')?.getAttribute('data-symbol')).toBe('600000.SH')
-  await click('模拟买入')
+  await act(async () => tableBuy().click())
+  await settle()
   expect(calls.firstBoardPaperOrder).toHaveBeenCalledWith({ event_id: 'event1', side: 'buy', amount: 25000 }, expect.anything())
   expect(host.textContent).toContain('模拟委托已提交')
 })
@@ -1143,7 +1146,7 @@ it('labels matched roles and reports stocks hidden by the role filter', async ()
     rows: base.rows.map(row => ({ ...row, stock_role: { leader: true, core: null, reason: '', matches: [{ id: 'g', kind: 'concept', name: '概念A', change_rank: 1, cap_rank: null, amount_rank: null, roles: ['leader'] }] } })) })
   await render()
   expect(host.textContent).toContain('非所选角色未列出 2 只')
-  const tag = [...host.querySelectorAll('span')].find(item => item.textContent === '龙头')!
+  const tag = [...host.querySelectorAll<HTMLElement>('table[aria-label="首板实时候选"] span')].find(item => item.textContent === '龙头')!
   expect(tag.title).toBe('龙头：概念A')
 })
 it('shows the reference-day sentiment phase and mainlines, and filters candidates by mainline', async () => {
@@ -1163,7 +1166,8 @@ it('shows the reference-day sentiment phase and mainlines, and filters candidate
   // 没有盘中梯队（旧后端）时，阶段标签附带昨日收盘梯队；缺失的封板率显示占位符而非 0%。
   expect(status.textContent).toContain('情绪阶段（昨日）：主升高度 7 板 · 晋级 31% · 封板 —')
   expect(status.textContent).toContain('昨日主线：机器人')
-  const tags = [...host.querySelectorAll('span')].filter(node => node.textContent === '主线')
+  // 临近涨停卡片也会带主线标签；这里只核对候选表里的标签。
+  const tags = [...host.querySelectorAll<HTMLElement>('table[aria-label="首板实时候选"] span')].filter(node => node.textContent === '主线')
   expect(tags).toHaveLength(1)
   expect(tags[0].title).toBe('2026-09-29 主线：机器人（第 1）')
   await toggleExact('只看主线')
@@ -1699,4 +1703,102 @@ it('does not re-sort by itself when the default sort rule switches because the s
   await settle()
   expect(candidateNames()).toEqual(['A', 'B'])
   expect(pill()).toBeDefined()
+})
+const imminentSection = () => host.querySelector('section[aria-label="临近涨停"]')
+const cards = () => [...host.querySelectorAll('section[aria-label="临近涨停"] [data-imminent-card]')]
+const cardNames = () => cards().map(card => card.querySelector('button')!.firstChild!.textContent)
+const near = (name: string, distance: number, values: Partial<FirstBoardCandidate> = {}) => candidate(name, { state: 'approaching', distance_to_limit_pct: distance, can_buy: false, event_id: null, suggested_amount: null, ...values })
+it('shows only approaching candidates, can-buy first, capped at three', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [near('A', .02), near('B', .01), candidate('C', { state: 'sealed', can_buy: false }),
+    near('D', .03, { can_buy: true, event_id: 'e', suggested_amount: 25000 }), near('E', .005), near('F', .04)] })
+  await render()
+  expect(cardNames()).toEqual(['D', 'E', 'B'])
+  expect(imminentSection()!.textContent).toContain('临近涨停 5 只')
+  expect(imminentSection()!.textContent).toContain('另有 2 只，见下表')
+})
+it('is not affected by the table filters', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [near('A', .01)] })
+  await render()
+  await toggleExact('只看主线')
+  expect(candidateNames()).toEqual([])
+  expect(cardNames()).toEqual(['A'])
+})
+it('keeps the card order across refreshes', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [near('A', .01), near('B', .02)] })
+  await render()
+  expect(cardNames()).toEqual(['A', 'B'])
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), observed_at: '2026-09-30T10:01:00+08:00', rows: [near('A', .03), near('B', .01)] })
+  await click('刷新')
+  await settle()
+  expect(cardNames()).toEqual(['A', 'B'])
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), observed_at: '2026-09-30T10:02:00+08:00', rows: [candidate('A', { state: 'sealed', can_buy: false }), near('B', .01)] })
+  await click('刷新')
+  await settle()
+  expect(cardNames()).toEqual(['B'])
+})
+it('is not rendered when the snapshot is not current', async () => {
+  for (const status of ['closed', 'stale'] as const) {
+    calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), status, rows: [near('A', .01)] })
+    await act(async () => { await client.refetchQueries() })
+    await render()
+    expect(imminentSection(), status).toBeNull()
+  }
+})
+it('reserves a fixed height and shows an empty line', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [candidate('A', { state: 'sealed', can_buy: false })] })
+  await render()
+  const body = () => imminentSection()!.querySelector('[data-imminent-body]')!
+  expect(imminentSection()!.textContent).toContain('当前没有临近涨停的候选')
+  expect(body().className).toContain('h-64')
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), observed_at: '2026-09-30T10:01:00+08:00', rows: [near('A', .01)] })
+  await click('刷新')
+  await settle()
+  expect(cards()).toHaveLength(1)
+  expect(body().className).toContain('h-64')
+})
+it('shares the buy button rules with the table', async () => {
+  const buyable = near('A', .01, { can_buy: true, event_id: 'event-a', suggested_amount: 25000 })
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [buyable] })
+  await render()
+  const cardBuy = () => [...cards()[0].querySelectorAll('button')].find(item => item.textContent === '模拟买入')!
+  const tableBuy = () => [...candidateRows()[0].querySelectorAll('button')].find(item => item.textContent === '模拟买入')!
+  expect(cardBuy().disabled).toBe(false)
+  expect(tableBuy().disabled).toBe(false)
+  await act(async () => cardBuy().click())
+  await settle()
+  expect(calls.firstBoardPaperOrder).toHaveBeenCalledTimes(1)
+  expect(calls.firstBoardPaperOrder.mock.calls[0][0]).toEqual({ event_id: 'event-a', side: 'buy', amount: 25000 })
+  capabilityState.available = false
+  await render()
+  expect(cardBuy().disabled).toBe(true)
+  expect(tableBuy().disabled).toBe(true)
+  capabilityState.available = true
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), observed_at: '2026-09-30T10:01:00+08:00', rows: [{ ...buyable, event_id: null }] })
+  await click('刷新')
+  await settle()
+  expect(cardBuy().disabled).toBe(true)
+  expect(tableBuy().disabled).toBe(true)
+})
+it('explains a blocked card in one line and offers no buy button', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [near('A', .01, { blocked_reasons: ['行业同行未跟涨'] })] })
+  await render()
+  expect(cards()[0].textContent).toContain('行业同行未跟涨')
+  expect([...cards()[0].querySelectorAll('button')].some(item => item.textContent === '模拟买入')).toBe(false)
+})
+it('lets a newly buyable candidate replace the farthest non-buyable card', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [near('A', .01), near('B', .02), near('C', .03)] })
+  await render()
+  expect(cardNames()).toEqual(['A', 'B', 'C'])
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), observed_at: '2026-09-30T10:01:00+08:00',
+    rows: [near('A', .01), near('B', .02), near('C', .03), near('D', .04, { can_buy: true, event_id: 'event-d', suggested_amount: 20000 })] })
+  await click('刷新')
+  await settle()
+  expect(cardNames()).toEqual(['A', 'B', 'D'])
+  expect(imminentSection()!.textContent).toContain('另有 1 只，见下表')
+})
+it('names the stock on the card buy button for assistive technology', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [near('A', .01, { can_buy: true, event_id: 'event-a', suggested_amount: 25000 })] })
+  await render()
+  expect(cards()[0].getAttribute('aria-label')).toContain('A')
+  expect(cards()[0].querySelector('button[aria-label^="模拟买入"]')?.getAttribute('aria-label')).toContain('A')
 })

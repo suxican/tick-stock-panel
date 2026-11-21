@@ -16,6 +16,7 @@ import { YesterdayFeedback } from './YesterdayFeedback'
 import { OpeningDistribution } from './OpeningDistribution'
 import { LiveStatus } from './LiveStatus'
 import { CandidateTable, useCandidateView } from './CandidateTable'
+import { ImminentCards } from './ImminentCards'
 import { EventsPanel } from './EventsPanel'
 import { beijingDay, buttonClass, ErrorNotice, LoadingRows, money, Notice, panelClass, pct } from './shared'
 
@@ -138,6 +139,8 @@ export function FirstBoard() {
           {data && <YesterdayFeedback data={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} onOpenStock={openList}>
             <OpeningDistribution feedback={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} />
           </YesterdayFeedback>}
+          <ImminentCards rows={data?.rows} current={attentionCurrent} globalReasons={data?.global_blocked_reasons ?? noReasons} canOrder={liveUsable && !order.isPending} onOpen={openStock}
+            onBuy={(eventId, amount) => order.mutate({ event_id: eventId, side: 'buy', amount })} />
           <CandidateTable view={view} loading={snapshot.isLoading} current={attentionCurrent} day={data?.as_of ?? ''} marks={stockMarks}
             globalReasons={data?.global_blocked_reasons ?? noReasons} roleHidden={data?.coverage.role_hidden_count} canOrder={liveUsable && !order.isPending} onOpen={openStock} onBuy={(eventId, amount) => order.mutate({ event_id: eventId, side: 'buy', amount })} />
           <ErrorNotice error={order.error} />

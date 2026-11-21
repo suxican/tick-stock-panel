@@ -186,7 +186,7 @@ function CandidateHeader({ view }: { view: CandidateView }) {
 }
 
 /** 每行只给一句结论：可提示、个股自身的主要阻断原因，或仅受全局条件暂停。 */
-function Conclusion({ row, current, stockReasons, globalOnly }: { row: FirstBoardCandidate; current: boolean; stockReasons: string[]; globalOnly: boolean }) {
+export function Conclusion({ row, current, stockReasons, globalOnly }: { row: FirstBoardCandidate; current: boolean; stockReasons: string[]; globalOnly: boolean }) {
   if (row.can_buy) {
     return current ? <p className="font-medium text-blue-700 dark:text-blue-300">达到提示条件，需确认可成交</p> : <p className="text-secondary">等待最新快照确认</p>
   }
@@ -264,6 +264,14 @@ export function MainlineTag({ row }: { row: FirstBoardCandidate }) {
   return <span title={`${row.mainline?.date ?? ''} 主线：${matches.map(match => `${match.name}（第 ${match.rank}）`).join('、')}`} className="ml-1 inline-flex shrink-0 items-center rounded border border-accent/40 bg-accent/10 px-1 text-[10px] leading-4 text-foreground">主线</span>
 }
 
+/** 「模拟买入」按钮与建议金额：候选表和临近涨停卡片共用，按钮的可用条件只有这一处。 */
+export function BuyAction({ row, canOrder, onBuy }: { row: FirstBoardCandidate; canOrder: boolean; onBuy: (eventId: string, amount: number) => void }) {
+  return <>
+    <button className={buyClass} aria-label={`模拟买入 ${row.name} ${row.symbol}`} disabled={!canOrder || !row.event_id || !row.suggested_amount} onClick={() => row.event_id && row.suggested_amount && onBuy(row.event_id, row.suggested_amount)}>模拟买入</button>
+    <span className="mt-1 block text-secondary">{row.suggested_amount ? `${money(row.suggested_amount)} 元` : '需关联账户及可用额度'}</span>
+  </>
+}
+
 function CandidateRow({ row, current, day, focused, canOrder, globalReasons, expanded, onToggle, onFocus, onOpen, onBuy }: {
   row: FirstBoardCandidate; current: boolean; day: string; focused: boolean; canOrder: boolean; globalReasons: Set<string>
   expanded: boolean; onToggle: () => void
@@ -296,10 +304,7 @@ function CandidateRow({ row, current, day, focused, canOrder, globalReasons, exp
       <td className="min-w-40 px-3 py-2.5"><PrioritySummary row={row} current={current} /></td>
       <td className="px-3 py-2.5"><AttentionSummary context={row.attention_context} snapshotCurrent={current} /></td>
       <td className="min-w-40 max-w-52 px-3 py-2.5 leading-snug"><Conclusion row={row} current={current} stockReasons={stockReasons} globalOnly={globalOnly} /></td>
-      <td className="whitespace-nowrap px-3 py-2.5">{row.can_buy ? <>
-        <button className={buyClass} disabled={!canOrder || !row.event_id || !row.suggested_amount} onClick={() => row.event_id && row.suggested_amount && onBuy(row.event_id, row.suggested_amount)}>模拟买入</button>
-        <span className="mt-1 block text-secondary">{row.suggested_amount ? `${money(row.suggested_amount)} 元` : '需关联账户及可用额度'}</span>
-      </> : <span className="text-muted">—</span>}</td>
+      <td className="whitespace-nowrap px-3 py-2.5">{row.can_buy ? <BuyAction row={row} canOrder={canOrder} onBuy={onBuy} /> : <span className="text-muted">—</span>}</td>
       <td className="px-2 py-2">
         <button type="button" aria-expanded={expanded} aria-controls={expanded ? evidenceId : undefined} aria-label={`${expanded ? '收起' : '展开'}依据 ${row.name} ${row.pattern_label}`}
           className="inline-flex h-7 w-7 items-center justify-center rounded text-secondary hover:bg-elevated hover:text-foreground focus-visible:outline focus-visible:outline-accent" onClick={onToggle}>
