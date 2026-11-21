@@ -17,7 +17,7 @@ import { OpeningDistribution } from './OpeningDistribution'
 import { LiveStatus } from './LiveStatus'
 import { CandidateTable, useCandidateView } from './CandidateTable'
 import { ImminentCards } from './ImminentCards'
-import { EventsPanel } from './EventsPanel'
+import { EventsPanel, type EventsView } from './EventsPanel'
 import { sceneAt } from './scene'
 import { beijingDay, buttonClass, ErrorNotice, LoadingRows, money, Notice, panelClass, pct } from './shared'
 
@@ -54,6 +54,7 @@ export function FirstBoard() {
   const config = useQuery({ queryKey: QK.firstBoardConfig, queryFn: api.firstBoardConfig })
   const [chosenEventDay, setEventDay] = useState<string | null>(null)
   const [eventFilters, setEventFilters] = useState<FirstBoardEventFilters>({})
+  const [eventsView, setEventsView] = useState<EventsView>('stock')
   // 未手动选日期时跟随快照交易日：非交易日打开不再落到空的自然日。
   // 快照轮询间隔又取决于所选日期，因此这里直接读同一查询的缓存，避免循环依赖。
   const snapshotDay = client.getQueryData<FirstBoardSnapshot>(QK.firstBoardSnapshot)?.as_of ?? null
@@ -150,7 +151,7 @@ export function FirstBoard() {
           {data?.paper && <PaperAccount paper={data.paper} onOpen={openStock} />}
           {!!data?.limitations.length && <details className="text-xs text-secondary"><summary className="cursor-pointer">当前实现的边界</summary><ul className="ml-4 mt-2 list-disc space-y-2 leading-relaxed">{data.limitations.map(item => <li key={item}>{item}</li>)}</ul></details>}
         </>}
-        {tab === 'events' && <EventsPanel events={events} day={eventDay} onDay={setEventDay} filters={eventFilters} onFilters={setEventFilters} poll={pollSignals}
+        {tab === 'events' && <EventsPanel events={events} day={eventDay} onDay={setEventDay} filters={eventFilters} onFilters={setEventFilters} view={eventsView} onView={setEventsView} poll={pollSignals}
           canSell={liveUsable && !order.isPending} orderError={order.error} onOpen={openStock} onOpenList={openList} onSell={sellEvent} />}
         {tab === 'research' && <><ErrorNotice error={versions.error} retry={() => void versions.refetch()} /><ResearchPanel config={config.data} versions={versions.data?.versions ?? []} onOpenStock={openStock} onLoadRules={loadRules} /></>}
         {tab === 'rules' && draft && <><ErrorNotice error={versions.error ?? accounts.error} retry={() => { void versions.refetch(); void accounts.refetch() }} /><RulesPanel config={config.data} draft={draft} onDraft={setDraft} onSave={() => save.mutate(draft)} versions={versions.data?.versions ?? []} accounts={accounts.data?.accounts ?? []} saving={save.isPending} error={save.error} reload={() => { if (config.data) setDraft(config.data); save.reset() }} /></>}

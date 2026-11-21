@@ -4355,6 +4355,7 @@ export const api = {
     return request<{ events: FirstBoardEvent[]; day: string; total: number }>(
       `/api/first-board/events${query.size ? `?${query}` : ''}`, { quiet: true })
   },
+  firstBoardOpportunities: (day: string) => request<FirstBoardOpportunities>(`/api/first-board/opportunities?${new URLSearchParams({ day })}`, { quiet: true }),
   firstBoardVersions: () => request<{ versions: FirstBoardConfig[] }>('/api/first-board/versions'),
   firstBoardResearch: (body: FirstBoardResearchRequest) => request<FirstBoardResearch>('/api/first-board/research', {
     method: 'POST', body: JSON.stringify(body), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, quiet: true,
@@ -7812,6 +7813,27 @@ export interface FirstBoardFirstAlertRow {
   ma_support: boolean | null
   macd_support: boolean | null
   ranks: Partial<Record<FirstBoardFirstAlertMethod, { batch: number; batch_total: number; day: number }>>
+}
+export interface FirstBoardOpportunityRow {
+  symbol: string
+  name: string
+  patterns: { pattern: FirstBoardPattern; pattern_label: string }[]
+  first_alert: { at: string; price: number | null; pattern: FirstBoardPattern; event_id: string } | null
+  first_touch: { at: string; price: number | null } | null
+  broken: string | null
+  resealed: string | null
+  last_state: { event_type: string; at: string }
+  first_record: { at: string; event_type: string; blocked_reasons: string[] }
+  alerted: boolean
+  sealed_unalerted: boolean
+  event_count: number
+}
+export interface FirstBoardOpportunities {
+  day: string
+  revision: number
+  available_revisions: number[]
+  rows: FirstBoardOpportunityRow[]
+  summary: { stock_count: number; alerted_count: number; touched_count: number; sealed_unalerted_count: number; skipped_count: number }
 }
 export interface FirstBoardFirstAlertRankings {
   date: string

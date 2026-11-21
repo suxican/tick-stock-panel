@@ -13,7 +13,7 @@ import { beijingDay } from './shared'
 
 const calls = vi.hoisted(() => ({
   firstBoardConfig: vi.fn(), firstBoardSaveConfig: vi.fn(), firstBoardSnapshot: vi.fn(), firstBoardRefresh: vi.fn(),
-  firstBoardEvents: vi.fn(), firstBoardFirstAlertRankings: vi.fn(), firstBoardVersions: vi.fn(), firstBoardResearch: vi.fn(), firstBoardCompare: vi.fn(),
+  firstBoardEvents: vi.fn(), firstBoardOpportunities: vi.fn(), firstBoardFirstAlertRankings: vi.fn(), firstBoardVersions: vi.fn(), firstBoardResearch: vi.fn(), firstBoardCompare: vi.fn(),
   firstBoardResearchRuns: vi.fn(), firstBoardPaperOrder: vi.fn(), paperAccounts: vi.fn(),
   firstBoardTradeValidation: vi.fn(), firstBoardTradeValidationRuns: vi.fn(),
 }))
@@ -87,6 +87,7 @@ beforeEach(() => {
   calls.firstBoardRefresh.mockResolvedValue(snapshot())
   calls.firstBoardVersions.mockResolvedValue({ versions: [config()] })
   calls.firstBoardEvents.mockResolvedValue({ events: [], total: 0, day: beijingDay() })
+  calls.firstBoardOpportunities.mockResolvedValue({ day: beijingDay(), revision: 1, available_revisions: [1], rows: [], summary: { stock_count: 0, alerted_count: 0, touched_count: 0, sealed_unalerted_count: 0, skipped_count: 0 } })
   calls.firstBoardFirstAlertRankings.mockResolvedValue(null)
   calls.firstBoardResearchRuns.mockResolvedValue({ runs: [] })
   calls.firstBoardTradeValidationRuns.mockResolvedValue({ runs: [] })
@@ -890,6 +891,7 @@ it('combines candidate state with other filters and retains sorting and state ac
   expect(sortButton('现价').closest('th')?.getAttribute('aria-sort')).toBe('ascending')
   expect(client.getQueryData(QK.firstBoardSnapshot)).toEqual(refreshed)
   await click('信号记录')
+  await click('原始事件')
   expect(host.querySelector<HTMLSelectElement>('select[aria-label="信号状态"]')?.value).toBe('all')
   await click('今日盯盘')
   expect(stateButton('已开板').getAttribute('aria-pressed')).toBe('true')
@@ -1294,6 +1296,7 @@ it('requests an ISO event date even when the browser falls back to another local
     return new DateTimeFormat('en-US', options)
   })
   await render('events')
+  await click('原始事件')
   expect(calls.firstBoardEvents).toHaveBeenCalledWith('2026-10-09', {})
   const input = host.querySelector<HTMLInputElement>('input[type="date"]')!
   expect(input.value).toBe('2026-10-09')
@@ -1327,6 +1330,7 @@ it('renders historical events by selected date without turning them into live bu
       parts: {}, primary_sector: null, role: 'unknown', can_buy: true, reason: '当时行情' } },
     blocked_reasons: [], quote_time: '2026-09-30T09:00:00+08:00' }], total: 1, day: beijingDay() })
   await render('events')
+  await click('原始事件')
   expect(calls.firstBoardEvents).toHaveBeenCalledWith(beijingDay(), {})
   expect(host.textContent).toContain('历史候选信号')
   expect(host.textContent).toContain('信号时优先分 53 分')
@@ -1385,6 +1389,7 @@ it('requests unfiltered first alerts for the chosen date, version and top seats,
 it('keeps the event log usable when a previous backend has no ranking endpoint', async () => {
   calls.firstBoardFirstAlertRankings.mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 }))
   await render('events')
+  await click('原始事件')
   expect(host.textContent).toContain('当前服务未提供首次提示排名')
   expect(host.textContent).toContain('该日暂无首板信号')
   expect(host.textContent).not.toContain('Not Found')
@@ -1408,6 +1413,7 @@ it('combines event filters, keeps them across dates and tabs, and handles empty 
   }
   const messages = () => [...host.querySelectorAll('ul.divide-y > li')].map(row => row.querySelector('p')?.textContent)
   await render('events')
+  await click('原始事件')
   expect(messages()).toEqual(['信号-near', '信号-buy', '信号-exit'])
   await select('信号形态', 'oversold')
   expect(messages()).toEqual(['信号-near', '信号-buy'])
@@ -2015,4 +2021,29 @@ it('keeps missing amount and market cap last in both directions', async () => {
   expect(candidateNames()).toEqual(['A', 'C', 'B'])
   await sortBy('流通市值')
   expect(candidateNames()).toEqual(['C', 'A', 'B'])
+})
+it('opens the signal record on the per-stock view and switches to the raw events and back', async () => {
+  calls.firstBoardEvents.mockResolvedValue({ events: [{ id: 'raw1', ts: 1790720400000, date: '2026-09-30', symbol: '600000.SH', name: '原始股票', pattern: 'platform', pattern_label: '平台突破', state: 'approaching', event_type: 'buy_candidate', message: '原始候选信号', price: 10.8, revision: 1, evidence: {}, blocked_reasons: [], quote_time: '2026-09-30T09:00:00+08:00' }], total: 1, day: beijingDay() })
+  await render('events')
+  expect(calls.firstBoardOpportunities).toHaveBeenCalledWith(beijingDay())
+  expect(host.querySelector('section[aria-label="机会记录"]')).not.toBeNull()
+  expect(host.textContent).not.toContain('信号价格')
+  await click('原始事件')
+  expect(host.querySelector('section[aria-label="机会记录"]')).toBeNull()
+  expect(host.textContent).toContain('信号价格')
+  await click('按股票')
+  expect(host.querySelector('section[aria-label="机会记录"]')).not.toBeNull()
+})
+it('renders both per-stock blocks without duplicate sibling keys', async () => {
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+  await render('events')
+  expect(host.querySelector('section[aria-label="机会记录"]')).not.toBeNull()
+  expect(errors.mock.calls.filter(call => String(call[0]).includes('same key'))).toEqual([])
+})
+it('keeps the date picker and shows the opportunities for the chosen date', async () => {
+  await render('events')
+  const input = host.querySelector<HTMLInputElement>('input[type="date"]')!
+  await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '2026-09-29'); input.dispatchEvent(new Event('input', { bubbles: true })) })
+  await settle()
+  expect(calls.firstBoardOpportunities).toHaveBeenCalledWith('2026-09-29')
 })
