@@ -32,6 +32,17 @@ export function useMeozThemeReasons(date: string | undefined) {
   return useQuery(meozThemeReasonsOptions(date))
 }
 
+/** 精选板块最正宗名单 (只有当前快照, 后端缓存 30 分钟, 页面不轮询) */
+export function useThemeAuthenticity(symbol: string | undefined) {
+  return useQuery({
+    queryKey: QK.meozThemeAuthenticity(symbol ?? ''),
+    queryFn: () => quiet(() => api.meozThemeAuthenticity(symbol!)),
+    enabled: !!symbol,
+    staleTime: 30 * 60_000,
+    retry: false,
+  })
+}
+
 /** 猫爪热榜 (实时, 60 秒刷新, 保留上一份有效数据) */
 export function useMeozHotRank(enabled = true) {
   return useQuery({

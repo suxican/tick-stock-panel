@@ -129,6 +129,7 @@ export const QK = {
   meozLimitReasons:     (date: string) => ['meoz', 'limit-reasons', date] as const,
   meozThemeReasons:     (date: string) => ['meoz', 'theme-reasons', date] as const,
   meozHotRank:          ['meoz', 'hot-rank'] as const,
+  meozThemeAuthenticity: (symbol: string) => ['meoz', 'theme-authenticity', symbol] as const,
   meozStrongestVent:    (date: string) => ['meoz', 'strongest-vent', date] as const,
   meozNews:             ['meoz', 'news'] as const,
 

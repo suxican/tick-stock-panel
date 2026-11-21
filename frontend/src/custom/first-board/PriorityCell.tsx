@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { FirstBoardCandidate, FirstBoardPriority, FirstBoardPriorityStatus, FirstBoardRadarBoard } from '@/lib/api'
+import { MeozAuthenticEvidence } from './MeozAuthenticEvidence'
 import { MeozHotEvidence } from './MeozHotEvidence'
 import { pct, stamp } from './shared'
 
@@ -126,6 +127,7 @@ export function PriorityCell({ row, current, archived = false, symbol }: {
         {theme?.source === 'official_core' && <RadarBoard entry={theme} />}
         {vendorBoards(p.radar).map(entry => <RadarBoard key={`${entry.plate_type}-${entry.tid}`} entry={entry} />)}
         {current && !archived && symbol && <MeozHotEvidence symbol={symbol} boardName={group?.name} />}
+        {current && !archived && symbol && <MeozAuthenticEvidence symbol={symbol} />}
         <p>{p.reason}</p>
       </div>}
     </details>}

@@ -251,3 +251,21 @@ def test_routes_map_errors(monkeypatch, tmp_path):
         for error, code in ((hot.HotRankUnavailableError("未就绪"), 503), (RuntimeError("x"), 502)):
             hot_reader.side_effect = error
             assert client.get("/api/meoz/hot-rank").status_code == code
+
+
+def test_theme_authenticity_route_returns_symbol_summary(monkeypatch, tmp_path):
+    """首板展开区: 单只候选所在的最正宗精选板块; 来源不可用为 503 (前端显示「来源不可用」)。"""
+    app = FastAPI()
+    app.state.repo = SimpleNamespace(store=SimpleNamespace(data_dir=tmp_path))
+    app.include_router(ext.router)
+    fetch = Mock(return_value={"688388.SH": [{"theme_id": "801004k", "theme_name": "锂电池", "change_pct": -0.0345}]})
+    monkeypatch.setattr(ext.theme_authenticity, "fetch_authenticity", fetch)
+    with TestClient(app) as client:
+        body = client.get("/api/meoz/theme-authenticity", params={"symbol": "688388.SH"}).json()
+        assert body == {"available": True, "themes": [{"theme_id": "801004k", "theme_name": "锂电池", "change_pct": -0.0345}]}
+        fetch.assert_called_with(["688388.SH"])
+        fetch.return_value = {"600000.SH": []}
+        assert client.get("/api/meoz/theme-authenticity", params={"symbol": "600000.SH"}).json() == {"available": True, "themes": []}
+        fetch.return_value = None
+        assert client.get("/api/meoz/theme-authenticity", params={"symbol": "600000.SH"}).status_code == 503
+        assert client.get("/api/meoz/theme-authenticity", params={"symbol": " "}).status_code == 422

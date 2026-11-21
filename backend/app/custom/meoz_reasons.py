@@ -6,6 +6,7 @@ from datetime import date
 from fastapi import APIRouter, HTTPException, Request
 
 from app.extensions import BACKEND_EXTENSION_API_VERSION, BackendExtensionRegistrar
+from app.services import theme_authenticity
 from app.services.meoz_hot_rank import HotRankUnavailableError
 from app.services.meoz_hot_rank import read as read_hot_rank
 from app.services.meoz_limit_reasons import ReasonsUnavailableError, read
@@ -59,6 +60,18 @@ def hot_rank() -> dict:
         raise HTTPException(503, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, "猫爪热榜暂时不可用，请稍后重试") from exc
+
+
+@router.get("/theme-authenticity")
+def authenticity(symbol: str) -> dict:
+    """首板展开区: 单只候选所在的「最正宗」精选板块 (当前名单快照, 只作证据)。"""
+    symbol = symbol.strip()
+    if not symbol:
+        raise HTTPException(422, "缺少股票代码")
+    raw = theme_authenticity.fetch_authenticity([symbol])
+    if raw is None:
+        raise HTTPException(503, "精选板块正宗度来源不可用")
+    return theme_authenticity.summarize(raw, symbol)
 
 
 @router.get("/strongest-vent")

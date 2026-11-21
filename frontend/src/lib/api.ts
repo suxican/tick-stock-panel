@@ -1249,6 +1249,12 @@ export interface MeozHotRank {
   themes: { available: boolean; rows: MeozHotTheme[] }
 }
 
+/** 精选板块正宗度 (当前名单快照); change_pct 小数制, 名称或涨跌取不到时为 null */
+export interface ThemeAuthenticity {
+  available: boolean
+  themes?: { theme_id: string; theme_name: string | null; change_pct: number | null }[]
+}
+
 /** 猫爪最强风口 (fengk_kp 个股榜, 已按强度降序); pct_chg 是小数制 (0.1003 = 10.03%), 金额单位元 */
 export interface MeozStrongestVentRow {
   symbol: string
@@ -4295,6 +4301,8 @@ export const api = {
   meozThemeReasons: (date: string) =>
     request<MeozThemeReasons>(`/api/meoz/theme-reasons?date=${date}&latest=true`, { quiet: true, timeoutMs: 60_000 }),
   meozHotRank: () => request<MeozHotRank>('/api/meoz/hot-rank', { quiet: true, timeoutMs: 60_000 }),
+  meozThemeAuthenticity: (symbol: string) =>
+    request<ThemeAuthenticity>(`/api/meoz/theme-authenticity?symbol=${encodeURIComponent(symbol)}`, { quiet: true, timeoutMs: 60_000 }),
   meozStrongestVent: (date?: string) =>
     request<MeozStrongestVent>(date ? `/api/meoz/strongest-vent?date=${date}` : '/api/meoz/strongest-vent',
       { quiet: true, timeoutMs: 60_000 }),
