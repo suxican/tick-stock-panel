@@ -316,3 +316,79 @@ def test_opportunities_reports_empty_future_and_invalid_queries(client, monkeypa
     assert client.get(base.replace("10-16", "10-17")).status_code == 400
     assert client.get("/api/first-board/opportunities").status_code == 422
     assert client.get(base + "&revision=-1").status_code == 422
+
+
+def _seed_opportunities(client, monkeypatch, now):
+    monkeypatch.setattr(fb, "_now", lambda: now)
+    service = client.app.state.first_board_service
+    clock = datetime(2026, 10, 16, 10, tzinfo=CN_TZ)
+    service._write_day(clock.date(), {"schema_version": 1, "date": str(clock.date()), "last": {}, "events": _opportunity_events(service, clock)})
+    return service
+
+
+def _daily(rows):
+    return pl.DataFrame([{"symbol": s, "date": datetime(2026, 10, 16).date(), "raw_close": c, "raw_high": c, "raw_prev_close": 10.0,
+                          "limit_up_price": 10.995} for s, c in rows],
+                        schema={"symbol": pl.String, "date": pl.Date, "raw_close": pl.Float64, "raw_high": pl.Float64,
+                                "raw_prev_close": pl.Float64, "limit_up_price": pl.Float64})
+
+
+def test_opportunities_verify_is_off_by_default(client, monkeypatch):
+    _seed_opportunities(client, monkeypatch, datetime(2026, 10, 16, 16, tzinfo=CN_TZ))
+    report = client.get("/api/first-board/opportunities?day=2026-10-16&revision=4").json()
+    assert "verified" not in report and all("close" not in row and "paper" not in row for row in report["rows"])
+    assert "close_sealed_count" not in report["summary"]
+
+
+def test_opportunities_verify_adds_close_and_paper(client, monkeypatch):
+    service = _seed_opportunities(client, monkeypatch, datetime(2026, 10, 16, 16, tzinfo=CN_TZ))
+    service._versions.append({"revision": 4, "paper_account_id": "acc1"})
+    service.repo.get_daily_batch = lambda *_args, **_kwargs: _daily([("600001.SH", 11.0)])
+    seen = {}
+
+    def fake_audit(data_dir, account_id, *, events, start, end, revision):
+        seen.update(account_id=account_id, start=start, end=end, revision=revision)
+        return {"status": "ready", "reason": "ok", "coverage": {"truncated": False}, "trades": [
+            {"signal_id": "e", "symbol": "600001.SH", "status": "closed", "reason": "完整平仓", "orders": [{"side": "buy"}, {"side": "sell"}], "closed_net_return": .02}]}
+
+    monkeypatch.setattr("app.services.first_board_trade_audit.build_paper_trade_audit", fake_audit)
+    report = client.get("/api/first-board/opportunities?day=2026-10-16&revision=4&verify=true").json()
+    first, second = report["rows"]
+    assert report["verified"] is True
+    assert first["close"]["status"] == "sealed" and second["close"]["status"] == "unverified"
+    assert first["paper"] == {"status": "closed", "reason": "完整平仓", "net_return": .02}
+    assert second["paper"]["status"] == "no_signal"
+    assert report["summary"]["close_sealed_count"] == 1 and report["summary"]["close_checked_count"] == 1
+    assert report["summary"]["paper_filled_count"] == 1 and report["summary"]["paper_checked_count"] == 1
+    assert seen == {"account_id": "acc1", "start": datetime(2026, 10, 16).date(), "end": datetime(2026, 10, 16).date(), "revision": 4}
+
+
+def test_opportunities_verify_without_account_skips_audit(client, monkeypatch):
+    service = _seed_opportunities(client, monkeypatch, datetime(2026, 10, 16, 16, tzinfo=CN_TZ))
+    service.repo.get_daily_batch = lambda *_args, **_kwargs: _daily([])
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("audit must not run without an account")
+
+    monkeypatch.setattr("app.services.first_board_trade_audit.build_paper_trade_audit", boom)
+    report = client.get("/api/first-board/opportunities?day=2026-10-16&revision=4&verify=true").json()
+    assert {row["symbol"]: row["paper"]["status"] for row in report["rows"]} == {"600001.SH": "no_account", "600002.SH": "no_signal"}
+
+
+def test_opportunities_verify_before_close_marks_today_unverified(client, monkeypatch):
+    service = _seed_opportunities(client, monkeypatch, datetime(2026, 10, 16, 10, 30, tzinfo=CN_TZ))
+    service.repo.get_daily_batch = lambda *_args, **_kwargs: _daily([("600001.SH", 11.0), ("600002.SH", 11.0)])
+    report = client.get("/api/first-board/opportunities?day=2026-10-16&revision=4&verify=true").json()
+    assert {row["close"]["status"] for row in report["rows"]} == {"unverified"}
+
+
+def test_opportunities_verify_survives_daily_read_failure(client, monkeypatch):
+    service = _seed_opportunities(client, monkeypatch, datetime(2026, 10, 16, 16, tzinfo=CN_TZ))
+
+    def broken(*_args, **_kwargs):
+        raise ValueError("日线损坏")
+
+    service.repo.get_daily_batch = broken
+    response = client.get("/api/first-board/opportunities?day=2026-10-16&revision=4&verify=true")
+    assert response.status_code == 200
+    assert {row["close"]["status"] for row in response.json()["rows"]} == {"unverified"}

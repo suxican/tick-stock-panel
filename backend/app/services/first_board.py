@@ -1262,8 +1262,8 @@ class FirstBoardService:
             raise ValueError("所选日期没有这个规则版本的记录")
         return selected, available
 
-    def opportunities(self, day: date, *, revision: int | None = None) -> dict:
-        """按股票聚合当日事件档案; 只读已保存事件, 不读行情、日线和账本。"""
+    def opportunities(self, day: date, *, revision: int | None = None, verify: bool = False) -> dict:
+        """按股票聚合当日事件档案。默认只读已保存事件; verify=True 才额外读当日日线与模拟盘账本做收盘与成交核验。"""
         from app.services.first_board_opportunities import aggregate_opportunities
 
         if type(day) is not date or day > _beijing(_now()).date():
@@ -1275,7 +1275,37 @@ class FirstBoardService:
         selected, available = self._select_revision(records, revision, self._config.revision)
         report = aggregate_opportunities(records, day=day, revision=selected)
         report["available_revisions"] = available
+        if verify:
+            self._verify_opportunities(report, records, day, selected)
         return report
+
+    def _verify_opportunities(self, report: dict, records: list[dict], day: date, revision: int) -> None:
+        from app.services.first_board_trade_audit import build_paper_trade_audit
+        from app.services.first_board_verification import apply_verification, close_results, paper_results
+
+        rows = report["rows"]
+        symbols = [row["symbol"] for row in rows]
+        now = _beijing(_now())
+        closed = day < now.date() or (day == now.date() and now.time() >= day_time(15, 0))
+        daily = pl.DataFrame()
+        if closed and symbols:
+            try:
+                daily = self.repo.get_daily_batch(symbols, day, day, columns=[
+                    "date", "symbol", "raw_close", "raw_high", "raw_prev_close", "limit_up", "limit_up_price"])
+            except (OSError, ValueError, pl.exceptions.PolarsError):
+                daily = pl.DataFrame()
+        alerted = [row["symbol"] for row in rows if row["alerted"]]
+        with self._lock:
+            account = next((item.get("paper_account_id") for item in self._versions if item.get("revision") == revision), None)
+        audit = None
+        if account and alerted:
+            try:
+                audit = build_paper_trade_audit(self.repo.store.data_dir, account, events=records,
+                                                start=day, end=day, revision=revision)
+            except (OSError, ValueError):
+                audit = None
+        apply_verification(report, close_results(daily, symbols, day, closed=closed),
+                           paper_results(audit, alerted, has_account=bool(account)))
 
     def first_alert_rankings(self, day: date, *, revision: int | None = None,
                              top_n: int | None = None, offset: int = 0, limit: int = 100) -> dict:

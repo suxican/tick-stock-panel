@@ -137,9 +137,9 @@ def first_alert_rankings(
 
 
 @router.get("/opportunities")
-def opportunities(request: Request, day: date, revision: int | None = Query(None, ge=0)):
+def opportunities(request: Request, day: date, revision: int | None = Query(None, ge=0), verify: bool = False):
     try:
-        return _service(request).opportunities(day, revision=revision)
+        return _service(request).opportunities(day, revision=revision, verify=verify)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
