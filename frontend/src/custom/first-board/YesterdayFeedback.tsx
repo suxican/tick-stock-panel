@@ -93,18 +93,20 @@ function MemberTable({ rows, muted, showAuction, showSeal, onOpenStock }: { rows
  * 市场温度区：默认只留标题行（关键数字在页面顶部），展开后再显示开盘分布、完整指标与个股/板块明细。
  * 展开状态按浏览器保存；市场范围切换在两种状态间保留。
  */
-export function YesterdayFeedback({ data, refreshFailed = false, onOpenStock, children }: {
+export function YesterdayFeedback({ data, refreshFailed = false, preopen = false, onOpenStock, children }: {
   data?: FirstBoardFeedback
   refreshFailed?: boolean
+  /** 竞价前窗口：默认展开竞价明细并按竞价涨幅排序；该窗口内的展开状态只对本次访问有效，不读写保存的偏好。 */
+  preopen?: boolean
   onOpenStock: (symbol: string, name: string, navList: StockLink[]) => void
   children: ReactNode
 }) {
   const [scope, setScope] = useState<Scope>('all')
-  const [open, setOpen] = useState(() => storage.firstBoardFeedbackExpanded.get(false) === true)
-  const [expanded, setExpanded] = useState(false)
+  const [open, setOpen] = useState(() => preopen || storage.firstBoardFeedbackExpanded.get(false) === true)
+  const [expanded, setExpanded] = useState(preopen)
   const [showQuoteNote, setShowQuoteNote] = useState(false)
   const [sectorKind, setSectorKind] = useState<'industry' | 'concept'>('industry')
-  const [sortKey, setSortKey] = useState<SortKey>('change')
+  const [sortKey, setSortKey] = useState<SortKey>(preopen ? 'auction_pct' : 'change')
   const bodyId = useId()
   const detailId = useId()
   const titleId = useId()
@@ -129,7 +131,7 @@ export function YesterdayFeedback({ data, refreshFailed = false, onOpenStock, ch
   const toggleOpen = () => {
     const next = !open
     setOpen(next)
-    storage.firstBoardFeedbackExpanded.set(next)
+    if (!preopen) storage.firstBoardFeedbackExpanded.set(next)
   }
   const statusBody = data?.status === 'waiting'
     ? <p role="status" aria-label="正在加载昨日首板反馈" className="text-xs text-secondary motion-safe:animate-pulse">{data.message || '正在建立昨日首板名单'}</p>

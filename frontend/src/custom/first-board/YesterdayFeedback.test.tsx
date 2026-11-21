@@ -32,8 +32,8 @@ beforeEach(() => {
   host = document.createElement('div'); document.body.append(host); root = createRoot(host); openStock.mockReset()
 })
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); localStorage.removeItem('first-board-feedback-expanded') })
-async function render(data?: FirstBoardFeedback, failed = false) {
-  await act(async () => root.render(<YesterdayFeedback data={data} refreshFailed={failed} onOpenStock={openStock}><p>原盯盘状态</p></YesterdayFeedback>))
+async function render(data?: FirstBoardFeedback, failed = false, preopen = false) {
+  await act(async () => root.render(<YesterdayFeedback data={data} refreshFailed={failed} preopen={preopen} onOpenStock={openStock}><p>原盯盘状态</p></YesterdayFeedback>))
 }
 async function click(label: string) {
   const button = [...host.querySelectorAll('button')].find(item => item.textContent?.trim() === label)!
@@ -309,4 +309,53 @@ it('layer promotions read as count over sample and stay unknown until every limi
   expect(rows[0].lastElementChild?.textContent).toBe('1 / 18')
   expect(rows[1].lastElementChild?.textContent).toBe('—')
   expect(rows[1].lastElementChild?.getAttribute('title')).toContain('待确认')
+})
+
+const toggle = (label: string) => [...host.querySelectorAll('button')].find(item => item.textContent?.trim() === label)
+const firstMember = () => host.querySelector('table[aria-label="昨日首板个股表现"] tbody tr td')?.textContent
+function withAuction() {
+  const data = feedback()
+  data.auction = { source: 'meoz', fetched_at: '2026-10-27T09:16:00+08:00' }
+  data.rows[0].auction = { pct_chg: .08, amount: 3e7, vol_ratio: 8.5, limit_bid_amount: null }
+  data.rows[1].auction = { pct_chg: .02, amount: 1e8, vol_ratio: 2.1, limit_bid_amount: 5e7 }
+  return data
+}
+it('opens the auction detail sorted by auction change in the pre-open window', async () => {
+  await render(withAuction(), false, true)
+  expect(toggle('收起分布')?.getAttribute('aria-expanded')).toBe('true')
+  expect(host.querySelector('table[aria-label="昨日首板个股表现"]')).not.toBeNull()
+  expect(toggle('竞价涨幅')?.getAttribute('aria-pressed')).toBe('true')
+  // 主板样本涨幅 -6% 但竞价涨幅 +8%，按竞价涨幅排在创业板样本之前。
+  expect(firstMember()).toContain('主板样本')
+})
+it('falls back to change without auction data', async () => {
+  await render(feedback(), false, true)
+  expect(host.querySelector('table[aria-label="昨日首板个股表现"]')).not.toBeNull()
+  // 没有竞价数据时不提供排序切换，仍按涨幅排序。
+  expect(toggle('竞价涨幅')).toBeUndefined()
+  expect(firstMember()).toContain('创业板样本')
+})
+it('does not read or write the saved preference in the pre-open window', async () => {
+  // 保存的偏好是“展开”，窗口内收起后不得被改写；再展开也不写入。
+  localStorage.setItem('first-board-feedback-expanded', 'true')
+  await render(withAuction(), false, true)
+  await click('收起分布')
+  expect(toggle('展开分布')).toBeDefined()
+  expect(localStorage.getItem('first-board-feedback-expanded')).toBe('true')
+  localStorage.removeItem('first-board-feedback-expanded')
+  await click('展开分布')
+  await click('收起分布')
+  expect(localStorage.getItem('first-board-feedback-expanded')).toBeNull()
+  // 偏好为“收起”时窗口内仍默认展开（不读偏好）。
+  await act(async () => root.unmount())
+  localStorage.setItem('first-board-feedback-expanded', 'false')
+  root = createRoot(host)
+  await render(withAuction(), false, true)
+  expect(toggle('收起分布')).toBeDefined()
+})
+it('keeps the saved preference outside the pre-open window', async () => {
+  await render(withAuction())
+  expect(toggle('展开分布')?.getAttribute('aria-expanded')).toBe('false')
+  await click('展开分布')
+  expect(localStorage.getItem('first-board-feedback-expanded')).toBe('true')
 })

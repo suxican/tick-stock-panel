@@ -18,6 +18,8 @@ const calls = vi.hoisted(() => ({
   firstBoardTradeValidation: vi.fn(), firstBoardTradeValidationRuns: vi.fn(),
 }))
 const capabilityState = vi.hoisted(() => ({ available: true, failed: false, ready: true }))
+const sceneState = vi.hoisted(() => ({ scene: 'normal' as 'normal' | 'preopen' | 'afterClose', calls: 0 }))
+vi.mock('./scene', async importOriginal => ({ ...await importOriginal<typeof import('./scene')>(), sceneAt: () => { sceneState.calls += 1; return sceneState.scene } }))
 vi.mock('@/lib/api', () => ({ api: calls }))
 vi.mock('@/lib/useSharedQueries', () => ({ useCapabilityMatrix: () => ({ data: capabilityState.ready ? { capabilities: [
   { id: 'daily', label: '日线', usable: true }, { id: 'realtime', label: '实时报价', usable: capabilityState.available },
@@ -72,6 +74,8 @@ let host: HTMLDivElement
 let root: Root
 let client: QueryClient
 beforeEach(() => {
+  sceneState.scene = 'normal'
+  sceneState.calls = 0
   localStorage.removeItem('first-board-stock-marks')
   localStorage.removeItem('first-board-feedback-expanded')
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -1801,4 +1805,52 @@ it('names the stock on the card buy button for assistive technology', async () =
   await render()
   expect(cards()[0].getAttribute('aria-label')).toContain('A')
   expect(cards()[0].querySelector('button[aria-label^="模拟买入"]')?.getAttribute('aria-label')).toContain('A')
+})
+async function renderAt(path: string) {
+  await act(async () => root.render(<MemoryRouter initialEntries={[path]}><QueryClientProvider client={client}><FirstBoard /></QueryClientProvider></MemoryRouter>))
+  await settle()
+}
+const selectedTab = () => host.querySelector('[role="tab"][aria-selected="true"]')?.textContent
+it('defaults to the signal record after the close when the address has no tab', async () => {
+  sceneState.scene = 'afterClose'
+  await renderAt('/first-board')
+  expect(selectedTab()).toBe('信号记录')
+})
+it('keeps an explicit tab after the close', async () => {
+  sceneState.scene = 'afterClose'
+  await renderAt('/first-board?tab=live')
+  expect(selectedTab()).toBe('今日盯盘')
+})
+it.each(['normal', 'preopen'] as const)('defaults to live in the %s scene', async scene => {
+  sceneState.scene = scene
+  await renderAt('/first-board')
+  expect(selectedTab()).toBe('今日盯盘')
+})
+it('only changes the tab after the close, not the feedback panel', async () => {
+  sceneState.scene = 'afterClose'
+  await renderAt('/first-board?tab=live')
+  expect(button('展开分布').getAttribute('aria-expanded')).toBe('false')
+})
+it('decides the scene once when the page mounts', async () => {
+  sceneState.scene = 'normal'
+  await renderAt('/first-board?tab=live')
+  expect(sceneState.calls).toBe(1)
+  sceneState.scene = 'afterClose'
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), observed_at: '2026-09-30T10:01:00+08:00' })
+  await click('刷新')
+  await settle()
+  expect(sceneState.calls).toBe(1)
+  expect(selectedTab()).toBe('今日盯盘')
+})
+it('opens the auction detail in the pre-open scene', async () => {
+  sceneState.scene = 'preopen'
+  const data = yesterdayFeedback()
+  data.auction = { source: 'meoz', fetched_at: '2026-09-30T09:16:00+08:00' }
+  data.rows[0].auction = { pct_chg: .08, amount: 3e7, vol_ratio: 8.5, limit_bid_amount: null }
+  data.rows[1].auction = { pct_chg: .02, amount: 1e8, vol_ratio: 2.1, limit_bid_amount: 5e7 }
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), yesterday_feedback: data })
+  await renderAt('/first-board')
+  expect(button('收起分布').getAttribute('aria-expanded')).toBe('true')
+  expect(button('竞价涨幅').getAttribute('aria-pressed')).toBe('true')
+  expect(host.querySelector('table[aria-label="昨日首板个股表现"]')).not.toBeNull()
 })

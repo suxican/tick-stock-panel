@@ -18,6 +18,7 @@ import { LiveStatus } from './LiveStatus'
 import { CandidateTable, useCandidateView } from './CandidateTable'
 import { ImminentCards } from './ImminentCards'
 import { EventsPanel } from './EventsPanel'
+import { sceneAt } from './scene'
 import { beijingDay, buttonClass, ErrorNotice, LoadingRows, money, Notice, panelClass, pct } from './shared'
 
 const tabs = [{ id: 'live', label: '今日盯盘' }, { id: 'events', label: '信号记录' }, { id: 'research', label: '效果验证' }, { id: 'rules', label: '规则版本' }]
@@ -46,7 +47,9 @@ function PaperAccount({ paper, onOpen }: { paper: FirstBoardSnapshot['paper']; o
 
 export function FirstBoard() {
   const [params, setParams] = useSearchParams()
-  const tab = tabs.some(item => item.id === params.get('tab')) ? params.get('tab')! : 'live'
+  // 进入页面时按北京时间判断一次使用场景；地址里明确的标签始终优先。
+  const [scene] = useState(() => sceneAt())
+  const tab = tabs.some(item => item.id === params.get('tab')) ? params.get('tab')! : scene === 'afterClose' ? 'events' : 'live'
   const client = useQueryClient()
   const config = useQuery({ queryKey: QK.firstBoardConfig, queryFn: api.firstBoardConfig })
   const [chosenEventDay, setEventDay] = useState<string | null>(null)
@@ -136,7 +139,7 @@ export function FirstBoard() {
           {matrix.isError && <Notice error>行情能力状态读取失败。<a href="/settings?tab=data-sources" className="ml-2 underline">检查数据源配置</a></Notice>}
           {!!missing.length && <Notice>当前数据源缺少可用的{missing.map(item => item.label).join('、')}。<a href="/settings?tab=data-sources" className="ml-2 underline">配置数据源</a></Notice>}
           {data && <LiveStatus data={data} retained={snapshot.isError || refresh.isError} muted={snapshot.isError || refresh.isError || data.yesterday_feedback?.status === 'stale'} />}
-          {data && <YesterdayFeedback data={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} onOpenStock={openList}>
+          {data && <YesterdayFeedback preopen={scene === 'preopen'} data={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} onOpenStock={openList}>
             <OpeningDistribution feedback={data.yesterday_feedback} refreshFailed={snapshot.isError || refresh.isError} />
           </YesterdayFeedback>}
           <ImminentCards rows={data?.rows} current={attentionCurrent} globalReasons={data?.global_blocked_reasons ?? noReasons} canOrder={liveUsable && !order.isPending} onOpen={openStock}
