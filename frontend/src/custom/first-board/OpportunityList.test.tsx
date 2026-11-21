@@ -51,7 +51,7 @@ async function click(text: string) { await act(async () => button(text).click())
 it('requests the day and shows summary counts with separate denominators', async () => {
   calls.firstBoardOpportunities.mockResolvedValue(report([row('A'), row('B'), unalerted('C')]))
   await render()
-  expect(calls.firstBoardOpportunities).toHaveBeenCalledWith('2026-10-16')
+  expect(calls.firstBoardOpportunities).toHaveBeenCalledWith('2026-10-16', false)
   const text = host.textContent!
   expect(text).toContain('机会记录')
   for (const [label, count] of [['记录股票', '3'], ['独立买入提示', '2'], ['有触板记录', '3'], ['封板未提示', '1']]) {
@@ -122,4 +122,59 @@ it('shows an empty state and a retryable error without crashing on missing field
   await click('重试')
   expect(rows()).toHaveLength(1)
   expect(rows()[0].textContent).toContain('状态变化')
+})
+
+function verifiedReport() {
+  const rows = [
+    { ...row('A'), close: { status: 'sealed' as const, close_price: 11, limit_price: 11, reason: null }, paper: { status: 'closed' as const, reason: null, net_return: 0.0312 } },
+    { ...row('B'), close: { status: 'not_sealed' as const, close_price: 10.6, limit_price: 11, reason: null }, paper: { status: 'ambiguous' as const, reason: '同一股票存在多张买单', net_return: null } },
+    { ...unalerted('C'), close: { status: 'unverified' as const, close_price: null, limit_price: null, reason: '缺少当日日线' }, paper: { status: 'no_signal' as const, reason: null, net_return: null } },
+  ]
+  const base = report(rows)
+  return { ...base, verified: true, rows, summary: { ...base.summary, close_sealed_count: 1, close_checked_count: 2, paper_filled_count: 1, paper_checked_count: 1 } }
+}
+
+it('does not show the verification columns until the button is pressed, then requests verify=true', async () => {
+  calls.firstBoardOpportunities.mockImplementation(async (_day: string, verify: boolean) => verify ? verifiedReport() : report([row('A'), row('B'), unalerted('C')]))
+  await render()
+  expect(host.querySelector('table')!.textContent).not.toContain('收盘结果')
+  expect(calls.firstBoardOpportunities).not.toHaveBeenCalledWith('2026-10-16', true)
+  await click('核验收盘与成交')
+  expect(calls.firstBoardOpportunities).toHaveBeenCalledWith('2026-10-16', true)
+  const head = host.querySelector('table')!.textContent!
+  expect(head).toContain('收盘结果')
+  expect(head).toContain('模拟成交')
+  const body = rows().map(item => item.textContent!)
+  expect(body[0]).toContain('收盘封板')
+  expect(body[0]).toContain('已平仓')
+  expect(body[0]).toContain('3.12%')
+  expect(body[1]).toContain('收盘未封')
+  expect(body[1]).toContain('来源不唯一')
+  expect(body[2]).toContain('待核验')
+})
+
+it('shows verified summary counts with their denominators', async () => {
+  calls.firstBoardOpportunities.mockImplementation(async (_day: string, verify: boolean) => verify ? verifiedReport() : report([row('A'), row('B'), unalerted('C')]))
+  await render()
+  await click('核验收盘与成交')
+  const text = host.querySelector('[data-opportunity-summary]')!.textContent!
+  expect(text).toContain('收盘封板1只')
+  expect(text).toContain('已核日线 2 / 3')
+  expect(text).toContain('已核验模拟成交1只')
+  expect(text).toContain('已核提示股 1 / 2')
+})
+
+it('keeps the unverified table and offers a retry when the verification request fails', async () => {
+  calls.firstBoardOpportunities.mockImplementation(async (_day: string, verify: boolean) => {
+    if (verify) throw new Error('核验失败')
+    return report([row('A')])
+  })
+  await render()
+  await click('核验收盘与成交')
+  expect(host.textContent).toContain('核验失败')
+  expect(rows()).toHaveLength(1)
+  expect(host.querySelector('table')!.textContent).not.toContain('收盘结果')
+  calls.firstBoardOpportunities.mockImplementation(async (_day: string, verify: boolean) => verify ? { ...verifiedReport(), rows: [verifiedReport().rows[0]] } : report([row('A')]))
+  await click('重试')
+  expect(host.querySelector('table')!.textContent).toContain('收盘结果')
 })

@@ -53,7 +53,7 @@ export const QK = {
   firstBoardConfig: ['first-board', 'config'] as const,
   firstBoardSnapshot: ['first-board', 'snapshot'] as const,
   firstBoardEvents: (day: string, filters: FirstBoardEventFilters = {}) => ['first-board', 'events', day, filters] as const,
-  firstBoardOpportunities: (day: string) => ['first-board', 'opportunities', day] as const,
+  firstBoardOpportunities: (day: string, verify = false) => ['first-board', 'opportunities', day, verify] as const,
   firstBoardRankingsDay,
   firstBoardFirstAlertRankings: (day: string, revision: number | null, topN: 3 | 5 | null, offset: number) =>
     [...firstBoardRankingsDay(day), revision, topN, offset] as const,

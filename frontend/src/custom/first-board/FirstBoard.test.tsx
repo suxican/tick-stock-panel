@@ -2025,7 +2025,7 @@ it('keeps missing amount and market cap last in both directions', async () => {
 it('opens the signal record on the per-stock view and switches to the raw events and back', async () => {
   calls.firstBoardEvents.mockResolvedValue({ events: [{ id: 'raw1', ts: 1790720400000, date: '2026-09-30', symbol: '600000.SH', name: '原始股票', pattern: 'platform', pattern_label: '平台突破', state: 'approaching', event_type: 'buy_candidate', message: '原始候选信号', price: 10.8, revision: 1, evidence: {}, blocked_reasons: [], quote_time: '2026-09-30T09:00:00+08:00' }], total: 1, day: beijingDay() })
   await render('events')
-  expect(calls.firstBoardOpportunities).toHaveBeenCalledWith(beijingDay())
+  expect(calls.firstBoardOpportunities).toHaveBeenCalledWith(beijingDay(), false)
   expect(host.querySelector('section[aria-label="机会记录"]')).not.toBeNull()
   expect(host.textContent).not.toContain('信号价格')
   await click('原始事件')
@@ -2045,5 +2045,5 @@ it('keeps the date picker and shows the opportunities for the chosen date', asyn
   const input = host.querySelector<HTMLInputElement>('input[type="date"]')!
   await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '2026-09-29'); input.dispatchEvent(new Event('input', { bubbles: true })) })
   await settle()
-  expect(calls.firstBoardOpportunities).toHaveBeenCalledWith('2026-09-29')
+  expect(calls.firstBoardOpportunities).toHaveBeenCalledWith('2026-09-29', false)
 })

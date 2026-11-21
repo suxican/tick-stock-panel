@@ -4355,7 +4355,7 @@ export const api = {
     return request<{ events: FirstBoardEvent[]; day: string; total: number }>(
       `/api/first-board/events${query.size ? `?${query}` : ''}`, { quiet: true })
   },
-  firstBoardOpportunities: (day: string) => request<FirstBoardOpportunities>(`/api/first-board/opportunities?${new URLSearchParams({ day })}`, { quiet: true }),
+  firstBoardOpportunities: (day: string, verify = false) => request<FirstBoardOpportunities>(`/api/first-board/opportunities?${new URLSearchParams(verify ? { day, verify: 'true' } : { day })}`, { quiet: true }),
   firstBoardVersions: () => request<{ versions: FirstBoardConfig[] }>('/api/first-board/versions'),
   firstBoardResearch: (body: FirstBoardResearchRequest) => request<FirstBoardResearch>('/api/first-board/research', {
     method: 'POST', body: JSON.stringify(body), timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, quiet: true,
@@ -7827,13 +7827,20 @@ export interface FirstBoardOpportunityRow {
   alerted: boolean
   sealed_unalerted: boolean
   event_count: number
+  close?: { status: 'sealed' | 'not_sealed' | 'unverified'; close_price: number | null; limit_price: number | null; reason: string | null }
+  paper?: { status: FirstBoardPaperStatus; reason: string | null; net_return: number | null }
 }
+export type FirstBoardPaperStatus = 'no_account' | 'no_signal' | 'not_ordered' | 'pending' | 'cancelled' | 'expired' | 'open' | 'partially_closed' | 'closed' | 'ambiguous' | 'evidence_missing'
 export interface FirstBoardOpportunities {
   day: string
   revision: number
   available_revisions: number[]
   rows: FirstBoardOpportunityRow[]
-  summary: { stock_count: number; alerted_count: number; touched_count: number; sealed_unalerted_count: number; skipped_count: number }
+  verified?: boolean
+  summary: {
+    stock_count: number; alerted_count: number; touched_count: number; sealed_unalerted_count: number; skipped_count: number
+    close_sealed_count?: number; close_checked_count?: number; paper_filled_count?: number; paper_checked_count?: number
+  }
 }
 export interface FirstBoardFirstAlertRankings {
   date: string
