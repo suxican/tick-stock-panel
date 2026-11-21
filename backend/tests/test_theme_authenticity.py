@@ -41,3 +41,16 @@ def test_summary_and_evidence_texts():
     unknown = ta.summarize(None, "688388.SH")
     assert unknown == {"available": False}
     assert ta.authenticity_evidence(unknown) == "精选板块正宗度：来源不可用，不能视为不正宗"
+
+
+def test_fetch_leaders_caches_and_marks_unavailable(monkeypatch):
+    ta._leaders_cache.clear()
+    rows = [{"theme_id": "801004k", "theme_name": "锂电池", "change_pct": -0.03, "symbols": ["688388"]}]
+    provider = SimpleNamespace(get_theme_leaders=Mock(return_value=rows))
+    _sources(monkeypatch, provider)
+    assert ta.fetch_leaders() == rows
+    assert ta.fetch_leaders() == rows
+    provider.get_theme_leaders.assert_called_once_with()
+    ta._leaders_cache.clear()
+    _sources(monkeypatch, SimpleNamespace(get_theme_leaders=Mock(side_effect=RuntimeError("down"))))
+    assert ta.fetch_leaders() is None

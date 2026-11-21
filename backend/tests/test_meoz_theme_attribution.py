@@ -269,3 +269,14 @@ def test_theme_authenticity_route_returns_symbol_summary(monkeypatch, tmp_path):
         fetch.return_value = None
         assert client.get("/api/meoz/theme-authenticity", params={"symbol": "600000.SH"}).status_code == 503
         assert client.get("/api/meoz/theme-authenticity", params={"symbol": " "}).status_code == 422
+
+
+def test_theme_leaders_route(monkeypatch, tmp_path):
+    app = FastAPI()
+    app.include_router(ext.router)
+    fetch = Mock(return_value=[{"theme_id": "801004k", "theme_name": "锂电池", "change_pct": None, "symbols": ["688388"]}])
+    monkeypatch.setattr(ext.theme_authenticity, "fetch_leaders", fetch)
+    with TestClient(app) as client:
+        assert client.get("/api/meoz/theme-authenticity/leaders").json() == {"themes": fetch.return_value}
+        fetch.return_value = None
+        assert client.get("/api/meoz/theme-authenticity/leaders").status_code == 503

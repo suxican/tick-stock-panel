@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import {
   api, ApiError,
-  type MeozHotRank, type MeozHotStockKind, type MeozHotTheme, type MeozThemeReasons,
+  type MeozHotRank, type MeozHotStockKind, type MeozHotTheme, type MeozThemeReasons, type ThemeLeaders,
 } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 
@@ -38,6 +38,25 @@ export function useThemeAuthenticity(symbol: string | undefined) {
     queryKey: QK.meozThemeAuthenticity(symbol ?? ''),
     queryFn: () => quiet(() => api.meozThemeAuthenticity(symbol!)),
     enabled: !!symbol,
+    staleTime: 30 * 60_000,
+    retry: false,
+  })
+}
+
+/** 同花顺概念名与精选板块名的精确同名键: 去掉全部空白 */
+export const normThemeName = (name: string | null | undefined) => (name ?? '').replace(/\s+/g, '')
+
+/** 精选板块最正宗名单, 按规整名称索引 (只有当前快照, 页面不轮询); 来源不可用为 null */
+export function useThemeLeaders() {
+  return useQuery({
+    queryKey: QK.meozThemeLeaders,
+    queryFn: async () => {
+      const res = await quiet(() => api.meozThemeLeaders())
+      if (!res) return null
+      const map = new Map<string, ThemeLeaders['themes'][number]>()
+      for (const theme of res.themes) if (theme.theme_name) map.set(normThemeName(theme.theme_name), theme)
+      return map
+    },
     staleTime: 30 * 60_000,
     retry: false,
   })

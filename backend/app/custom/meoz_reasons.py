@@ -74,6 +74,15 @@ def authenticity(symbol: str) -> dict:
     return theme_authenticity.summarize(raw, symbol)
 
 
+@router.get("/theme-authenticity/leaders")
+def authenticity_leaders() -> dict:
+    """概念页: 全部精选板块的最正宗名单 (当前快照, 只作证据)。"""
+    themes = theme_authenticity.fetch_leaders()
+    if themes is None:
+        raise HTTPException(503, "精选板块正宗度来源不可用")
+    return {"themes": themes}
+
+
 @router.get("/strongest-vent")
 def strongest_vent(date: date | None = None) -> dict:
     try:

@@ -25,6 +25,8 @@ import { fmtBigNum, fmtPct, priceColorClass } from '@/lib/format'
 import { cn } from '@/lib/cn'
 import { resolveDimension, type DimensionGroup, type StockRow } from '@/lib/analysis-adapter'
 import { SectorRotationCard } from '@/components/SectorRotationCard'
+import { normThemeName, useThemeLeaders } from '@/lib/useMeozThemeAttribution'
+import { AuthenticLeaders } from './AuthenticLeaders'
 import { ThemeAttributionPanel } from './ThemeAttributionPanel'
 
 const KEYWORDS = ['concept', '概念', 'theme', '题材', '板块']
@@ -662,6 +664,7 @@ function ConceptRail({
   onSort: (v: SortMode) => void
   onSelect: (v: string) => void
 }) {
+  const leaders = useThemeLeaders().data
   return (
     <section className="rounded-2xl border border-border bg-surface p-2.5">
       <div className="px-1 pb-2.5">
@@ -688,6 +691,7 @@ function ConceptRail({
             <button key={item.key} onClick={() => onSelect(item.key)} className={cn('w-full border-b border-border/50 px-2.5 py-2 text-left transition-colors last:border-b-0', active ? 'bg-blue-400/[0.08]' : 'hover:bg-elevated/40')}>
               <div className="flex items-center gap-2">
                 <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{item.key}</span>
+                {leaders?.has(normThemeName(item.key)) && <span title="精选板块最正宗名单有同名板块" className="shrink-0 rounded bg-amber-400/15 px-1 py-px text-[10px] text-amber-300">正宗</span>}
                 <span className={cn('font-mono text-xs', priceColorClass(item.avgPct))}>{item.avgPct != null ? fmtPct(item.avgPct) : '—'}</span>
               </div>
               <div className="mt-1 flex items-center gap-2 text-[10px] text-muted">
@@ -725,6 +729,7 @@ function ConceptFocus({ stat, onStockClick, activeSymbol }: { stat: ConceptStat 
               <span>成交额 {fmtBigNum(stat.totalAmount)}</span>
               {stat.avgTurnover != null && <span>均换手 {stat.avgTurnover.toFixed(2)}%</span>}
             </div>
+            <AuthenticLeaders conceptName={stat.key} stocks={stat.stocks} />
           </div>
           <div className="grid grid-cols-5 gap-2 lg:w-[520px]">
             <MiniStat label="均涨" value={stat.avgPct != null ? fmtPct(stat.avgPct) : '—'} cls={priceColorClass(stat.avgPct)} />

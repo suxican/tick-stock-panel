@@ -53,6 +53,28 @@ def fetch_authenticity(symbols: list[str]) -> dict | None:
     return result
 
 
+_leaders_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+def fetch_leaders() -> list[dict] | None:
+    """全部精选板块的最正宗名单 (概念页龙头提示); 无来源或取数失败返回 None (不可用)。"""
+    name = _source()
+    if name is None:
+        return None
+    with _lock:
+        hit = _leaders_cache.get(name)
+        if hit and time.monotonic() - hit[0] < _CACHE_TTL_S:
+            return hit[1]
+    try:
+        result = custom_sources.get_provider(name).get_theme_leaders()
+    except Exception:  # noqa: BLE001 -- 只作证据, 失败标记不可用
+        logger.warning("精选板块最正宗名单取数失败, 标记来源不可用", exc_info=True)
+        return None
+    with _lock:
+        _leaders_cache[name] = (time.monotonic(), result)
+    return result
+
+
 def summarize(raw: dict | None, symbol: str) -> dict:
     if raw is None or symbol not in raw:
         return {"available": False}

@@ -823,3 +823,18 @@ def test_theme_authenticity_names_failure_keeps_list(monkeypatch):
     provider, _ = _provider(monkeypatch, boom)
     with pytest.raises(mc.MeozError):
         provider.get_theme_authenticity(["600519.SH"])
+
+
+def test_theme_leaders_lists_named_themes_with_symbols(monkeypatch):
+    def handler(apiname, params, fields, service):
+        if apiname == "themeauthentic_jx":
+            return [{"theme_symbol": "801004k", "symbols": ["688388", "300750"]},
+                    {"theme_symbol": "801660k", "symbols": ["600519"]}]
+        if apiname == "themedaily_jx":
+            return [{"theme_symbol": "801004k", "theme_name": "锂电池", "pct_chg": -3.452}]
+        raise AssertionError(apiname)
+
+    provider, _ = _provider(monkeypatch, handler)
+    assert provider.get_theme_leaders() == [
+        {"theme_id": "801004k", "theme_name": "锂电池", "change_pct": pytest.approx(-0.03452), "symbols": ["688388", "300750"]},
+        {"theme_id": "801660k", "theme_name": None, "change_pct": None, "symbols": ["600519"]}]

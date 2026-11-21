@@ -1111,6 +1111,30 @@ class MeozProvider:
                                         "change_pct": pct / 100.0 if pct is not None else None})
         return out
 
+    def get_theme_leaders(self) -> list[dict]:
+        """全部精选板块的「最正宗」名单 → [{theme_id, theme_name, change_pct 小数制, symbols: 六位代码}]。
+
+        名单取数失败抛异常; 板块名称/涨跌幅取数失败只置空。只有当前快照。
+        """
+        client = self._get_client()
+        rows = client.query("themeauthentic_jx", {})
+        try:
+            daily = {str(r.get("theme_symbol")): r for r in client.query("themedaily_jx", {})}
+        except MeozError as e:
+            logger.warning("精选板块日线取数失败, 正宗名单只列板块代码: %s", e)
+            daily = {}
+        out = []
+        for row in rows:
+            theme = str(row.get("theme_symbol") or "")
+            if not theme:
+                continue
+            info = daily.get(theme, {})
+            pct = _to_float(info.get("pct_chg"))
+            out.append({"theme_id": theme, "theme_name": info.get("theme_name"),
+                        "change_pct": pct / 100.0 if pct is not None else None,
+                        "symbols": [_six(str(code)) for code in row.get("symbols") or []]})
+        return out
+
     # ---- 资金证据: 主力净额 / 两融余额 / 北向持股 (只作证据展示, 厂商模型口径) ----
     def _series(self, api: str, symbols: list[str], params: dict, date_key: str, value_key: str,
                 out_key: str, *, service: str, fields: str | None = None) -> dict[str, list[dict]]:

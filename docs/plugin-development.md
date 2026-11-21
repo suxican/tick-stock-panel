@@ -413,6 +413,7 @@ Python 插件声明 `datasets: [ths_index]` 后需实现以下方法。通用 YA
 持仓分析的「精选板块正宗度」证据。仅支持 Python 插件，声明后实现：
 
 - `get_theme_authenticity(symbols: list[str]) -> dict[str, list[dict]]`：按请求代码返回该股所在的「最正宗」板块列表 `[{theme_id, theme_name, change_pct}]`（`change_pct` 为当日涨跌幅，小数制；名称或涨跌幅取不到时为空），每个请求代码都要有键，不在任何名单中为空列表。
+- 可选 `get_theme_leaders() -> list[dict]`：全部精选板块的最正宗名单 `[{theme_id, theme_name, change_pct, symbols}]`（`symbols` 为六位代码），供概念分析页对同名概念显示正宗股；名称取不到时 `theme_name` 为空，取数失败抛异常（页面显示不可用，不显示提示）。
 - 名单取数失败直接抛异常，调用方会标记「来源不可用」。
 
 ### 资金证据数据集 `fund_flow` / `margin_balance` / `northbound_holding`
