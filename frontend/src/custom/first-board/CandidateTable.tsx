@@ -306,7 +306,7 @@ function ThemeHeader({ group, collapsed, onToggle }: { group: ThemeGroup; collap
     <th scope="rowgroup" colSpan={displayColumns.length} className="px-3 py-2 text-left font-normal">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
         <button type="button" aria-expanded={!collapsed} aria-label={`题材 ${group.name}`}
-          className="inline-flex min-h-7 items-center gap-1 text-left text-sm font-medium focus-visible:outline focus-visible:outline-accent" onClick={onToggle}>
+          className="inline-flex min-h-7 items-center gap-1 text-left text-sm font-medium text-accent focus-visible:outline focus-visible:outline-accent" onClick={onToggle}>
           <Icon className="h-4 w-4 text-secondary" aria-hidden="true" />{group.name}
         </button>
         <span className="text-secondary">候选 {group.stockCount} 只</span>
