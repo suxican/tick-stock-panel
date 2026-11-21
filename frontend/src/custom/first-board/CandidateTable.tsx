@@ -1,5 +1,5 @@
 import { useCallback, useId, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ChevronUp, SlidersHorizontal, Star } from 'lucide-react'
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ChevronRight, ChevronUp, SlidersHorizontal, Star } from 'lucide-react'
 import type { FirstBoardCandidate, FirstBoardPattern, FirstBoardState } from '@/lib/api'
 import type { ColumnConfig } from '@/lib/list-columns'
 import { markedFirst, type StockMarks, type useStockMarks } from '@/lib/useStockMarks'
@@ -8,6 +8,8 @@ import { fmtBigNum, fmtPct, fmtPrice, priceColorClass } from '@/lib/format'
 import { boardTag } from '@/components/stock-table/primitives'
 import { useTableSort } from '@/components/stock-table/useTableSort'
 import { applyFrozenOrder } from './frozenOrder'
+import { groupCandidatesByTheme, type ThemeGroup } from './themeGroups'
+import { storage } from '@/lib/storage'
 import { AttentionCell, AttentionSummary, attentionPriority, matchesAttention, type AttentionFilter } from './AttentionCell'
 import { TechnicalEvidence } from './TechnicalEvidence'
 import { PriorityCell, PrioritySummary, currentPriority, matchesPriority, priorityFilters, strongBoards, type PriorityFilter } from './PriorityCell'
@@ -57,7 +59,9 @@ export function useCandidateView(all: FirstBoardCandidate[] | undefined, current
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('all')
   const [boardId, setBoardId] = useState('')
   const [reorderCount, setReorderCount] = useState(0)
-  const frozen = useRef<{ signature: string; keys: string[] | null; buyable: Set<string> }>({ signature: '', keys: null, buyable: new Set() })
+  const [groupByTheme, setGroupByThemeState] = useState(() => storage.firstBoardGroupByTheme.get(false) === true)
+  const setGroupByTheme = useCallback((value: boolean) => { setGroupByThemeState(value); storage.firstBoardGroupByTheme.set(value) }, [])
+  const frozen = useRef<{ signature: string; keys: string[] | null; buyable: Set<string>; themes: Map<string, string> }>({ signature: '', keys: null, buyable: new Set(), themes: new Map() })
   const sortValue = useCallback((row: FirstBoardCandidate, column: ColumnConfig) => {
     if (column.id === 'priority_score') return currentPriority(row, current)
     return column.id === 'attention_context' && !current ? null : candidateSortValue(row, column)
@@ -99,7 +103,7 @@ export function useCandidateView(all: FirstBoardCandidate[] | undefined, current
   }, [all, filter, stateFilter, onlyActionable, onlyMainline, attentionFilter, priorityFilter, boardIndex, boardId, current, sortRows, sort?.key, marks])
   const focused = Object.keys(marks).filter(symbol => marks[symbol]?.focused).sort().join(',')
   // 用 userSort 而不是生效的 sort: 评分失效时默认排序会从评分切到涨幅，这不是用户操作，不应触发重排。
-  const signature = JSON.stringify([userSort === undefined ? 'default' : userSort, filter, stateFilter, onlyActionable, onlyMainline, attentionFilter, priorityFilter, boardId, focused, reorderCount, active])
+  const signature = JSON.stringify([userSort === undefined ? 'default' : userSort, filter, stateFilter, onlyActionable, onlyMainline, attentionFilter, priorityFilter, boardId, focused, reorderCount, active, groupByTheme])
   const shown = useMemo(() => {
     const state = frozen.current
     // 首批数据到达前显示为空: 此时也按重排处理, 否则首批可提示的行都会被算成“新提示”。
@@ -109,12 +113,18 @@ export function useCandidateView(all: FirstBoardCandidate[] | undefined, current
     const result = applyFrozenOrder(liveRows, reset || !active ? null : state.keys, candidateKey)
     state.signature = signature
     state.keys = result.keys
-    return { rows: result.rows, orderChanged: result.changed,
+    // 分组在冻结之后进行；题材归属随冻结的顺序一起保留，只在重排时重新计算，避免行进出导致股票在组间跳动。
+    const groups = groupByTheme ? groupCandidatesByTheme(result.rows, current, reset ? undefined : state.themes) : null
+    state.themes = new Map(groups ? groups.flatMap(group => group.rows.map(row => [candidateKey(row), group.key] as const)) : [])
+    return { rows: result.rows, groups, orderChanged: result.changed,
       newBuyCount: liveRows.filter(row => buyable(row) && !state.buyable.has(candidateKey(row))).length }
-  }, [liveRows, signature, current, active])
+  }, [liveRows, signature, current, active, groupByTheme])
   const reorder = useCallback(() => setReorderCount(count => count + 1), [])
+  // 组序按各组首行在显示顺序里的位置，组内沿用显示顺序，所以冻结的顺序不会被打乱。
+  const { groups } = shown
+  const rows = useMemo(() => groups ? groups.flatMap(group => group.rows) : shown.rows, [groups, shown.rows])
   return {
-    rows: shown.rows, orderChanged: shown.orderChanged, newBuyCount: shown.newBuyCount, reorder, stateCounts, stateTotal, sort, toggleSort, boardIndex, filter, setFilter, stateFilter, setStateFilter, onlyActionable, setOnlyActionable,
+    rows, groups, groupByTheme, setGroupByTheme, orderChanged: shown.orderChanged, newBuyCount: shown.newBuyCount, reorder, stateCounts, stateTotal, sort, toggleSort, boardIndex, filter, setFilter, stateFilter, setStateFilter, onlyActionable, setOnlyActionable,
     onlyMainline, setOnlyMainline,
     attentionFilter, setAttentionFilter, priorityFilter, setPriorityFilter, boardId, setBoardId,
   }
@@ -143,6 +153,9 @@ function CandidateFilters({ view }: { view: CandidateView }) {
       </label>
       <label className={cn(chipClass, 'cursor-pointer', view.onlyMainline ? 'border-accent/50 bg-accent/10 text-foreground' : 'border-border text-secondary hover:text-foreground')}>
         <input type="checkbox" className="accent-[hsl(var(--accent))]" checked={view.onlyMainline} onChange={event => view.setOnlyMainline(event.target.checked)} />只看主线
+      </label>
+      <label className={cn(chipClass, 'cursor-pointer', view.groupByTheme ? 'border-accent/50 bg-accent/10 text-foreground' : 'border-border text-secondary hover:text-foreground')}>
+        <input type="checkbox" className="accent-[hsl(var(--accent))]" checked={view.groupByTheme} onChange={event => view.setGroupByTheme(event.target.checked)} />按题材分组
       </label>
       <button type="button" aria-expanded={moreOpen} aria-controls={moreId} onClick={() => setMoreOpen(value => !value)}
         className={cn(chipClass, active ? 'border-accent/50 text-foreground' : 'border-border text-secondary hover:text-foreground')}>
@@ -272,6 +285,29 @@ export function BuyAction({ row, canOrder, onBuy }: { row: FirstBoardCandidate; 
   </>
 }
 
+/** 题材分组的组头：题材名、候选数、昨日主线名次，以及概念组的同行均涨、上涨占比、领涨股；联动数据缺失时统计显示占位符。 */
+function ThemeHeader({ group, collapsed, onToggle }: { group: ThemeGroup; collapsed: boolean; onToggle: () => void }) {
+  const stats = group.stats
+  const Icon = collapsed ? ChevronRight : ChevronDown
+  return <tr data-theme-header className="border-t border-border bg-elevated/40">
+    <th scope="rowgroup" colSpan={candidateColumns.length} className="px-3 py-2 text-left font-normal">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        <button type="button" aria-expanded={!collapsed} aria-label={`题材 ${group.name}`}
+          className="inline-flex min-h-7 items-center gap-1 text-left text-sm font-medium focus-visible:outline focus-visible:outline-accent" onClick={onToggle}>
+          <Icon className="h-4 w-4 text-secondary" aria-hidden="true" />{group.name}
+        </button>
+        <span className="text-secondary">候选 {group.stockCount} 只</span>
+        {group.mainlineRank !== null && <span className={cn('inline-flex items-center rounded border px-1.5 py-0.5', 'border-accent/40 bg-accent/10 text-foreground')}>昨日主线第 {group.mainlineRank}</span>}
+        {group.kind === 'concept' && <>
+          <span className="tabular-nums">同行均涨 <span className={priceColorClass(stats?.meanChangePct)}>{fmtPct(stats?.meanChangePct)}</span></span>
+          <span className="tabular-nums">上涨占比 {pct(stats?.upRatio)}</span>
+          {stats?.leader && <span>领涨 {stats.leader.name}{stats.leader.atLimit === true ? '（涨停）' : stats.leader.atLimit === false ? '（已开板）' : ''}</span>}
+        </>}
+      </div>
+    </th>
+  </tr>
+}
+
 function CandidateRow({ row, current, day, focused, canOrder, globalReasons, expanded, onToggle, onFocus, onOpen, onBuy }: {
   row: FirstBoardCandidate; current: boolean; day: string; focused: boolean; canOrder: boolean; globalReasons: Set<string>
   expanded: boolean; onToggle: () => void
@@ -325,6 +361,12 @@ export function CandidateTable({ view, loading, current, day, marks, globalReaso
 }) {
   const viewport = useRef<HTMLDivElement>(null)
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
+  const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(() => new Set())
+  const toggleGroup = (key: string) => setCollapsedGroups(current => {
+    const next = new Set(current)
+    if (!next.delete(key)) next.add(key)
+    return next
+  })
   const globalSet = useMemo(() => new Set(globalReasons), [globalReasons])
   const toggleFocus = (symbol: string) => {
     if (!marks.marks[symbol]?.focused && viewport.current) viewport.current.scrollTop = 0
@@ -347,11 +389,15 @@ export function CandidateTable({ view, loading, current, day, marks, globalReaso
     <div ref={viewport} role="region" aria-label="今日候选列表" tabIndex={0} className="h-[560px] max-h-[70vh] overflow-auto overscroll-contain scrollbar-gutter-stable focus-visible:outline focus-visible:outline-accent">
       {loading ? <LoadingRows /> : rows.length ? <table aria-label="首板实时候选" className="w-full min-w-[1040px] text-left text-xs">
         <CandidateHeader view={view} />
-        <tbody>{rows.map(row => {
-          const key = `${row.symbol}-${row.pattern}`
-          return <CandidateRow key={key} row={row} current={current} day={day} focused={!!marks.marks[row.symbol]?.focused}
-            canOrder={canOrder} globalReasons={globalSet} expanded={expanded.has(key)} onToggle={() => toggleRow(key)}
-            onFocus={toggleFocus} onOpen={onOpen} onBuy={onBuy} />
+        <tbody>{(view.groups ?? [null]).flatMap(group => {
+          const collapsed = !!group && collapsedGroups.has(group.key)
+          const body = collapsed ? [] : (group ? group.rows : rows).map(row => {
+            const key = `${row.symbol}-${row.pattern}`
+            return <CandidateRow key={key} row={row} current={current} day={day} focused={!!marks.marks[row.symbol]?.focused}
+              canOrder={canOrder} globalReasons={globalSet} expanded={expanded.has(key)} onToggle={() => toggleRow(key)}
+              onFocus={toggleFocus} onOpen={onOpen} onBuy={onBuy} />
+          })
+          return group ? [<ThemeHeader key={`theme-${group.key}`} group={group} collapsed={collapsed} onToggle={() => toggleGroup(group.key)} />, ...body] : body
         })}</tbody>
       </table> : <p className="py-6 text-sm leading-relaxed text-secondary">{emptyMessage(view)}</p>}
     </div>

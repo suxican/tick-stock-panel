@@ -78,6 +78,7 @@ beforeEach(() => {
   sceneState.calls = 0
   localStorage.removeItem('first-board-stock-marks')
   localStorage.removeItem('first-board-feedback-expanded')
+  localStorage.removeItem('first-board-group-by-theme')
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   Object.assign(capabilityState, { available: true, failed: false, ready: true })
   Object.values(calls).forEach(call => call.mockReset())
@@ -99,7 +100,7 @@ beforeEach(() => {
   root = createRoot(host)
   client = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0, gcTime: Infinity } } })
 })
-afterEach(async () => { await act(async () => root.unmount()); client.clear(); host.remove(); vi.restoreAllMocks(); localStorage.removeItem('first-board-stock-marks'); localStorage.removeItem('first-board-feedback-expanded') })
+afterEach(async () => { await act(async () => root.unmount()); client.clear(); host.remove(); vi.restoreAllMocks(); localStorage.removeItem('first-board-stock-marks'); localStorage.removeItem('first-board-group-by-theme'); localStorage.removeItem('first-board-feedback-expanded') })
 async function settle() { for (let i = 0; i < 6; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) }) }
 async function render(tab = 'live') {
   await act(async () => root.render(<MemoryRouter initialEntries={[`/first-board?tab=${tab}`]}><QueryClientProvider client={client}><FirstBoard /></QueryClientProvider></MemoryRouter>))
@@ -1853,4 +1854,103 @@ it('opens the auction detail in the pre-open scene', async () => {
   expect(button('收起分布').getAttribute('aria-expanded')).toBe('true')
   expect(button('竞价涨幅').getAttribute('aria-pressed')).toBe('true')
   expect(host.querySelector('table[aria-label="昨日首板个股表现"]')).not.toBeNull()
+})
+const headers = () => [...host.querySelectorAll('tr[data-theme-header]')]
+const tableNames = () => candidateNames()
+function themed(name: string, concepts: [string, number][], values: Partial<FirstBoardCandidate> = {}, status: FirstBoardAttention['status'] = 'ready') {
+  const base = attention().groups[0]
+  return candidate(name, { state: 'watch', can_buy: false, attention_context: attention({ status, groups: concepts.map(([title, members]) => ({ ...base, id: `concept:${title}`, name: title, member_count: members })) }), ...values })
+}
+it('does not group by default and remembers the switch', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [themed('A', [['先进封装', 40]]), themed('B', [['先进封装', 40]])] })
+  await render()
+  expect(headers()).toHaveLength(0)
+  await toggleExact('按题材分组')
+  expect(headers()).toHaveLength(1)
+  expect(localStorage.getItem('first-board-group-by-theme')).toBe('true')
+  await act(async () => root.unmount())
+  root = createRoot(host)
+  await render()
+  expect(headers()).toHaveLength(1)
+  await toggleExact('按题材分组')
+  expect(headers()).toHaveLength(0)
+  expect(localStorage.getItem('first-board-group-by-theme')).toBe('false')
+})
+it('groups candidates that share a theme and shows the group stats', async () => {
+  const mainline = { hit: true, date: '2026-09-29', reason: '', matches: [{ kind: 'concept' as const, name: '先进封装', rank: 1, limit_up_count: 8, max_boards: 3 }] }
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [themed('A', [['先进封装', 40]], { mainline }), themed('B', [['先进封装', 40]]), themed('C', [], { sector: '元件-被动元件' })] })
+  await render()
+  await toggleExact('按题材分组')
+  expect(headers()).toHaveLength(2)
+  const text = headers()[0].textContent!
+  expect(text).toContain('先进封装')
+  expect(text).toContain('候选 2 只')
+  expect(text).toContain('昨日主线第 1')
+  expect(text).toContain('同行均涨 +3.50%')
+  expect(text).toContain('上涨占比 80.00%')
+  expect(text).toContain('领涨 测试领涨股（涨停）')
+  expect(headers()[1].textContent).toContain('元件-被动元件')
+  expect(headers()[1].textContent).not.toContain('同行均涨')
+  expect(tableNames()).toEqual(['A', 'B', 'C'])
+})
+it('shows placeholders when the attention data is not current', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [themed('A', [['先进封装', 40]], {}, 'stale')] })
+  await render()
+  await toggleExact('按题材分组')
+  const text = headers()[0].textContent!
+  expect(text).toContain('先进封装')
+  expect(text).toContain('同行均涨 —')
+  expect(text).not.toContain('0.00%')
+})
+it('keeps the frozen order inside and between groups', async () => {
+  const rows = (changes: [number, number, number]) => [themed('A', [['X', 10]], { change_pct: changes[0] }), themed('B', [['X', 10]], { change_pct: changes[1] }), themed('C', [['Y', 10]], { change_pct: changes[2] })]
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: rows([.09, .05, .08]) })
+  await render()
+  await toggleExact('按题材分组')
+  expect(headers().map(item => item.textContent!.slice(0, 1))).toEqual(['X', 'Y'])
+  expect(tableNames()).toEqual(['A', 'B', 'C'])
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), observed_at: '2026-09-30T10:01:00+08:00', rows: rows([.05, .06, .10]) })
+  await click('刷新')
+  await settle()
+  expect(headers().map(item => item.textContent!.slice(0, 1))).toEqual(['X', 'Y'])
+  expect(tableNames()).toEqual(['A', 'B', 'C'])
+  await click('排序有变化 · 点击重排')
+  expect(headers().map(item => item.textContent!.slice(0, 1))).toEqual(['Y', 'X'])
+  expect(tableNames()).toEqual(['C', 'B', 'A'])
+})
+it('collapses a group without changing the count or navigation', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [themed('A', [['X', 10]], { change_pct: .09 }), themed('B', [['X', 10]], { change_pct: .05 }), themed('C', [['Y', 10]], { change_pct: .08 })] })
+  await render()
+  await toggleExact('按题材分组')
+  const collapse = () => host.querySelector<HTMLButtonElement>('button[aria-label="题材 X"]')!
+  expect(collapse().getAttribute('aria-expanded')).toBe('true')
+  await act(async () => collapse().click())
+  expect(collapse().getAttribute('aria-expanded')).toBe('false')
+  expect(tableNames()).toEqual(['C'])
+  expect(host.textContent).toContain('今日候选 3 条')
+  await act(async () => candidateRows()[0].querySelector<HTMLButtonElement>('td button')!.click())
+  const dialog = host.querySelector('[role="dialog"]')!
+  expect(JSON.parse(dialog.getAttribute('data-nav-list')!).map((item: { name: string }) => item.name)).toEqual(['A', 'B', 'C'])
+  await act(async () => collapse().click())
+  expect(tableNames()).toEqual(['A', 'B', 'C'])
+})
+it('keeps a stock in its group when other rows appear', async () => {
+  const rows = (extra: FirstBoardCandidate[] = []) => [themed('A', [['X', 50], ['Y', 10]], { change_pct: .09 }), themed('B', [['X', 50]], { change_pct: .07 }), themed('C', [['Y', 10]], { change_pct: .06 }), ...extra]
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: rows() })
+  await render()
+  await toggleExact('按题材分组')
+  expect(headers().map(item => item.textContent!.slice(0, 1))).toEqual(['Y', 'X'])
+  expect(tableNames()).toEqual(['A', 'C', 'B'])
+  // D 属于 X：不钉住时 X 共享数变成 3，A 会改归 X；刷新后 A 必须仍在 Y。
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), observed_at: '2026-09-30T10:01:00+08:00', rows: rows([themed('D', [['X', 50]], { change_pct: .01 })]) })
+  await click('刷新')
+  await settle()
+  expect(headers().map(item => item.textContent!.slice(0, 1))).toEqual(['Y', 'X'])
+  expect(tableNames()).toEqual(['A', 'C', 'B', 'D'])
+})
+it('counts distinct stocks in the group header', async () => {
+  calls.firstBoardSnapshot.mockResolvedValue({ ...snapshot(), rows: [themed('A', [['X', 10]], { pattern: 'platform' }), themed('A', [['X', 10]], { pattern: 'trend' })] })
+  await render()
+  await toggleExact('按题材分组')
+  expect(headers()[0].textContent).toContain('候选 1 只')
 })

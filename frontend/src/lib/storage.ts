@@ -89,6 +89,7 @@ export const storage = {
 
   /** 首板「昨日首板反馈」市场温度区是否展开，默认收起 */
   firstBoardFeedbackExpanded: kv<boolean>('first-board-feedback-expanded'),
+  firstBoardGroupByTheme: kv<boolean>('first-board-group-by-theme'),
 
   /** 自选列表视图模式 table | card (分组卡片为临时模式, 不持久化) */
   watchlistView:        kv<string>('watchlist_view'),
